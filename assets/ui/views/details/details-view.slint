@@ -1,0 +1,54 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EntryRowItem, ColumnSpec } from "column.slint";
+import { Header } from "header.slint";
+import { EntryRow } from "row.slint";
+
+// Virtualized Details view.
+//
+// Uses Slint's ListView for vertical virtualization — the outer container
+// renders only the rows that are visible in the scroll viewport, making it
+// suitable for 100,000+ entries.
+export component DetailsView {
+    in property <[EntryRowItem]> rows: [];
+    in property <[ColumnSpec]> columns: [];
+    in property <int> selected-anchor: -1;
+    in property <[bool]> selected-mask: [];
+    in property <int> focused-index: -1;
+    in property <bool> show-hidden: false;
+
+    callback row-clicked(int, bool, bool);
+    callback row-double-clicked(int);
+    callback row-context-menu(int, length, length);
+    callback header-clicked(int);
+    callback header-resize(int, float);
+
+    VerticalLayout {
+        spacing: 0px;
+
+        Header {
+            columns: root.columns;
+            header-clicked(i) => { root.header-clicked(i); }
+            header-resize(i, w) => { root.header-resize(i, w); }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            background: Theme.bg;
+
+            ListView {
+                for row_item[i] in root.rows : EntryRow {
+                    item: row_item;
+                    columns: root.columns;
+                    index: i;
+                    selected: root.selected-mask[i];
+                    focused: root.focused-index == i;
+
+                    clicked(ctrl, shift) => { root.row-clicked(i, ctrl, shift); }
+                    double-clicked => { root.row-double-clicked(i); }
+                    context-menu(x, y) => { root.row-context-menu(i, x, y); }
+                }
+            }
+        }
+    }
+}

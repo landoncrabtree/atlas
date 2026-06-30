@@ -1,0 +1,119 @@
+import { Theme } from "../../theme.slint";
+import { EntryRowItem, ColumnSpec } from "column.slint";
+
+// A single row in the Details view list.
+//
+// The row renders each column cell in order. Selection, focus, and hover
+// states are applied to the background rectangle. Pointer events capture
+// keyboard modifier state (ctrl/shift) at button-down time.
+export component EntryRow {
+    in property <EntryRowItem> item;
+    in property <[ColumnSpec]> columns: [];
+    in property <int> index: 0;
+    in property <bool> selected: false;
+    in property <bool> focused: false;
+
+    callback clicked(bool, bool);
+    callback double-clicked();
+    callback context-menu(length, length);
+
+    height: 24px;
+
+    bg := Rectangle {
+        background: root.selected
+            ? Theme.selection-bg
+            : (ta.has-hover ? Theme.panel-bg : transparent);
+        border-width: root.focused && !root.selected ? 1px : 0px;
+        border-color: Theme.accent;
+
+        HorizontalLayout {
+            spacing: 0px;
+
+            for col[ci] in root.columns : Rectangle {
+                width: col.width;
+                horizontal-stretch: 0;
+                clip: true;
+
+                if col.kind == "name" : HorizontalLayout {
+                    padding-left: Theme.spacing-sm;
+                    spacing: Theme.spacing-xs;
+                    alignment: start;
+
+                    Text {
+                        text: item.kind-icon;
+                        color: root.selected ? Theme.selection-fg : Theme.fg-muted;
+                        vertical-alignment: center;
+                        width: 18px;
+                    }
+
+                    Text {
+                        text: item.name + (item.is-symlink ? " →" : "");
+                        color: item.is-broken-symlink
+                            ? Theme.error
+                            : (item.is-hidden
+                                ? (root.selected ? Theme.selection-fg : Theme.fg-muted)
+                                : (root.selected ? Theme.selection-fg : Theme.fg));
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                if col.kind == "size" : Text {
+                    text: item.size-text;
+                    color: root.selected ? Theme.selection-fg : Theme.fg-muted;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    width: parent.width - Theme.spacing-sm;
+                }
+
+                if col.kind == "modified" : Text {
+                    text: item.modified-text;
+                    color: root.selected ? Theme.selection-fg : Theme.fg-muted;
+                    horizontal-alignment: left;
+                    vertical-alignment: center;
+                    width: parent.width - Theme.spacing-sm;
+                    x: Theme.spacing-sm;
+                }
+
+                if col.kind == "kind" : Text {
+                    text: item.is-dir ? "Directory"
+                        : (item.is-symlink ? "Symlink" : "File");
+                    color: root.selected ? Theme.selection-fg : Theme.fg-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                }
+
+                if col.kind == "extension" : Text {
+                    text: item.name;
+                    color: root.selected ? Theme.selection-fg : Theme.fg-muted;
+                    horizontal-alignment: left;
+                    vertical-alignment: center;
+                    width: parent.width - Theme.spacing-sm;
+                    x: Theme.spacing-sm;
+                }
+            }
+        }
+
+        ta := TouchArea {
+            property <bool> mod-ctrl: false;
+            property <bool> mod-shift: false;
+
+            pointer-event(pe) => {
+                if pe.kind == PointerEventKind.down {
+                    self.mod-ctrl = pe.modifiers.control;
+                    self.mod-shift = pe.modifiers.shift;
+                }
+            }
+
+            clicked => {
+                root.clicked(ta.mod-ctrl, ta.mod-shift);
+            }
+
+            double-clicked => {
+                root.double-clicked();
+            }
+        }
+    }
+}

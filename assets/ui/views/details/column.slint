@@ -1,0 +1,25 @@
+// Shared data types for the Details view.
+//
+// Imported by header.slint, row.slint, and details-view.slint so each has
+// access to the struct definitions without circular imports.
+
+/// One filesystem entry displayed as a row in the Details view.
+export struct EntryRowItem {
+    name: string,
+    kind-icon: string,
+    size-text: string,
+    modified-text: string,
+    is-hidden: bool,
+    is-dir: bool,
+    is-symlink: bool,
+    is-broken-symlink: bool,
+}
+
+/// Describes one column in the Details view.
+export struct ColumnSpec {
+    title: string,
+    width: length,
+    kind: string,
+    sort-dir: int,
+    align-right: bool,
+}

@@ -1,6 +1,7 @@
 import { Theme } from "../theme.slint";
 import { Pane } from "pane.slint";
 import { TabEntry } from "tab-bar.slint";
+import { EntryRowItem, ColumnSpec } from "../views/details/column.slint";
 
 // Container for one or two Pane children with an optional vertical splitter.
 export component Workspace {
@@ -12,12 +13,22 @@ export component Workspace {
     in property <string> pane0-view-mode: "Details";
     in property <[TabEntry]> pane0-tabs: [];
     in property <int> pane0-active-tab: 0;
+    in property <[EntryRowItem]> pane0-details-rows: [];
+    in property <[ColumnSpec]> pane0-details-columns: [];
+    in property <[bool]> pane0-details-selected-mask: [];
+    in property <int> pane0-details-selected-anchor: -1;
+    in property <int> pane0-details-focused-index: -1;
 
     in property <string> pane1-path: "";
     in property <[string]> pane1-segments: [];
     in property <string> pane1-view-mode: "Details";
     in property <[TabEntry]> pane1-tabs: [];
     in property <int> pane1-active-tab: 0;
+    in property <[EntryRowItem]> pane1-details-rows: [];
+    in property <[ColumnSpec]> pane1-details-columns: [];
+    in property <[bool]> pane1-details-selected-mask: [];
+    in property <int> pane1-details-selected-anchor: -1;
+    in property <int> pane1-details-focused-index: -1;
 
     callback pane0-address-submitted(string);
     callback pane0-address-cancelled();
@@ -26,6 +37,11 @@ export component Workspace {
     callback pane0-tab-closed(int);
     callback pane0-new-tab();
     callback pane0-clicked();
+    callback pane0-details-row-clicked(int, bool, bool);
+    callback pane0-details-row-double-clicked(int);
+    callback pane0-details-row-context-menu(int, length, length);
+    callback pane0-details-header-clicked(int);
+    callback pane0-details-header-resize(int, float);
 
     callback pane1-address-submitted(string);
     callback pane1-address-cancelled();
@@ -34,6 +50,11 @@ export component Workspace {
     callback pane1-tab-closed(int);
     callback pane1-new-tab();
     callback pane1-clicked();
+    callback pane1-details-row-clicked(int, bool, bool);
+    callback pane1-details-row-double-clicked(int);
+    callback pane1-details-row-context-menu(int, length, length);
+    callback pane1-details-header-clicked(int);
+    callback pane1-details-header-resize(int, float);
 
     HorizontalLayout {
         spacing: 0px;
@@ -46,6 +67,11 @@ export component Workspace {
             view-mode: root.pane0-view-mode;
             tabs: root.pane0-tabs;
             active-tab: root.pane0-active-tab;
+            details-rows: root.pane0-details-rows;
+            details-columns: root.pane0-details-columns;
+            details-selected-mask: root.pane0-details-selected-mask;
+            details-selected-anchor: root.pane0-details-selected-anchor;
+            details-focused-index: root.pane0-details-focused-index;
 
             address-submitted(p) => { root.pane0-address-submitted(p); }
             address-cancelled => { root.pane0-address-cancelled(); }
@@ -54,6 +80,11 @@ export component Workspace {
             tab-closed(i) => { root.pane0-tab-closed(i); }
             new-tab => { root.pane0-new-tab(); }
             pane-clicked => { root.pane0-clicked(); }
+            details-row-clicked(i, ctrl, shift) => { root.pane0-details-row-clicked(i, ctrl, shift); }
+            details-row-double-clicked(i) => { root.pane0-details-row-double-clicked(i); }
+            details-row-context-menu(i, x, y) => { root.pane0-details-row-context-menu(i, x, y); }
+            details-header-clicked(i) => { root.pane0-details-header-clicked(i); }
+            details-header-resize(i, w) => { root.pane0-details-header-resize(i, w); }
         }
 
         if dual-pane : Rectangle {
@@ -69,6 +100,11 @@ export component Workspace {
             view-mode: root.pane1-view-mode;
             tabs: root.pane1-tabs;
             active-tab: root.pane1-active-tab;
+            details-rows: root.pane1-details-rows;
+            details-columns: root.pane1-details-columns;
+            details-selected-mask: root.pane1-details-selected-mask;
+            details-selected-anchor: root.pane1-details-selected-anchor;
+            details-focused-index: root.pane1-details-focused-index;
 
             address-submitted(p) => { root.pane1-address-submitted(p); }
             address-cancelled => { root.pane1-address-cancelled(); }
@@ -77,6 +113,11 @@ export component Workspace {
             tab-closed(i) => { root.pane1-tab-closed(i); }
             new-tab => { root.pane1-new-tab(); }
             pane-clicked => { root.pane1-clicked(); }
+            details-row-clicked(i, ctrl, shift) => { root.pane1-details-row-clicked(i, ctrl, shift); }
+            details-row-double-clicked(i) => { root.pane1-details-row-double-clicked(i); }
+            details-row-context-menu(i, x, y) => { root.pane1-details-row-context-menu(i, x, y); }
+            details-header-clicked(i) => { root.pane1-details-header-clicked(i); }
+            details-header-resize(i, w) => { root.pane1-details-header-resize(i, w); }
         }
     }
 }

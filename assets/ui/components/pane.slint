@@ -3,8 +3,14 @@ import { AddressBar } from "address-bar.slint";
 import { Breadcrumbs } from "breadcrumbs.slint";
 import { TabBar, TabEntry } from "tab-bar.slint";
 import { EmptyView } from "../views/empty-view.slint";
+import { DetailsView } from "../views/details/details-view.slint";
+import { EntryRowItem, ColumnSpec } from "../views/details/column.slint";
 
-// A single pane: address bar + breadcrumbs + tab bar + content placeholder.
+// A single pane: address bar + breadcrumbs + tab bar + content view.
+//
+// When view-mode is "Details" the DetailsView is shown; all other modes
+// fall back to EmptyView so that future agents can slot in Grid/Gallery/
+// Miller/Tree without touching this file.
 export component Pane {
     in property <bool> focused: false;
     in property <string> path: "";
@@ -13,6 +19,12 @@ export component Pane {
     in property <[TabEntry]> tabs: [];
     in property <int> active-tab: 0;
 
+    in property <[EntryRowItem]> details-rows: [];
+    in property <[ColumnSpec]> details-columns: [];
+    in property <[bool]> details-selected-mask: [];
+    in property <int> details-selected-anchor: -1;
+    in property <int> details-focused-index: -1;
+
     callback address-submitted(string);
     callback address-cancelled();
     callback breadcrumb-clicked(int);
@@ -20,6 +32,12 @@ export component Pane {
     callback tab-closed(int);
     callback new-tab();
     callback pane-clicked();
+
+    callback details-row-clicked(int, bool, bool);
+    callback details-row-double-clicked(int);
+    callback details-row-context-menu(int, length, length);
+    callback details-header-clicked(int);
+    callback details-header-resize(int, float);
 
     TouchArea {
         clicked => { root.pane-clicked(); }
@@ -62,7 +80,22 @@ export component Pane {
                     new-tab => { root.new-tab(); }
                 }
 
-                EmptyView {
+                if root.view-mode == "Details" : DetailsView {
+                    vertical-stretch: 1;
+                    rows: root.details-rows;
+                    columns: root.details-columns;
+                    selected-mask: root.details-selected-mask;
+                    selected-anchor: root.details-selected-anchor;
+                    focused-index: root.details-focused-index;
+
+                    row-clicked(i, ctrl, shift) => { root.details-row-clicked(i, ctrl, shift); }
+                    row-double-clicked(i) => { root.details-row-double-clicked(i); }
+                    row-context-menu(i, x, y) => { root.details-row-context-menu(i, x, y); }
+                    header-clicked(i) => { root.details-header-clicked(i); }
+                    header-resize(i, w) => { root.details-header-resize(i, w); }
+                }
+
+                if root.view-mode != "Details" : EmptyView {
                     view-mode: root.view-mode;
                     vertical-stretch: 1;
                 }

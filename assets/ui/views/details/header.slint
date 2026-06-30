@@ -1,0 +1,67 @@
+import { Theme } from "../../theme.slint";
+import { ColumnSpec } from "column.slint";
+
+// Column header bar with sort indicators and resize handles.
+//
+// Each column title is a click target that emits header-clicked(column_index).
+// The narrow right edge of each column is a drag target for resize.
+export component Header {
+    in property <[ColumnSpec]> columns: [];
+
+    callback header-clicked(int);
+    callback header-resize(int, float);
+
+    height: 26px;
+
+    Rectangle {
+        background: Theme.panel-bg;
+        border-width: 0px;
+
+        Rectangle {
+            y: parent.height - 1px;
+            height: 1px;
+            background: Theme.border;
+        }
+
+        HorizontalLayout {
+            spacing: 0px;
+
+            for col[i] in root.columns : Rectangle {
+                width: col.width;
+                horizontal-stretch: 0;
+                clip: true;
+
+                col-ta := TouchArea {
+                    width: parent.width - 4px;
+                    clicked => { root.header-clicked(i); }
+                }
+
+                HorizontalLayout {
+                    padding-left: Theme.spacing-sm;
+                    padding-right: Theme.spacing-sm;
+                    alignment: col.align-right ? end : start;
+                    spacing: Theme.spacing-xs;
+
+                    Text {
+                        text: col.title;
+                        color: Theme.fg;
+                        vertical-alignment: center;
+                        font-weight: 600;
+                    }
+
+                    if col.sort-dir != 0 : Text {
+                        text: col.sort-dir == 1 ? "↑" : "↓";
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                    }
+                }
+
+                resize-ta := TouchArea {
+                    x: parent.width - 4px;
+                    width: 4px;
+                    mouse-cursor: col-resize;
+                }
+            }
+        }
+    }
+}
