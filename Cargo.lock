@@ -526,14 +526,19 @@ name = "atlas-ipc"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "atlas-core",
  "bincode",
+ "crossbeam-channel",
  "directories",
  "futures",
  "interprocess",
+ "parking_lot",
  "serde",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -629,9 +634,12 @@ dependencies = [
  "anyhow",
  "atlas-core",
  "crossbeam-channel",
+ "dashmap",
  "notify",
  "notify-debouncer-full",
  "parking_lot",
+ "smallvec",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -1335,6 +1343,20 @@ dependencies = [
  "darling_core",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "dashmap"
+version = "6.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
 ]
 
 [[package]]
@@ -6012,6 +6034,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "futures-util",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]
