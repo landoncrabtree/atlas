@@ -1,0 +1,21 @@
+import { Theme } from "../theme.slint";
+
+// Placeholder content rendered inside a pane for any view mode.
+// Real Details/Grid/Miller/Tree/Gallery views land in follow-up agents.
+export component EmptyView {
+    in property <string> view-mode: "Details";
+
+    Rectangle {
+        background: Theme.bg;
+
+        Text {
+            width: 100%;
+            height: 100%;
+            text: view-mode + " view";
+            color: Theme.fg-muted;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            font-size: 14px;
+        }
+    }
+}

@@ -1,0 +1,96 @@
+import { Theme } from "../theme.slint";
+
+// Struct for a single tab entry.
+export struct TabEntry {
+    title: string,
+    dirty: bool,
+}
+
+// Horizontal tab strip for a single pane.
+// Emits select/close/new-tab events back to the parent.
+export component TabBar {
+    in property <[TabEntry]> tabs: [];
+    in property <int> active-index: 0;
+
+    callback select(int);
+    callback close(int);
+    callback new-tab();
+
+    height: Theme.tab-h;
+
+    Rectangle {
+        background: Theme.panel-bg;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        HorizontalLayout {
+            alignment: start;
+            spacing: 0px;
+
+            for tab[i] in tabs: Rectangle {
+                width: 160px;
+                height: Theme.tab-h;
+                background: i == active-index ? Theme.bg : #00000000;
+                border-width: 1px;
+                border-color: Theme.border;
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: Theme.spacing-xs;
+                    padding-left: Theme.spacing-sm;
+                    padding-right: Theme.spacing-xs;
+
+                    tab-label := Text {
+                        text: (tab.dirty ? "● " : "") + tab.title;
+                        color: i == active-index ? Theme.fg : Theme.fg-muted;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+
+                    // Close button
+                    TouchArea {
+                        width: 16px;
+                        height: 16px;
+                        clicked => { root.close(i); }
+
+                        Rectangle {
+                            border-radius: 8px;
+                            background: parent.has-hover ? Theme.border : #00000000;
+
+                            Text {
+                                text: "✕";
+                                color: Theme.fg-muted;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                TouchArea {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: Theme.tab-h;
+                    clicked => { root.select(i); }
+                }
+            }
+
+            // New tab button
+            TouchArea {
+                width: 32px;
+                height: Theme.tab-h;
+                clicked => { root.new-tab(); }
+
+                Text {
+                    text: "+";
+                    color: Theme.fg-muted;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

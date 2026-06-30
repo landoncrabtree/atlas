@@ -1,0 +1,134 @@
+import { Theme } from "../theme.slint";
+
+// Result item model for the command palette.
+export struct PaletteEntry {
+    title: string,
+    subtitle: string,
+    action-id: string,
+}
+
+// Modal command palette overlay.
+// Visible when `visible` is true; dims the background and shows a centered
+// search box with a scrollable result list.
+export component CommandPalette {
+    in-out property <string> query: "";
+    in property <[PaletteEntry]> results: [];
+    in property <int> selected-index: 0;
+
+    callback query-changed(string);
+    callback confirm(string /* action_id */);
+    callback dismiss();
+
+    if self.visible : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000088;
+
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => { root.dismiss(); }
+        }
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: parent.height * 0.15;
+            width: min(600px, parent.width - 48px);
+            height: min(420px, parent.height - 96px);
+            background: Theme.panel-bg;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: Theme.radius-md;
+
+            TouchArea {
+                width: 100%;
+                height: 100%;
+            }
+
+            VerticalLayout {
+                padding: Theme.spacing-sm;
+                spacing: Theme.spacing-sm;
+
+                Rectangle {
+                    height: 36px;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                    border-radius: Theme.radius-sm;
+                    background: Theme.bg;
+
+                    HorizontalLayout {
+                        padding-left: Theme.spacing-sm;
+                        padding-right: Theme.spacing-sm;
+
+                        TextInput {
+                            text <=> root.query;
+                            color: Theme.fg;
+                            font-size: Theme.font-size;
+                            vertical-alignment: center;
+                            single-line: true;
+                            edited => { root.query-changed(self.text); }
+                            accepted => {
+                                if results.length > 0 {
+                                    root.confirm(results[selected-index].action-id);
+                                }
+                            }
+                            key-pressed(event) => {
+                                if event.text == Key.Escape {
+                                    root.dismiss();
+                                    return accept;
+                                }
+                                reject;
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { height: 1px; background: Theme.border; }
+
+                Rectangle {
+                    vertical-stretch: 1;
+
+                    for entry[i] in results : Rectangle {
+                        height: 48px;
+                        background: i == selected-index ? Theme.selection-bg : #00000000;
+                        border-radius: Theme.radius-sm;
+
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => { root.confirm(entry.action-id); }
+                        }
+
+                        VerticalLayout {
+                            padding-left: Theme.spacing-sm;
+                            padding-right: Theme.spacing-sm;
+                            alignment: center;
+                            spacing: 2px;
+
+                            Text {
+                                text: entry.title;
+                                color: i == selected-index ? Theme.selection-fg : Theme.fg;
+                                font-size: 13px;
+                            }
+
+                            Text {
+                                text: entry.subtitle;
+                                color: Theme.fg-muted;
+                                font-size: 11px;
+                            }
+                        }
+                    }
+                }
+
+                if results.length == 0 : Text {
+                    text: query == "" ? "Type to search…" : "No results";
+                    color: Theme.fg-muted;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    height: 60px;
+                }
+            }
+        }
+    }
+}

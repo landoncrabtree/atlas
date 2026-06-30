@@ -16,15 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 atlas-ui.workspace = true
-atlas-core.workspace = true
-atlas-fs.workspace = true
-atlas-keymap.workspace = true
-atlas-config.workspace = true
-
 slint.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[build-dependencies]
-slint-build.workspace = true

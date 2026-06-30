@@ -1,0 +1,60 @@
+import { Theme } from "../theme.slint";
+
+// Bottom status bar: shows entry counts, current view/sort mode, and indexer status.
+export component StatusBar {
+    in property <int> total-entries: 0;
+    in property <int> selected-entries: 0;
+    in property <string> view-mode: "Details";
+    in property <string> sort-by: "Name";
+    in property <string> indexer-status: "Stopped";
+
+    height: Theme.statusbar-h;
+
+    Rectangle {
+        background: Theme.panel-bg;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        HorizontalLayout {
+            padding-left: Theme.spacing-sm;
+            padding-right: Theme.spacing-sm;
+            spacing: Theme.spacing-md;
+
+            Text {
+                text: selected-entries > 0
+                    ? selected-entries + " of " + total-entries + " selected"
+                    : total-entries + " items";
+                color: Theme.fg-muted;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            Text {
+                text: "View: " + view-mode;
+                color: Theme.fg-muted;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: "Sort: " + sort-by;
+                color: Theme.fg-muted;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: indexer-status;
+                color: indexer-status == "Error"
+                    ? Theme.error
+                    : indexer-status == "Stopped"
+                        ? Theme.fg-muted
+                        : Theme.success;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

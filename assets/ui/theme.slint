@@ -1,0 +1,35 @@
+// Design tokens for Atlas. Single source of truth for colors, spacing,
+// typography, and geometry. Set `Theme.dark` from Rust at startup.
+
+export global Theme {
+    in-out property <bool> dark: true;
+
+    out property <color> bg: dark ? #0e1116 : #f6f8fa;
+    out property <color> panel-bg: dark ? #161b22 : #ffffff;
+    out property <color> fg: dark ? #e6edf3 : #1f2328;
+    out property <color> fg-muted: dark ? #7d8590 : #636c76;
+    out property <color> border: dark ? #30363d : #d0d7de;
+    out property <color> accent: dark ? #2f81f7 : #0969da;
+    out property <color> accent-fg: #ffffff;
+    out property <color> selection-bg: dark ? #264f78 : #b6d5fb;
+    out property <color> selection-fg: dark ? #e6edf3 : #1f2328;
+    out property <color> error: dark ? #f85149 : #cf222e;
+    out property <color> success: dark ? #3fb950 : #1a7f37;
+    out property <color> warning: dark ? #d29922 : #9a6700;
+
+    out property <string> font-family: "Inter";
+    out property <length> font-size: 13px;
+    out property <string> monospace: "JetBrains Mono";
+
+    out property <length> radius-sm: 4px;
+    out property <length> radius-md: 8px;
+
+    out property <length> spacing-xs: 4px;
+    out property <length> spacing-sm: 8px;
+    out property <length> spacing-md: 12px;
+    out property <length> spacing-lg: 16px;
+
+    out property <length> titlebar-h: 38px;
+    out property <length> statusbar-h: 24px;
+    out property <length> tab-h: 32px;
+}

@@ -1,0 +1,72 @@
+import { Theme } from "../theme.slint";
+import { AddressBar } from "address-bar.slint";
+import { Breadcrumbs } from "breadcrumbs.slint";
+import { TabBar, TabEntry } from "tab-bar.slint";
+import { EmptyView } from "../views/empty-view.slint";
+
+// A single pane: address bar + breadcrumbs + tab bar + content placeholder.
+export component Pane {
+    in property <bool> focused: false;
+    in property <string> path: "";
+    in property <[string]> path-segments: [];
+    in property <string> view-mode: "Details";
+    in property <[TabEntry]> tabs: [];
+    in property <int> active-tab: 0;
+
+    callback address-submitted(string);
+    callback address-cancelled();
+    callback breadcrumb-clicked(int);
+    callback tab-selected(int);
+    callback tab-closed(int);
+    callback new-tab();
+    callback pane-clicked();
+
+    TouchArea {
+        clicked => { root.pane-clicked(); }
+
+        Rectangle {
+            background: Theme.bg;
+            border-width: focused ? 1px : 0px;
+            border-color: Theme.accent;
+
+            VerticalLayout {
+                spacing: 0px;
+
+                Rectangle {
+                    height: 38px;
+                    background: Theme.panel-bg;
+                    border-width: 1px;
+                    border-color: Theme.border;
+
+                    HorizontalLayout {
+                        padding: Theme.spacing-sm;
+
+                        AddressBar {
+                            path: root.path;
+                            submitted(p) => { root.address-submitted(p); }
+                            cancelled => { root.address-cancelled(); }
+                        }
+                    }
+                }
+
+                Breadcrumbs {
+                    segments: root.path-segments;
+                    clicked(i) => { root.breadcrumb-clicked(i); }
+                }
+
+                TabBar {
+                    tabs: root.tabs;
+                    active-index: root.active-tab;
+                    select(i) => { root.tab-selected(i); }
+                    close(i) => { root.tab-closed(i); }
+                    new-tab => { root.new-tab(); }
+                }
+
+                EmptyView {
+                    view-mode: root.view-mode;
+                    vertical-stretch: 1;
+                }
+            }
+        }
+    }
+}

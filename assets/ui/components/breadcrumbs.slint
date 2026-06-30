@@ -1,0 +1,46 @@
+import { Theme } from "../theme.slint";
+
+// Path breadcrumb strip. The Rust side splits the path string into segments
+// and passes them as a model. Each segment is a clickable text button.
+export component Breadcrumbs {
+    in property <[string]> segments: [];
+    callback clicked(int /* segment index */);
+
+    height: 28px;
+
+    Rectangle {
+        background: Theme.panel-bg;
+
+        HorizontalLayout {
+            alignment: start;
+            padding-left: Theme.spacing-sm;
+            spacing: 0px;
+
+            for seg[i] in segments: HorizontalLayout {
+                spacing: 0px;
+                alignment: center;
+
+                TouchArea {
+                    width: seg-text.width + Theme.spacing-sm * 2;
+                    height: 28px;
+                    clicked => { root.clicked(i); }
+
+                    seg-text := Text {
+                        text: seg;
+                        color: i == segments.length - 1 ? Theme.fg : Theme.accent;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Separator between segments (not after the last)
+                if i < segments.length - 1 : Text {
+                    text: "/";
+                    color: Theme.fg-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

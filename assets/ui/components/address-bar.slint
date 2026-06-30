@@ -1,0 +1,50 @@
+import { Theme } from "../theme.slint";
+
+// Editable path input. Shows a small ↵ icon on the right.
+// Emits `submitted(path)` on Enter, `cancelled` on Escape.
+export component AddressBar {
+    in-out property <string> path: "";
+    callback submitted(string);
+    callback cancelled();
+
+    height: 30px;
+
+    Rectangle {
+        background: Theme.bg;
+        border-color: Theme.border;
+        border-width: 1px;
+        border-radius: Theme.radius-sm;
+
+        HorizontalLayout {
+            padding-left: Theme.spacing-sm;
+            padding-right: Theme.spacing-sm;
+            spacing: Theme.spacing-xs;
+
+            input := TextInput {
+                text <=> root.path;
+                color: Theme.fg;
+                font-size: Theme.font-size;
+                vertical-alignment: center;
+                single-line: true;
+
+                accepted => { root.submitted(self.text); }
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        root.cancelled();
+                        return accept;
+                    }
+                    reject;
+                }
+            }
+
+            Text {
+                text: "↵";
+                color: Theme.fg-muted;
+                font-size: 14px;
+                vertical-alignment: center;
+                horizontal-alignment: right;
+                width: 18px;
+            }
+        }
+    }
+}

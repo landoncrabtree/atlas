@@ -1,32 +1,170 @@
-// Atlas — initial Slint hello-window.
-// This will grow into the full app shell (workspace -> panes -> tabs -> views).
+import { Theme } from "theme.slint";
+import { Titlebar } from "components/titlebar.slint";
+import { Workspace } from "components/workspace.slint";
+import { StatusBar } from "components/status-bar.slint";
+import { CommandPalette, PaletteEntry } from "components/command-palette.slint";
+import { TabEntry } from "components/tab-bar.slint";
 
+// Entry-point component for the Atlas application window.
+//
+// Key-map stop-gap (Slint-level): Esc, Cmd/Ctrl-Shift-P, Cmd/Ctrl-P, Tab are
+// handled here via a FocusScope. This is intentionally minimal — a full
+// chord-sequence resolver integrating atlas-keymap is a follow-up todo.
 export component AtlasWindow inherits Window {
     title: "Atlas";
-    preferred-width: 1100px;
-    preferred-height: 720px;
-    background: #0e1116;
-    default-font-size: 14px;
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    background: Theme.bg;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
 
-    in property <string> tagline: "a file explorer — pre-alpha";
+    in property <bool> dark: true;
 
-    VerticalLayout {
-        alignment: center;
-        spacing: 12px;
+    in property <bool> dual-pane: false;
+    in property <int> focus-index: 0;
 
-        Text {
-            text: "Atlas";
-            font-size: 28px;
-            font-weight: 600;
-            color: #e6edf3;
-            horizontal-alignment: center;
+    in property <string> pane0-path: "";
+    in property <[string]> pane0-segments: [];
+    in property <string> pane0-view-mode: "Details";
+    in property <[TabEntry]> pane0-tabs: [{ title: "Home", dirty: false }];
+    in property <int> pane0-active-tab: 0;
+
+    in property <string> pane1-path: "";
+    in property <[string]> pane1-segments: [];
+    in property <string> pane1-view-mode: "Details";
+    in property <[TabEntry]> pane1-tabs: [];
+    in property <int> pane1-active-tab: 0;
+
+    in property <int> total-entries: 0;
+    in property <int> selected-entries: 0;
+    in property <string> status-view-mode: "Details";
+    in property <string> sort-by: "Name";
+    in property <string> indexer-status: "Stopped";
+
+    in property <bool> palette-visible: false;
+    in-out property <string> palette-query: "";
+    in property <[PaletteEntry]> palette-results: [];
+    in property <int> palette-selected: 0;
+
+    callback palette-query-changed(string);
+    callback palette-confirm(string);
+    callback palette-dismiss();
+
+    callback pane0-address-submitted(string);
+    callback pane0-address-cancelled();
+    callback pane0-breadcrumb-clicked(int);
+    callback pane0-tab-selected(int);
+    callback pane0-tab-closed(int);
+    callback pane0-new-tab();
+    callback pane0-focused();
+
+    callback pane1-address-submitted(string);
+    callback pane1-address-cancelled();
+    callback pane1-breadcrumb-clicked(int);
+    callback pane1-tab-selected(int);
+    callback pane1-tab-closed(int);
+    callback pane1-new-tab();
+    callback pane1-focused();
+
+    callback toggle-palette();
+    callback cycle-pane-focus();
+
+    pure function location-str() -> string {
+        dual-pane
+            ? (focus-index == 0 ? pane0-path : pane1-path)
+            : pane0-path
+    }
+
+    init => {
+        Theme.dark = dark;
+    }
+
+    changed dark => { Theme.dark = dark; }
+
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape && palette-visible {
+                root.palette-dismiss();
+                return accept;
+            }
+            if (event.modifiers.meta || event.modifiers.control) && event.text == "p" {
+                root.toggle-palette();
+                return accept;
+            }
+            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && event.text == "p" {
+                root.toggle-palette();
+                return accept;
+            }
+            if event.text == Key.Tab && dual-pane && !palette-visible {
+                root.cycle-pane-focus();
+                return accept;
+            }
+            reject;
         }
 
-        Text {
-            text: tagline;
-            font-size: 14px;
-            color: #7d8590;
-            horizontal-alignment: center;
+        VerticalLayout {
+            spacing: 0px;
+
+            Titlebar {
+                app-name: "Atlas";
+                location: location-str();
+            }
+
+            Workspace {
+                vertical-stretch: 1;
+                dual-pane: root.dual-pane;
+                focus-index: root.focus-index;
+
+                pane0-path: root.pane0-path;
+                pane0-segments: root.pane0-segments;
+                pane0-view-mode: root.pane0-view-mode;
+                pane0-tabs: root.pane0-tabs;
+                pane0-active-tab: root.pane0-active-tab;
+
+                pane1-path: root.pane1-path;
+                pane1-segments: root.pane1-segments;
+                pane1-view-mode: root.pane1-view-mode;
+                pane1-tabs: root.pane1-tabs;
+                pane1-active-tab: root.pane1-active-tab;
+
+                pane0-address-submitted(p) => { root.pane0-address-submitted(p); }
+                pane0-address-cancelled => { root.pane0-address-cancelled(); }
+                pane0-breadcrumb-clicked(i) => { root.pane0-breadcrumb-clicked(i); }
+                pane0-tab-selected(i) => { root.pane0-tab-selected(i); }
+                pane0-tab-closed(i) => { root.pane0-tab-closed(i); }
+                pane0-new-tab => { root.pane0-new-tab(); }
+                pane0-clicked => { root.pane0-focused(); }
+
+                pane1-address-submitted(p) => { root.pane1-address-submitted(p); }
+                pane1-address-cancelled => { root.pane1-address-cancelled(); }
+                pane1-breadcrumb-clicked(i) => { root.pane1-breadcrumb-clicked(i); }
+                pane1-tab-selected(i) => { root.pane1-tab-selected(i); }
+                pane1-tab-closed(i) => { root.pane1-tab-closed(i); }
+                pane1-new-tab => { root.pane1-new-tab(); }
+                pane1-clicked => { root.pane1-focused(); }
+            }
+
+            StatusBar {
+                total-entries: root.total-entries;
+                selected-entries: root.selected-entries;
+                view-mode: root.status-view-mode;
+                sort-by: root.sort-by;
+                indexer-status: root.indexer-status;
+            }
+        }
+
+        CommandPalette {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            visible: root.palette-visible;
+            query <=> root.palette-query;
+            results: root.palette-results;
+            selected-index: root.palette-selected;
+            query-changed(q) => { root.palette-query-changed(q); }
+            confirm(id) => { root.palette-confirm(id); }
+            dismiss => { root.palette-dismiss(); }
         }
     }
 }

@@ -1,0 +1,82 @@
+import { Theme } from "../theme.slint";
+import { Pane } from "pane.slint";
+import { TabEntry } from "tab-bar.slint";
+
+// Container for one or two Pane children with an optional vertical splitter.
+export component Workspace {
+    in property <bool> dual-pane: false;
+    in property <int> focus-index: 0;
+
+    in property <string> pane0-path: "";
+    in property <[string]> pane0-segments: [];
+    in property <string> pane0-view-mode: "Details";
+    in property <[TabEntry]> pane0-tabs: [];
+    in property <int> pane0-active-tab: 0;
+
+    in property <string> pane1-path: "";
+    in property <[string]> pane1-segments: [];
+    in property <string> pane1-view-mode: "Details";
+    in property <[TabEntry]> pane1-tabs: [];
+    in property <int> pane1-active-tab: 0;
+
+    callback pane0-address-submitted(string);
+    callback pane0-address-cancelled();
+    callback pane0-breadcrumb-clicked(int);
+    callback pane0-tab-selected(int);
+    callback pane0-tab-closed(int);
+    callback pane0-new-tab();
+    callback pane0-clicked();
+
+    callback pane1-address-submitted(string);
+    callback pane1-address-cancelled();
+    callback pane1-breadcrumb-clicked(int);
+    callback pane1-tab-selected(int);
+    callback pane1-tab-closed(int);
+    callback pane1-new-tab();
+    callback pane1-clicked();
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        Pane {
+            horizontal-stretch: 1;
+            focused: focus-index == 0;
+            path: root.pane0-path;
+            path-segments: root.pane0-segments;
+            view-mode: root.pane0-view-mode;
+            tabs: root.pane0-tabs;
+            active-tab: root.pane0-active-tab;
+
+            address-submitted(p) => { root.pane0-address-submitted(p); }
+            address-cancelled => { root.pane0-address-cancelled(); }
+            breadcrumb-clicked(i) => { root.pane0-breadcrumb-clicked(i); }
+            tab-selected(i) => { root.pane0-tab-selected(i); }
+            tab-closed(i) => { root.pane0-tab-closed(i); }
+            new-tab => { root.pane0-new-tab(); }
+            pane-clicked => { root.pane0-clicked(); }
+        }
+
+        if dual-pane : Rectangle {
+            width: 1px;
+            background: Theme.border;
+        }
+
+        if dual-pane : Pane {
+            horizontal-stretch: 1;
+            focused: focus-index == 1;
+            path: root.pane1-path;
+            path-segments: root.pane1-segments;
+            view-mode: root.pane1-view-mode;
+            tabs: root.pane1-tabs;
+            active-tab: root.pane1-active-tab;
+
+            address-submitted(p) => { root.pane1-address-submitted(p); }
+            address-cancelled => { root.pane1-address-cancelled(); }
+            breadcrumb-clicked(i) => { root.pane1-breadcrumb-clicked(i); }
+            tab-selected(i) => { root.pane1-tab-selected(i); }
+            tab-closed(i) => { root.pane1-tab-closed(i); }
+            new-tab => { root.pane1-new-tab(); }
+            pane-clicked => { root.pane1-clicked(); }
+        }
+    }
+}
