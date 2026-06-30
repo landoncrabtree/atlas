@@ -1,67 +1,148 @@
-# Atlas
+<h1 align="center">Atlas</h1>
 
-A cross-platform, performance-focused file explorer for developers and power users.
+<p align="center">
+  A cross-platform, performance-focused file explorer for developers and power users.
+</p>
 
-> Status: pre-alpha, in active development. macOS first; Linux and Windows to follow.
+<p align="center">
+  <a href="https://github.com/landoncrabtree/atlas/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/landoncrabtree/atlas/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Status" src="https://img.shields.io/badge/status-pre--alpha-orange">
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blue">
+  <img alt="License" src="https://img.shields.io/badge/license-proprietary-lightgrey">
+</p>
+
+> **Status**: pre-alpha. macOS first; Linux and Windows to follow.
+
+---
+
+## What is Atlas?
+
+Atlas is a keyboard-first file manager built for people who live in their file tree: developers, sysadmins, data folks, and power users. It combines the **speed of terminal tools** (Yazi, nnn), the **ergonomics of orthodox file managers** (Total Commander, Marta, fman), and a **modern GPU-rendered UI**.
+
+It's the file manager we wanted: fast, scriptable, keyboard-driven, with no compromises on polish.
 
 ## Why
 
-Existing file managers force a trade-off:
-- **OS defaults** (Finder, Explorer, Nautilus) are slow, feature-thin, and not keyboard-driven.
-- **Power-user GUIs** (fman, Marta, Total Commander, Krusader) have OFM ergonomics but are aging, often closed, frequently single-platform, and feel dated.
+Today's options force a trade-off:
+
+- **OS defaults** (Finder, Explorer, Nautilus) are slow, feature-thin, and mouse-driven.
+- **Power-user GUIs** (fman, Marta, Total Commander, Krusader) have great ergonomics but are aging, often closed, frequently single-platform, and feel dated.
 - **TUI tools** (Yazi, nnn) are fast and scriptable but ceiling-limited by the terminal.
 
-Atlas combines Yazi's async-Rust speed, Marta-class polish, fman's plugin DX, and Total Commander's depth in a GPU-rendered modern UI.
+Atlas refuses the trade-off.
 
-## Stack
+## Features
 
-- **Rust** + **[Slint](https://slint.dev)** (GPU-rendered via Skia, declarative UI)
-- **[tantivy](https://github.com/quickwit-oss/tantivy)** index in a background `atlas-indexd` daemon
-- **[ignore](https://crates.io/crates/ignore)** parallel walker, **[notify](https://crates.io/crates/notify)** watcher
-- **[nucleo](https://crates.io/crates/nucleo)** fuzzy matcher, **[grep](https://crates.io/crates/grep)** crates (ripgrep guts) for content search
-- **SQLite** thumbnail cache, **TOML** config
+### Shipping in MVP
 
-## Repository layout
+- **Multiple view modes** — Details, Grid, Gallery, Miller columns, Tree
+- **Dual-pane layout** with cross-pane file operations
+- **Tabs per pane**
+- **Command palette** (`⌘⇧P`) and goto-anything (`⌘P`)
+- **Keyboard-first** — every action is reachable without the mouse; vim navigation; configurable keymap
+- **F-key file operations** — F3 view, F4 edit, F5 copy, F6 move, F7 mkdir, F8 delete
+- **Fuzzy search** powered by `nucleo`
+- **Content search** powered by the `ripgrep` engine, with regex
+- **Background indexer daemon** — instant search across millions of files
+- **GPU-rendered UI** via Slint + Skia, never blocks on I/O
+- **Bulk rename** with regex and live preview
+- **Themes** (dark + light, TOML-customizable)
+- **TOML config** with hot reload
 
-```
-crates/
-├── atlas-app        # Slint application binary
-├── atlas-ui         # views, components, theme
-├── atlas-core       # shared types, traits, events
-├── atlas-fs         # filesystem abstraction + walker + ops
-├── atlas-watch      # notify integration, debouncing
-├── atlas-index      # tantivy schema + queries (library)
-├── atlas-indexd     # background daemon binary
-├── atlas-search    # unified search facade
-├── atlas-ops        # file operations queue with progress
-├── atlas-keymap     # action dispatch + keymap config
-├── atlas-config     # TOML config load/save/watch
-├── atlas-ipc        # daemon <-> app protocol + transport
-└── atlas-thumbs     # thumbnail generator + sqlite cache
-```
+### Planned (post-MVP)
 
-## Prerequisites
+- Remote and cloud filesystems (SSH/SFTP, S3, Azure Blob, GCS, WebDAV, SMB)
+- Plugin system with capability-based sandboxing
+- N-pane splits and workspaces (save/restore layouts)
+- Git-aware columns
+- Embedded terminal
+- Container/devcontainer awareness
+- AI-assisted semantic search (local-model-first)
 
-- **Rust stable** (auto-installed via `rust-toolchain.toml`).
-- **macOS**: Apple Command Line Tools (`xcode-select --install`) provide the C/C++ toolchain that Skia's bindings need. The full Xcode IDE is **not** required.
-- **Linux**: standard build essentials plus `libfontconfig1-dev`, `libxkbcommon-dev`, and either `libwayland-dev` or X11 dev headers depending on your session.
-- **Windows**: MSVC build tools.
+See [`docs/architecture.md`](docs/architecture.md) for the design that makes all this tractable.
 
-## Building
+## Screenshots
+
+> Coming soon. The shell is being assembled; expect screenshots once Grid and Miller views land.
+
+## Installation
+
+> Pre-built binaries will be published once Atlas reaches alpha. Until then, build from source.
+
+### From source
 
 ```bash
-# build everything
-cargo build
-
-# run the app
-cargo run -p atlas-app
-
-# fmt + lint + test
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+git clone https://github.com/landoncrabtree/atlas.git
+cd atlas
+cargo build --release
+./target/release/atlas
 ```
+
+Toolchain prerequisites and platform-specific notes live in [`docs/developer-setup.md`](docs/developer-setup.md).
+
+## Quick start
+
+```bash
+cargo run -p atlas-app           # run the app from source
+cargo run -p atlas-indexd        # run the indexer daemon
+```
+
+Default keybindings:
+
+| Key | Action |
+|---|---|
+| `⌘⇧P` | Open command palette |
+| `⌘P` | Goto anything (paths) |
+| `⌘T` / `⌘W` | New tab / close tab |
+| `Tab` | Switch focus between panes |
+| `hjkl` | Vim-style navigation |
+| `Enter` | Activate (cd or open) |
+| `Backspace` | Go up one directory |
+| `Space` | Toggle selection |
+| `F3` | View · `F4` Edit · `F5` Copy · `F6` Move · `F7` Mkdir · `F8` Delete |
+
+User overrides live at `~/.config/atlas/keymap.toml`.
+
+## Performance
+
+Performance is a defining feature, not an afterthought. Goals include cold launch under 200 ms, smooth 60+ fps scrolling through 100k-file directories, and fuzzy search across a million paths in under 50 ms. Benchmark methodology and current numbers are in [`docs/performance.md`](docs/performance.md).
+
+## Configuration
+
+User config lives at `~/.config/atlas/config.toml` (or `%APPDATA%\Atlas\config.toml` on Windows). The file is heavily commented and supports hot reload — save it, and Atlas picks up the change immediately.
+
+```toml
+[ui]
+theme = "atlas-dark"
+font_family = "Inter"
+font_size = 14.0
+density = "comfortable"
+
+[view]
+default_mode = "details"
+show_hidden = false
+natural_sort = true
+dirs_first = true
+
+[indexer]
+enabled = true
+roots = ["~/code", "~/Documents"]
+respect_gitignore = true
+```
+
+## Documentation
+
+- [`docs/architecture.md`](docs/architecture.md) — crate layout, process model, threading model
+- [`docs/developer-setup.md`](docs/developer-setup.md) — toolchain, prerequisites, daily commands
+- [`docs/performance.md`](docs/performance.md) — performance goals, principles, benchmark methodology
+- [`docs/contributing.md`](docs/contributing.md) — workflow, commit conventions, code style
+
+## Contributing
+
+Atlas is proprietary, but contributions are welcome at the maintainer's discretion. Start with [`docs/contributing.md`](docs/contributing.md) for the workflow and quality bar.
 
 ## License
 
-Proprietary. All rights reserved. See `LICENSE`.
+Atlas is **proprietary** software. All rights reserved. See [`LICENSE`](LICENSE).
+
+Atlas builds on top of excellent open-source software — notably [Slint](https://slint.dev), [tantivy](https://github.com/quickwit-oss/tantivy), the [ripgrep](https://github.com/BurntSushi/ripgrep) family of crates, and [nucleo](https://github.com/helix-editor/nucleo). Atlas's use of Slint operates under the appropriate Slint license track (see [`docs/developer-setup.md`](docs/developer-setup.md)).
