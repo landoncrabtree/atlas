@@ -1,0 +1,130 @@
+# Atlas Configuration File
+# ──────────────────────────────────────────────────────────────────────────────
+# All settings are optional. Missing keys fall back to built-in defaults.
+# Documentation: https://github.com/landoncrabtree/atlas
+#
+# Environment override: set ATLAS_CONFIG_DIR to point to a different directory
+# containing this file (useful for portable installs and testing).
+# ──────────────────────────────────────────────────────────────────────────────
+
+[general]
+# Directory to open on startup. Defaults to your home directory when unset.
+# start_path = "/home/user/projects"
+
+# Show a confirmation dialog before quitting.
+confirm_on_quit = false
+
+# Follow symbolic links when listing directory contents.
+follow_symlinks = true
+
+# Enable vim-inspired key bindings (hjkl navigation, :q to quit, …).
+vim_mode = false
+
+[ui]
+# Colour theme. Built-in values: "atlas-dark", "atlas-light".
+# Custom themes can be placed in your config directory.
+theme = "atlas-dark"
+
+# UI font family name. Must be installed on the system.
+font_family = "Inter"
+
+# UI font size in points. Clamped to the range [8.0, 72.0] at load time.
+font_size = 14.0
+
+# Monospace font used in the preview pane and code views.
+monospace_font_family = "JetBrains Mono"
+
+# Layout density of the file list: "compact", "comfortable", or "spacious".
+density = "comfortable"
+
+# Show the status bar at the bottom of the window.
+show_status_bar = true
+
+# Show the breadcrumb path navigation bar above the file list.
+show_breadcrumbs = true
+
+# Enable UI animations and transitions.
+animations = true
+
+[view]
+# Default view mode: "details", "grid", "gallery", "miller", or "tree".
+default_mode = "details"
+
+# Show hidden files and directories (those starting with a dot on Unix).
+show_hidden = false
+
+# Use natural sort order so "file10" sorts after "file9".
+natural_sort = true
+
+# List directories before files in every view mode.
+dirs_first = true
+
+# Default column to sort by: "name", "size", "modified", "kind", "extension".
+default_sort_key = "name"
+
+# Default sort direction: "asc" (A → Z) or "desc" (Z → A).
+default_sort_order = "asc"
+
+[navigation]
+# Number of visited locations to keep in the back/forward history.
+history_size = 100
+
+# Re-open the last visited directory when Atlas starts.
+remember_last_location = true
+
+[indexer]
+# Enable the background file indexer for instant search across all roots.
+enabled = true
+
+# Directories to index. Leave empty to configure via the Atlas UI instead.
+# Example:
+# roots = ["/home/user/projects", "/home/user/documents"]
+roots = []
+
+# Honour .gitignore (and similar) files during indexing.
+respect_gitignore = true
+
+# Maximum memory the indexer may consume, in megabytes (minimum: 16).
+max_memory_mb = 256
+
+[search]
+# Maximum number of fuzzy-search results returned per query.
+fuzzy_max_results = 200
+
+# Number of threads used for full-text content search.
+# Defaults to the number of available CPU cores when unset.
+# content_search_threads = 4
+
+# Glob patterns excluded from every search. Entries use forward slashes on all
+# platforms and may end with "/" to match directories only.
+default_globs_exclude = [".git/", "node_modules/", "target/"]
+
+[thumbnails]
+# Generate image thumbnails in grid and gallery views.
+enabled = true
+
+# Maximum disk space reserved for the thumbnail cache, in megabytes (minimum: 1).
+cache_max_size_mb = 500
+
+# Number of threads for thumbnail generation. Defaults to CPU core count when unset.
+# generation_threads = 2
+
+# Skip thumbnail generation for files larger than this limit, in megabytes.
+# Prevents very large images from stalling the UI.
+generate_for_size_up_to_mb = 100
+
+# ── Bookmarks ─────────────────────────────────────────────────────────────────
+# Bookmarks appear in the sidebar for quick navigation.
+# Add one [[bookmarks]] entry per location. Tilde (~) is expanded to $HOME.
+#
+# [[bookmarks]]
+# name = "Home"
+# path = "~"
+#
+# [[bookmarks]]
+# name = "Projects"
+# path = "~/projects"
+#
+# [[bookmarks]]
+# name = "Downloads"
+# path = "~/Downloads"
