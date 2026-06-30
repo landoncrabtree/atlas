@@ -20,3 +20,10 @@ notify.workspace = true
 notify-debouncer-full.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
+smallvec.workspace = true
+dashmap.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+crossbeam-channel.workspace = true
+dashmap.workspace = true
