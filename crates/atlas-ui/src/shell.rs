@@ -18,7 +18,8 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 use crate::{
     actions::{ActionSink, UiAction},
     models::{PaletteModel, PaletteResult, StatusModel, WorkspaceModel},
-    theme::ThemeMode,
+    theme::{ThemeMode, ThemeTokens},
+    theming::defaults,
     views::details::DetailsController,
     AtlasWindow, PaletteEntry, TabEntry,
 };
@@ -331,15 +332,70 @@ impl AppShell {
         });
     }
 
-    /// Apply a theme mode.
+    /// Apply a theme mode (convenience wrapper over [`Self::apply_theme`]).
+    ///
+    /// Loads the built-in tokens for `theme` and delegates to `apply_theme`.
     pub fn set_theme(self: &Arc<Self>, theme: ThemeMode) {
-        let is_dark = theme.is_dark();
+        let tokens = if theme.is_dark() {
+            defaults::default_dark()
+        } else {
+            defaults::default_light()
+        };
+        self.apply_theme(&tokens);
+    }
+
+    /// Push all [`ThemeTokens`] into the Slint `Theme` global.
+    ///
+    /// Color, typography, and chrome values are forwarded through the
+    /// `theme-*` bridge properties on `AtlasWindow` (defined in
+    /// `assets/ui/atlas.slint`), which propagate them to the `Theme` global
+    /// via `changed` callbacks.
+    ///
+    /// May be called from any thread; updates are marshalled onto the Slint
+    /// event loop via [`slint::invoke_from_event_loop`].
+    pub fn apply_theme(self: &Arc<Self>, tokens: &ThemeTokens) {
+        let tokens = tokens.clone();
         let shell = Arc::clone(self);
         let _ = slint::invoke_from_event_loop(move || {
             let Some(window) = shell.window.upgrade() else {
                 return;
             };
-            window.set_dark(is_dark);
+
+            // Colors
+            let c = &tokens.colors;
+            window.set_theme_bg(c.bg.to_slint_color());
+            window.set_theme_panel_bg(c.panel_bg.to_slint_color());
+            window.set_theme_fg(c.fg.to_slint_color());
+            window.set_theme_fg_muted(c.fg_muted.to_slint_color());
+            window.set_theme_border(c.border.to_slint_color());
+            window.set_theme_accent(c.accent.to_slint_color());
+            window.set_theme_accent_fg(c.accent_fg.to_slint_color());
+            window.set_theme_selection_bg(c.selection_bg.to_slint_color());
+            window.set_theme_selection_fg(c.selection_fg.to_slint_color());
+            window.set_theme_error(c.error.to_slint_color());
+            window.set_theme_success(c.success.to_slint_color());
+            window.set_theme_warning(c.warning.to_slint_color());
+
+            // Typography
+            let t = &tokens.typography;
+            window.set_theme_font_family(t.font_family.as_str().into());
+            window.set_theme_monospace(t.monospace_family.as_str().into());
+            window.set_theme_font_size(t.font_size_pt);
+
+            // Chrome
+            let ch = &tokens.chrome;
+            window.set_theme_titlebar_h(ch.titlebar_h_px);
+            window.set_theme_statusbar_h(ch.statusbar_h_px);
+            window.set_theme_tab_h(ch.tab_h_px);
+            window.set_theme_radius_sm(ch.radius_sm_px);
+            window.set_theme_radius_md(ch.radius_md_px);
+            window.set_theme_spacing_xs(ch.spacing_xs_px);
+            window.set_theme_spacing_sm(ch.spacing_sm_px);
+            window.set_theme_spacing_md(ch.spacing_md_px);
+            window.set_theme_spacing_lg(ch.spacing_lg_px);
+
+            // Dark-mode hint
+            window.set_dark(tokens.mode.is_dark());
         });
     }
 }

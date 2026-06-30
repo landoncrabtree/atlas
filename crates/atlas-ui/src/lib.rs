@@ -15,6 +15,7 @@ pub mod focus;
 pub mod models;
 pub mod shell;
 pub mod theme;
+pub mod theming;
 pub mod views;
 
 pub use views::details::ColumnSpec as DetailsColumnSpec;

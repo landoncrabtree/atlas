@@ -424,8 +424,11 @@ name = "atlas-app"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "arc-swap",
+ "atlas-config",
  "atlas-fs",
  "atlas-ui",
+ "crossbeam-channel",
  "slint",
  "tracing",
  "tracing-subscriber",
@@ -623,14 +626,22 @@ dependencies = [
 name = "atlas-ui"
 version = "0.0.1"
 dependencies = [
+ "arc-swap",
  "atlas-core",
  "atlas-fs",
  "crossbeam-channel",
  "directories",
+ "notify",
+ "notify-debouncer-full",
  "parking_lot",
+ "serde",
+ "serial_test",
  "slint",
  "slint-build",
  "smallvec",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
  "tracing",
 ]
 

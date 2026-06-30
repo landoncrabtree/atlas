@@ -59,8 +59,6 @@ Atlas refuses the trade-off.
 - Container/devcontainer awareness
 - AI-assisted semantic search (local-model-first)
 
-See [`docs/architecture.md`](docs/architecture.md) for the design that makes all this tractable.
-
 ## Screenshots
 
 > Coming soon. The shell is being assembled; expect screenshots once Grid and Miller views land.
@@ -105,7 +103,16 @@ User overrides live at `~/.config/atlas/keymap.toml`.
 
 ## Performance
 
-Performance is a defining feature, not an afterthought. Goals include cold launch under 200 ms, smooth 60+ fps scrolling through 100k-file directories, and fuzzy search across a million paths in under 50 ms. Benchmark methodology and current numbers are in [`docs/performance.md`](docs/performance.md).
+Performance is a defining feature, not an afterthought. Goals (MVP):
+
+- **Cold launch** to first interactive frame in under **200 ms** on M-series Macs
+- **Smooth 60+ fps** scrolling through 100k-file directories
+- **Fuzzy path search** across a 1M-doc index in under **50 ms** p99
+- **Content search** within **1.2× of `ripgrep`** on the same fixture
+- **Memory** under **250 MB** resident after an hour of typical use
+- **Single-binary `.app` bundle** under **30 MB** compressed
+
+Benchmark numbers will appear here as the harness lands.
 
 ## Configuration
 
@@ -132,9 +139,7 @@ respect_gitignore = true
 
 ## Documentation
 
-- [`docs/architecture.md`](docs/architecture.md) — crate layout, process model, threading model
 - [`docs/developer-setup.md`](docs/developer-setup.md) — toolchain, prerequisites, daily commands
-- [`docs/performance.md`](docs/performance.md) — performance goals, principles, benchmark methodology
 - [`docs/contributing.md`](docs/contributing.md) — workflow, commit conventions, code style
 
 ## Contributing

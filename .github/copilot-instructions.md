@@ -37,22 +37,7 @@ We already evaluated and rejected **gpui** (requires full Xcode for Metal shader
 
 ## Workspace layout
 
-```
-crates/
-├── atlas-app        # Slint binary
-├── atlas-ui         # views, components, theme, AppShell adapter
-├── atlas-core       # shared types/traits, error, path helpers
-├── atlas-fs         # async streaming filesystem layer + LocationViewModel
-├── atlas-watch      # notify wrapper (debounced)
-├── atlas-index      # tantivy-backed path/name index library
-├── atlas-indexd     # background daemon binary
-├── atlas-search     # unified search facade (content/fuzzy/index)
-├── atlas-ops        # file operations queue (copy/move/delete/rename/mkdir)
-├── atlas-keymap     # chord sequences, layered keymap, action registry
-├── atlas-config     # TOML config + hot reload
-├── atlas-ipc        # daemon ↔ app protocol + transport
-└── atlas-thumbs     # thumbnail generator + SQLite cache
-```
+13 crates under `crates/atlas-*` — see [`.github/instructions/architecture.instructions.md`](instructions/architecture.instructions.md) for the full inventory, purpose, and key dependencies per crate.
 
 Each crate's `Cargo.toml` consumes dependencies via `workspace.dependencies`. Add to the **crate's** `Cargo.toml` from existing workspace deps. **Do not** add new dependencies to the root workspace `Cargo.toml` without explicit approval.
 
@@ -75,12 +60,7 @@ Each crate's `Cargo.toml` consumes dependencies via `workspace.dependencies`. Ad
 
 ### Performance hygiene
 
-- No blocking I/O on the UI thread or any thread serving the UI.
-- Streaming over batching where possible (use `crossbeam_channel::Receiver<Event>` patterns).
-- Reach for `parking_lot::RwLock` / `Mutex` over `std::sync` (faster, no poison handling overhead).
-- Use `Arc<[T]>` over `Vec<T>` when sharing read-only data across threads.
-- Use `smallvec::SmallVec` for tiny collections that are usually ≤2 elements (panes, modifiers, etc.).
-- Avoid allocations in tight loops; reuse buffers.
+The non-negotiable headline: **no blocking I/O on the UI thread or any thread serving the UI.** See [`.github/instructions/performance.instructions.md`](instructions/performance.instructions.md) for the full set of goals, principles, anti-patterns, and the benchmark methodology.
 
 ### Concurrency
 
@@ -118,13 +98,11 @@ Each crate's `Cargo.toml` consumes dependencies via `workspace.dependencies`. Ad
 - **Conventional Commits**: `feat(crate):`, `fix(crate):`, `refactor(crate):`, `chore:`, `docs:`, `test:`, `perf:`.
 - Subject ≤ 72 chars, imperative mood (`add`, not `added`).
 - Body explains the *why* — wraps at 80 cols — bullet the *what* when there are several changes.
-- **Always include** at the end of the body:
-
+- One concern per commit. Split unrelated changes.
+- When the change was drafted or assisted by Copilot, append the trailer:
   ```
   Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
   ```
-
-- One concern per commit. Split unrelated changes.
 
 ## Pull requests
 
@@ -145,3 +123,14 @@ Each crate's `Cargo.toml` consumes dependencies via `workspace.dependencies`. Ad
 - Don't suggest gpui — we evaluated and rejected it.
 - Don't propose porting to Electron, Tauri, Flutter, or web technologies.
 - Don't add markdown files for planning or notes inside the repo; planning lives outside source.
+
+## Documentation
+
+- All documentation is in the `docs/` directory.
+- The source-of-truth docs are:
+  - `.github/instructions/architecture.instructions.md` — crate layout, process model, threading, storage.
+  - `.github/instructions/performance.instructions.md` — performance goals and benchmark methodology.
+  - `docs/developer-setup.md` — toolchain, prerequisites, daily commands.
+  - `docs/contributing.md` — contributing guidelines.
+- For any significant changes (producer, consumer, API, performance, etc.), update the relevant doc(s) to ensure consistency and clarity.
+- All documentation must be up-to-date and accurately reflect the current state of the repository.

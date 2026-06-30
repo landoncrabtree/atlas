@@ -42,8 +42,6 @@ We follow **Conventional Commits**:
 
 - bulleted what-changed when there are multiple things
 - keep each bullet to one line
-
-Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 ```
 
 | Type | Use for |
@@ -57,8 +55,6 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 | `test` | Tests only |
 
 `<scope>` is the crate name without the `atlas-` prefix (`feat(fs): ...`, `fix(keymap): ...`) or `ui`, `app`, `docs`, `ci`.
-
-**Always include** the `Co-authored-by: Copilot` trailer when commits were drafted or assisted by Copilot — keep the attribution honest.
 
 ## Code style and quality bar
 
@@ -112,7 +108,3 @@ When opening an issue, include:
 - Steps to reproduce
 - Expected vs actual behavior
 - Relevant log output (`RUST_LOG=atlas=debug cargo run -p atlas-app 2>&1 | tee atlas.log`)
-
-## Security issues
-
-Do **not** open public issues for security problems. Email the maintainer directly. See [`SECURITY.md`](../SECURITY.md) when present (TODO).
