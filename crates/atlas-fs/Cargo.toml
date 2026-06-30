@@ -24,6 +24,10 @@ crossbeam-channel.workspace = true
 parking_lot.workspace = true
 smallvec.workspace = true
 serde.workspace = true
+regex.workspace = true
+globset = "0.4"
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = "3"
+crossbeam-channel.workspace = true
