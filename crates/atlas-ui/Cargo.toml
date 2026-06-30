@@ -15,7 +15,10 @@ atlas-core.workspace = true
 atlas-fs.workspace = true
 atlas-keymap.workspace = true
 
-gpui.workspace = true
+slint.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 smallvec.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true

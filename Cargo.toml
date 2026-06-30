@@ -41,7 +41,8 @@ atlas-ipc = { path = "crates/atlas-ipc" }
 atlas-thumbs = { path = "crates/atlas-thumbs" }
 
 # UI
-gpui = "0.2.2"
+slint = { version = "1.17", default-features = false, features = ["std", "compat-1-2", "backend-default", "renderer-skia", "accessibility"] }
+slint-build = "1.17"
 
 # Errors / logging
 anyhow = "1"

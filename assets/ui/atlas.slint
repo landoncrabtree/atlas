@@ -1,0 +1,32 @@
+// Atlas — initial Slint hello-window.
+// This will grow into the full app shell (workspace -> panes -> tabs -> views).
+
+export component AtlasWindow inherits Window {
+    title: "Atlas";
+    preferred-width: 1100px;
+    preferred-height: 720px;
+    background: #0e1116;
+    default-font-size: 14px;
+
+    in property <string> tagline: "a file explorer — pre-alpha";
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 12px;
+
+        Text {
+            text: "Atlas";
+            font-size: 28px;
+            font-weight: 600;
+            color: #e6edf3;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: tagline;
+            font-size: 14px;
+            color: #7d8590;
+            horizontal-alignment: center;
+        }
+    }
+}

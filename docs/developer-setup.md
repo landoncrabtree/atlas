@@ -3,45 +3,47 @@
 ## Toolchain
 
 - **Rust stable** (pinned in `rust-toolchain.toml`)
-- **macOS**: full **Xcode** required for `gpui` to compile Metal shaders.
-  Command Line Tools alone do not ship `metal` / `metallib`.
+- A C/C++ toolchain for Skia bindings (Apple Command Line Tools / build-essential / MSVC)
+
+The full Xcode IDE is **not** required on macOS — Slint with the Skia renderer uses
+prebuilt shaders and only needs a working C++ compiler, which the Command Line Tools
+package provides.
 
 ## First-time macOS setup
 
 ```bash
-# 1. Install Xcode from the App Store (one-time, ~12GB).
-# 2. Switch the developer directory away from CLT:
-sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-sudo xcodebuild -license accept
-
-# 3. Verify the Metal compiler:
-xcrun --find metal
-xcrun --find metallib
+xcode-select --install        # if you don't already have CLT
+rustup show                   # confirms the toolchain installs from rust-toolchain.toml
 ```
 
-If you'd rather stay on Command Line Tools while iterating on non-GUI crates,
-use the `nogui` profile:
+## First-time Linux setup (Debian/Ubuntu)
 
 ```bash
-cargo build --workspace \
-  --exclude atlas-app \
-  --exclude atlas-ui
+sudo apt install -y build-essential pkg-config libfontconfig1-dev libxkbcommon-dev \
+    libwayland-dev libxcb1-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+```
+
+## UI authoring
+
+Slint `.slint` files live in `assets/ui/` and are compiled at build time by
+`atlas-app/build.rs` via `slint-build::compile`. The `slint::include_modules!()`
+macro in `atlas-app/src/main.rs` imports every component declared with `export`.
+
+For live previews while editing UI:
+
+```bash
+cargo install slint-viewer
+slint-viewer assets/ui/atlas.slint
 ```
 
 ## Daily commands
 
 ```bash
-# Run the app
-cargo run -p atlas-app
+cargo run -p atlas-app                     # run the app
+cargo run -p atlas-indexd                  # run the indexer daemon
 
-# Run the indexer daemon
-cargo run -p atlas-indexd
-
-# Lint + format
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
-
-# Tests
 cargo test --workspace
 ```
 
@@ -66,3 +68,11 @@ atlas-search
  ├── atlas-index
  └── atlas-ipc
 ```
+
+## Licensing note (Slint)
+
+Slint ships under three license tracks: **GPLv3**, the free **Royalty-Free Desktop
+License** (with attribution conditions, available to qualifying individuals/small
+companies), and a paid **commercial license**. Atlas is published under a proprietary
+license, so the project must hold either the RFD or the commercial license before
+distribution. See <https://slint.dev/pricing> for current terms.
