@@ -19,6 +19,7 @@ use crate::{
     actions::{ActionSink, UiAction},
     models::{PaletteModel, PaletteResult, StatusModel, WorkspaceModel},
     theme::ThemeMode,
+    views::details::DetailsController,
     AtlasWindow, PaletteEntry, TabEntry,
 };
 
@@ -53,8 +54,12 @@ fn to_segments_model(segments: &[String]) -> ModelRc<SharedString> {
     ModelRc::new(VecModel::from(entries))
 }
 
-fn dispatch_navigation(shell: &Arc<AppShell>, pane: usize, raw_path: SharedString) {
-    shell.actions.lock().dispatch(UiAction::Navigate {
+fn dispatch_navigation(
+    actions: &Arc<Mutex<Box<dyn ActionSink>>>,
+    pane: usize,
+    raw_path: SharedString,
+) {
+    actions.lock().dispatch(UiAction::Navigate {
         pane,
         path: expand_tilde(Path::new(raw_path.as_str())),
     });
@@ -71,76 +76,80 @@ pub struct AppShell {
     workspace: RwLock<WorkspaceModel>,
     palette: RwLock<PaletteModel>,
     status: RwLock<StatusModel>,
-    actions: Mutex<Box<dyn ActionSink>>,
+    actions: Arc<Mutex<Box<dyn ActionSink>>>,
+    details0: Arc<DetailsController>,
 }
 
 impl AppShell {
     /// Build the shell, wire all Slint callbacks, and return a shared handle.
     pub fn new(window: &AtlasWindow, actions: impl ActionSink) -> Arc<Self> {
+        let actions: Arc<Mutex<Box<dyn ActionSink>>> = Arc::new(Mutex::new(Box::new(actions)));
+        let details0 = DetailsController::new(0, window.as_weak(), Arc::clone(&actions));
         let shell = Arc::new(Self {
             window: window.as_weak(),
             workspace: RwLock::new(WorkspaceModel::new_default()),
             palette: RwLock::new(PaletteModel::default()),
             status: RwLock::new(StatusModel::default()),
-            actions: Mutex::new(Box::new(actions)),
+            actions,
+            details0,
         });
 
         shell.wire_callbacks(window);
         shell
     }
 
+    /// Return the pane-0 details controller.
+    #[must_use]
+    pub fn details_controller(&self) -> Arc<DetailsController> {
+        Arc::clone(&self.details0)
+    }
+
     fn wire_callbacks(self: &Arc<Self>, window: &AtlasWindow) {
         macro_rules! dispatch {
-            ($shell:expr, $action:expr) => {{
-                let shell = Arc::clone($shell);
-                move || shell.actions.lock().dispatch($action)
+            ($actions:expr, $action:expr) => {{
+                let actions = Arc::clone(&$actions);
+                move || actions.lock().dispatch($action)
             }};
         }
 
         {
-            let shell = Arc::clone(self);
+            let actions = Arc::clone(&self.actions);
             window.on_palette_query_changed(move |query| {
-                shell
-                    .actions
+                actions
                     .lock()
                     .dispatch(UiAction::PaletteQueryChanged(query.into()));
             });
         }
         {
-            let shell = Arc::clone(self);
+            let actions = Arc::clone(&self.actions);
             window.on_palette_confirm(move |action_id| {
-                shell
-                    .actions
+                actions
                     .lock()
                     .dispatch(UiAction::PaletteConfirm(action_id.into()));
             });
         }
         {
-            let shell = Arc::clone(self);
+            let actions = Arc::clone(&self.actions);
             window.on_palette_dismiss(move || {
-                shell.actions.lock().dispatch(UiAction::DismissPalette);
+                actions.lock().dispatch(UiAction::DismissPalette);
             });
         }
-        {
-            let shell = Arc::clone(self);
-            window.on_toggle_palette(move || {
-                shell.actions.lock().dispatch(UiAction::TogglePalette);
-            });
-        }
+        window.on_toggle_palette(dispatch!(self.actions, UiAction::TogglePalette));
 
         {
-            let shell = Arc::clone(self);
+            let actions = Arc::clone(&self.actions);
             window.on_pane0_focused(move || {
-                shell.actions.lock().dispatch(UiAction::PaneFocusChanged(0));
+                actions.lock().dispatch(UiAction::PaneFocusChanged(0));
             });
         }
         {
-            let shell = Arc::clone(self);
+            let actions = Arc::clone(&self.actions);
             window.on_pane1_focused(move || {
-                shell.actions.lock().dispatch(UiAction::PaneFocusChanged(1));
+                actions.lock().dispatch(UiAction::PaneFocusChanged(1));
             });
         }
         {
+            let actions = Arc::clone(&self.actions);
             let shell = Arc::clone(self);
             window.on_cycle_pane_focus(move || {
                 let pane_count = if shell.workspace.read().dual_pane {
@@ -152,84 +161,101 @@ impl AppShell {
                     let workspace = shell.workspace.read();
                     (workspace.focused_pane + 1) % pane_count
                 };
-                shell
-                    .actions
-                    .lock()
-                    .dispatch(UiAction::PaneFocusChanged(next));
+                actions.lock().dispatch(UiAction::PaneFocusChanged(next));
             });
         }
 
         {
-            let shell = Arc::clone(self);
+            let actions = Arc::clone(&self.actions);
             window.on_pane0_address_submitted(move |path| {
-                dispatch_navigation(&shell, 0, path);
+                dispatch_navigation(&actions, 0, path);
             });
         }
-        window.on_pane0_address_cancelled(dispatch!(self, UiAction::DismissPalette));
+        window.on_pane0_address_cancelled(dispatch!(self.actions, UiAction::DismissPalette));
         {
-            let shell = Arc::clone(self);
+            let actions = Arc::clone(&self.actions);
             window.on_pane0_breadcrumb_clicked(move |segment| {
-                shell.actions.lock().dispatch(UiAction::BreadcrumbClicked {
+                actions.lock().dispatch(UiAction::BreadcrumbClicked {
                     pane: 0,
                     segment: segment as usize,
                 });
             });
         }
         {
-            let shell = Arc::clone(self);
+            let actions = Arc::clone(&self.actions);
             window.on_pane0_tab_selected(move |tab| {
-                shell.actions.lock().dispatch(UiAction::TabSelected {
+                actions.lock().dispatch(UiAction::TabSelected {
                     pane: 0,
                     tab: tab as usize,
                 });
             });
         }
         {
-            let shell = Arc::clone(self);
+            let actions = Arc::clone(&self.actions);
             window.on_pane0_tab_closed(move |tab| {
-                shell.actions.lock().dispatch(UiAction::TabClosed {
+                actions.lock().dispatch(UiAction::TabClosed {
                     pane: 0,
                     tab: tab as usize,
                 });
             });
         }
-        window.on_pane0_new_tab(dispatch!(self, UiAction::NewTab { pane: 0 }));
+        window.on_pane0_new_tab(dispatch!(self.actions, UiAction::NewTab { pane: 0 }));
 
         {
-            let shell = Arc::clone(self);
-            window.on_pane1_address_submitted(move |path| {
-                dispatch_navigation(&shell, 1, path);
+            let details = Arc::clone(&self.details0);
+            window.on_pane0_details_row_clicked(move |index, ctrl, shift| {
+                details.select_index(index as usize, ctrl, shift);
             });
         }
-        window.on_pane1_address_cancelled(dispatch!(self, UiAction::DismissPalette));
         {
-            let shell = Arc::clone(self);
+            let details = Arc::clone(&self.details0);
+            window.on_pane0_details_row_double_clicked(move |index| {
+                details.select_index(index as usize, false, false);
+                details.activate_focused();
+            });
+        }
+        {
+            let details = Arc::clone(&self.details0);
+            window.on_pane0_details_header_clicked(move |column_index| {
+                details.header_clicked(column_index as usize);
+            });
+        }
+
+        {
+            let actions = Arc::clone(&self.actions);
+            window.on_pane1_address_submitted(move |path| {
+                dispatch_navigation(&actions, 1, path);
+            });
+        }
+        window.on_pane1_address_cancelled(dispatch!(self.actions, UiAction::DismissPalette));
+        {
+            let actions = Arc::clone(&self.actions);
             window.on_pane1_breadcrumb_clicked(move |segment| {
-                shell.actions.lock().dispatch(UiAction::BreadcrumbClicked {
+                actions.lock().dispatch(UiAction::BreadcrumbClicked {
                     pane: 1,
                     segment: segment as usize,
                 });
             });
         }
         {
-            let shell = Arc::clone(self);
+            let actions = Arc::clone(&self.actions);
             window.on_pane1_tab_selected(move |tab| {
-                shell.actions.lock().dispatch(UiAction::TabSelected {
+                actions.lock().dispatch(UiAction::TabSelected {
                     pane: 1,
                     tab: tab as usize,
                 });
             });
         }
         {
-            let shell = Arc::clone(self);
+            let actions = Arc::clone(&self.actions);
             window.on_pane1_tab_closed(move |tab| {
-                shell.actions.lock().dispatch(UiAction::TabClosed {
+                actions.lock().dispatch(UiAction::TabClosed {
                     pane: 1,
                     tab: tab as usize,
                 });
             });
         }
-        window.on_pane1_new_tab(dispatch!(self, UiAction::NewTab { pane: 1 }));
+        window.on_pane1_new_tab(dispatch!(self.actions, UiAction::NewTab { pane: 1 }));
     }
 
     /// Update the workspace state and schedule a property push on the event loop.

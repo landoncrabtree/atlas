@@ -4,6 +4,7 @@ import { Workspace } from "components/workspace.slint";
 import { StatusBar } from "components/status-bar.slint";
 import { CommandPalette, PaletteEntry } from "components/command-palette.slint";
 import { TabEntry } from "components/tab-bar.slint";
+import { EntryRowItem, ColumnSpec } from "views/details/column.slint";
 
 // Entry-point component for the Atlas application window.
 //
@@ -20,6 +21,33 @@ export component AtlasWindow inherits Window {
 
     in property <bool> dark: true;
 
+    in-out property <color> theme-bg: #0e1116;
+    in-out property <color> theme-panel-bg: #161b22;
+    in-out property <color> theme-fg: #e6edf3;
+    in-out property <color> theme-fg-muted: #7d8590;
+    in-out property <color> theme-border: #30363d;
+    in-out property <color> theme-accent: #2f81f7;
+    in-out property <color> theme-accent-fg: #ffffff;
+    in-out property <color> theme-selection-bg: #1f6feb;
+    in-out property <color> theme-selection-fg: #ffffff;
+    in-out property <color> theme-error: #f85149;
+    in-out property <color> theme-success: #3fb950;
+    in-out property <color> theme-warning: #d29922;
+
+    in-out property <string> theme-font-family: "Inter";
+    in-out property <length> theme-font-size: 14px;
+    in-out property <string> theme-monospace: "JetBrains Mono";
+
+    in-out property <length> theme-radius-sm: 4px;
+    in-out property <length> theme-radius-md: 8px;
+    in-out property <length> theme-spacing-xs: 4px;
+    in-out property <length> theme-spacing-sm: 8px;
+    in-out property <length> theme-spacing-md: 12px;
+    in-out property <length> theme-spacing-lg: 16px;
+    in-out property <length> theme-titlebar-h: 36px;
+    in-out property <length> theme-statusbar-h: 24px;
+    in-out property <length> theme-tab-h: 28px;
+
     in property <bool> dual-pane: false;
     in property <int> focus-index: 0;
 
@@ -28,12 +56,22 @@ export component AtlasWindow inherits Window {
     in property <string> pane0-view-mode: "Details";
     in property <[TabEntry]> pane0-tabs: [{ title: "Home", dirty: false }];
     in property <int> pane0-active-tab: 0;
+    in property <[EntryRowItem]> pane0-details-rows: [];
+    in property <[ColumnSpec]> pane0-details-columns: [];
+    in property <[bool]> pane0-details-selected-mask: [];
+    in property <int> pane0-details-selected-anchor: -1;
+    in property <int> pane0-details-focused-index: -1;
 
     in property <string> pane1-path: "";
     in property <[string]> pane1-segments: [];
     in property <string> pane1-view-mode: "Details";
     in property <[TabEntry]> pane1-tabs: [];
     in property <int> pane1-active-tab: 0;
+    in property <[EntryRowItem]> pane1-details-rows: [];
+    in property <[ColumnSpec]> pane1-details-columns: [];
+    in property <[bool]> pane1-details-selected-mask: [];
+    in property <int> pane1-details-selected-anchor: -1;
+    in property <int> pane1-details-focused-index: -1;
 
     in property <int> total-entries: 0;
     in property <int> selected-entries: 0;
@@ -57,6 +95,11 @@ export component AtlasWindow inherits Window {
     callback pane0-tab-closed(int);
     callback pane0-new-tab();
     callback pane0-focused();
+    callback pane0-details-row-clicked(int, bool, bool);
+    callback pane0-details-row-double-clicked(int);
+    callback pane0-details-row-context-menu(int, length, length);
+    callback pane0-details-header-clicked(int);
+    callback pane0-details-header-resize(int, float);
 
     callback pane1-address-submitted(string);
     callback pane1-address-cancelled();
@@ -65,6 +108,11 @@ export component AtlasWindow inherits Window {
     callback pane1-tab-closed(int);
     callback pane1-new-tab();
     callback pane1-focused();
+    callback pane1-details-row-clicked(int, bool, bool);
+    callback pane1-details-row-double-clicked(int);
+    callback pane1-details-row-context-menu(int, length, length);
+    callback pane1-details-header-clicked(int);
+    callback pane1-details-header-resize(int, float);
 
     callback toggle-palette();
     callback cycle-pane-focus();
@@ -77,9 +125,57 @@ export component AtlasWindow inherits Window {
 
     init => {
         Theme.dark = dark;
+        Theme.bg = theme-bg;
+        Theme.panel-bg = theme-panel-bg;
+        Theme.fg = theme-fg;
+        Theme.fg-muted = theme-fg-muted;
+        Theme.border = theme-border;
+        Theme.accent = theme-accent;
+        Theme.accent-fg = theme-accent-fg;
+        Theme.selection-bg = theme-selection-bg;
+        Theme.selection-fg = theme-selection-fg;
+        Theme.error = theme-error;
+        Theme.success = theme-success;
+        Theme.warning = theme-warning;
+        Theme.font-family = theme-font-family;
+        Theme.font-size = theme-font-size;
+        Theme.monospace = theme-monospace;
+        Theme.radius-sm = theme-radius-sm;
+        Theme.radius-md = theme-radius-md;
+        Theme.spacing-xs = theme-spacing-xs;
+        Theme.spacing-sm = theme-spacing-sm;
+        Theme.spacing-md = theme-spacing-md;
+        Theme.spacing-lg = theme-spacing-lg;
+        Theme.titlebar-h = theme-titlebar-h;
+        Theme.statusbar-h = theme-statusbar-h;
+        Theme.tab-h = theme-tab-h;
     }
 
     changed dark => { Theme.dark = dark; }
+    changed theme-bg => { Theme.bg = theme-bg; }
+    changed theme-panel-bg => { Theme.panel-bg = theme-panel-bg; }
+    changed theme-fg => { Theme.fg = theme-fg; }
+    changed theme-fg-muted => { Theme.fg-muted = theme-fg-muted; }
+    changed theme-border => { Theme.border = theme-border; }
+    changed theme-accent => { Theme.accent = theme-accent; }
+    changed theme-accent-fg => { Theme.accent-fg = theme-accent-fg; }
+    changed theme-selection-bg => { Theme.selection-bg = theme-selection-bg; }
+    changed theme-selection-fg => { Theme.selection-fg = theme-selection-fg; }
+    changed theme-error => { Theme.error = theme-error; }
+    changed theme-success => { Theme.success = theme-success; }
+    changed theme-warning => { Theme.warning = theme-warning; }
+    changed theme-font-family => { Theme.font-family = theme-font-family; }
+    changed theme-font-size => { Theme.font-size = theme-font-size; }
+    changed theme-monospace => { Theme.monospace = theme-monospace; }
+    changed theme-radius-sm => { Theme.radius-sm = theme-radius-sm; }
+    changed theme-radius-md => { Theme.radius-md = theme-radius-md; }
+    changed theme-spacing-xs => { Theme.spacing-xs = theme-spacing-xs; }
+    changed theme-spacing-sm => { Theme.spacing-sm = theme-spacing-sm; }
+    changed theme-spacing-md => { Theme.spacing-md = theme-spacing-md; }
+    changed theme-spacing-lg => { Theme.spacing-lg = theme-spacing-lg; }
+    changed theme-titlebar-h => { Theme.titlebar-h = theme-titlebar-h; }
+    changed theme-statusbar-h => { Theme.statusbar-h = theme-statusbar-h; }
+    changed theme-tab-h => { Theme.tab-h = theme-tab-h; }
 
     FocusScope {
         key-pressed(event) => {
@@ -120,12 +216,22 @@ export component AtlasWindow inherits Window {
                 pane0-view-mode: root.pane0-view-mode;
                 pane0-tabs: root.pane0-tabs;
                 pane0-active-tab: root.pane0-active-tab;
+                pane0-details-rows: root.pane0-details-rows;
+                pane0-details-columns: root.pane0-details-columns;
+                pane0-details-selected-mask: root.pane0-details-selected-mask;
+                pane0-details-selected-anchor: root.pane0-details-selected-anchor;
+                pane0-details-focused-index: root.pane0-details-focused-index;
 
                 pane1-path: root.pane1-path;
                 pane1-segments: root.pane1-segments;
                 pane1-view-mode: root.pane1-view-mode;
                 pane1-tabs: root.pane1-tabs;
                 pane1-active-tab: root.pane1-active-tab;
+                pane1-details-rows: root.pane1-details-rows;
+                pane1-details-columns: root.pane1-details-columns;
+                pane1-details-selected-mask: root.pane1-details-selected-mask;
+                pane1-details-selected-anchor: root.pane1-details-selected-anchor;
+                pane1-details-focused-index: root.pane1-details-focused-index;
 
                 pane0-address-submitted(p) => { root.pane0-address-submitted(p); }
                 pane0-address-cancelled => { root.pane0-address-cancelled(); }
@@ -134,6 +240,11 @@ export component AtlasWindow inherits Window {
                 pane0-tab-closed(i) => { root.pane0-tab-closed(i); }
                 pane0-new-tab => { root.pane0-new-tab(); }
                 pane0-clicked => { root.pane0-focused(); }
+                pane0-details-row-clicked(i, ctrl, shift) => { root.pane0-details-row-clicked(i, ctrl, shift); }
+                pane0-details-row-double-clicked(i) => { root.pane0-details-row-double-clicked(i); }
+                pane0-details-row-context-menu(i, x, y) => { root.pane0-details-row-context-menu(i, x, y); }
+                pane0-details-header-clicked(i) => { root.pane0-details-header-clicked(i); }
+                pane0-details-header-resize(i, w) => { root.pane0-details-header-resize(i, w); }
 
                 pane1-address-submitted(p) => { root.pane1-address-submitted(p); }
                 pane1-address-cancelled => { root.pane1-address-cancelled(); }
@@ -142,6 +253,11 @@ export component AtlasWindow inherits Window {
                 pane1-tab-closed(i) => { root.pane1-tab-closed(i); }
                 pane1-new-tab => { root.pane1-new-tab(); }
                 pane1-clicked => { root.pane1-focused(); }
+                pane1-details-row-clicked(i, ctrl, shift) => { root.pane1-details-row-clicked(i, ctrl, shift); }
+                pane1-details-row-double-clicked(i) => { root.pane1-details-row-double-clicked(i); }
+                pane1-details-row-context-menu(i, x, y) => { root.pane1-details-row-context-menu(i, x, y); }
+                pane1-details-header-clicked(i) => { root.pane1-details-header-clicked(i); }
+                pane1-details-header-resize(i, w) => { root.pane1-details-header-resize(i, w); }
             }
 
             StatusBar {

@@ -15,6 +15,7 @@ pub enum ThemeMode {
 
 impl ThemeMode {
     /// Returns `true` when `self` is [`ThemeMode::Dark`].
+    #[must_use]
     pub fn is_dark(self) -> bool {
         self == Self::Dark
     }
@@ -32,6 +33,7 @@ pub struct ThemeTokens {
 
 impl ThemeTokens {
     /// Construct tokens for the given mode.
+    #[must_use]
     pub fn new(mode: ThemeMode) -> Self {
         Self { mode }
     }

@@ -15,3 +15,9 @@ pub mod focus;
 pub mod models;
 pub mod shell;
 pub mod theme;
+pub mod views;
+
+pub use views::details::ColumnSpec as DetailsColumnSpec;
+pub use views::details::{
+    format_relative_time, format_size, ColumnKind, DetailsController, Selection,
+};

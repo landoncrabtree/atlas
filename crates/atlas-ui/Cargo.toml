@@ -12,10 +12,13 @@ workspace = true
 
 [dependencies]
 atlas-core.workspace = true
+atlas-fs.workspace = true
 slint.workspace = true
 smallvec.workspace = true
 parking_lot.workspace = true
 directories.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true

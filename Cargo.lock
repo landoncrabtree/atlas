@@ -424,6 +424,7 @@ name = "atlas-app"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "atlas-fs",
  "atlas-ui",
  "slint",
  "tracing",
@@ -565,12 +566,15 @@ dependencies = [
  "atlas-core",
  "atlas-fs",
  "crossbeam-channel",
+ "dashmap",
  "futures",
  "parking_lot",
  "serde",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "trash",
+ "walkdir",
 ]
 
 [[package]]
@@ -620,11 +624,14 @@ name = "atlas-ui"
 version = "0.0.1"
 dependencies = [
  "atlas-core",
+ "atlas-fs",
+ "crossbeam-channel",
  "directories",
  "parking_lot",
  "slint",
  "slint-build",
  "smallvec",
+ "tracing",
 ]
 
 [[package]]
