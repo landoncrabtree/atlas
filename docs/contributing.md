@@ -5,7 +5,7 @@ Thanks for your interest in Atlas. This document covers how to set up, build, an
 ## Before you start
 
 - Atlas is **proprietary**. External contributions are accepted at the maintainer's discretion under the terms of the LICENSE.
-- Read [`docs/architecture.md`](architecture.md) to understand the crate layout and design principles.
+- Read [`.github/instructions/architecture.instructions.md`](../.github/instructions/architecture.instructions.md) to understand the crate layout and design principles.
 - Read [`.github/copilot-instructions.md`](../.github/copilot-instructions.md) — those rules apply to human contributors too.
 
 ## Setup
@@ -66,7 +66,7 @@ Hard requirements:
 - No `println!` / `eprintln!` / `dbg!` / bare `unwrap` outside tests.
 - rustdoc on every `pub` item.
 
-Performance is a feature — design for streaming and async; don't block the UI thread or any thread serving the UI. See the principles in [`docs/architecture.md`](architecture.md) and [`docs/performance.md`](performance.md).
+Performance is a feature — design for streaming and async; don't block the UI thread or any thread serving the UI. See the principles in [`.github/instructions/architecture.instructions.md`](../.github/instructions/architecture.instructions.md) and [`.github/instructions/performance.instructions.md`](../.github/instructions/performance.instructions.md).
 
 ## Adding a dependency
 
@@ -92,10 +92,11 @@ Performance is a feature — design for streaming and async; don't block the UI 
 Source-of-truth docs:
 
 - `README.md` — product-facing: what Atlas is, install, features, quick start.
-- `docs/architecture.md` — crate layout, process model, threading, storage.
 - `docs/developer-setup.md` — toolchain, prerequisites, daily commands.
-- `docs/performance.md` — performance goals and benchmark methodology.
 - `docs/contributing.md` — this file.
+- `.github/copilot-instructions.md` — always-on conventions for Copilot and contributors.
+- `.github/instructions/architecture.instructions.md` — crate layout, process model, threading, storage (deep dive).
+- `.github/instructions/performance.instructions.md` — performance goals, principles, anti-patterns, benchmark methodology.
 
 Update the relevant doc with your change. Keep `README.md` short and product-focused.
 
