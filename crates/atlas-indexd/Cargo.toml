@@ -1,0 +1,32 @@
+[package]
+name = "atlas-indexd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "atlas-indexd"
+path = "src/main.rs"
+
+[dependencies]
+atlas-core.workspace = true
+atlas-index.workspace = true
+atlas-watch.workspace = true
+atlas-ipc.workspace = true
+atlas-fs.workspace = true
+atlas-config.workspace = true
+
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+serde.workspace = true
+bincode.workspace = true
+directories.workspace = true

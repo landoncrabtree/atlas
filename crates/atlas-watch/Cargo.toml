@@ -1,0 +1,22 @@
+[package]
+name = "atlas-watch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+atlas-core.workspace = true
+
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+notify.workspace = true
+notify-debouncer-full.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true

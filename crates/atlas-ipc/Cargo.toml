@@ -1,0 +1,24 @@
+[package]
+name = "atlas-ipc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+atlas-core.workspace = true
+
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+bincode.workspace = true
+tokio.workspace = true
+interprocess.workspace = true
+futures.workspace = true
+directories.workspace = true

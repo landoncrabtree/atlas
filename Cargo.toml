@@ -1,0 +1,121 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/atlas-app",
+    "crates/atlas-ui",
+    "crates/atlas-core",
+    "crates/atlas-fs",
+    "crates/atlas-watch",
+    "crates/atlas-index",
+    "crates/atlas-indexd",
+    "crates/atlas-search",
+    "crates/atlas-ops",
+    "crates/atlas-keymap",
+    "crates/atlas-config",
+    "crates/atlas-ipc",
+    "crates/atlas-thumbs",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.90"
+authors = ["Landon Crabtree"]
+license = "LicenseRef-Proprietary"
+repository = "https://github.com/landoncrabtree/atlas"
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+atlas-app = { path = "crates/atlas-app" }
+atlas-ui = { path = "crates/atlas-ui" }
+atlas-core = { path = "crates/atlas-core" }
+atlas-fs = { path = "crates/atlas-fs" }
+atlas-watch = { path = "crates/atlas-watch" }
+atlas-index = { path = "crates/atlas-index" }
+atlas-search = { path = "crates/atlas-search" }
+atlas-ops = { path = "crates/atlas-ops" }
+atlas-keymap = { path = "crates/atlas-keymap" }
+atlas-config = { path = "crates/atlas-config" }
+atlas-ipc = { path = "crates/atlas-ipc" }
+atlas-thumbs = { path = "crates/atlas-thumbs" }
+
+# UI
+gpui = "0.2.2"
+
+# Errors / logging
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Async
+futures = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "net", "sync", "time", "signal"] }
+
+# Serialization / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+toml_edit = "0.22"
+bincode = { version = "2", features = ["serde"] }
+
+# Filesystem
+ignore = "0.4"
+walkdir = "2"
+notify = "8"
+notify-debouncer-full = "0.6"
+trash = "5"
+
+# Search / index
+tantivy = "0.25"
+nucleo = "0.5"
+grep = "0.3"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+
+# Images / thumbs
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+resvg = "0.45"
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+# Utilities
+parking_lot = "0.12"
+dashmap = "6"
+smallvec = "1"
+arc-swap = "1"
+ahash = "0.8"
+once_cell = "1"
+directories = "6"
+regex = "1"
+rayon = "1"
+crossbeam-channel = "0.5"
+
+# IPC
+interprocess = { version = "2", features = ["tokio"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unreachable_pub = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+
+[profile.dev]
+opt-level = 0
+debug = 1
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

@@ -1,0 +1,12 @@
+# Default keymap. User overrides live at ~/.config/atlas/keymap.toml and merge on top.
+# Format will be expanded by atlas-keymap. This is a documentation placeholder for now.
+
+# [[bindings]]
+# context = "Pane"
+# key = "cmd-p"
+# action = "command_palette::Toggle"
+
+# [[bindings]]
+# context = "Pane"
+# key = "f5"
+# action = "fs::Copy"
