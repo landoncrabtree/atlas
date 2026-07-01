@@ -2,6 +2,7 @@ import { Theme } from "theme.slint";
 import { Titlebar } from "components/titlebar.slint";
 import { Workspace } from "components/workspace.slint";
 import { StatusBar } from "components/status-bar.slint";
+import { ShortcutFooter } from "components/shortcut-footer.slint";
 import { CommandPalette, PaletteEntry } from "components/command-palette.slint";
 import { SearchPanel, SearchRow } from "components/search-panel.slint";
 import { OpsPanel, OpRow } from "components/ops-panel.slint";
@@ -144,7 +145,11 @@ export component AtlasWindow inherits Window {
     in property <int> pane1-miller-focused-col: 0;
 
     in property <int> total-entries: 0;
+    in property <int> folder-count: 0;
+    in property <int> file-count: 0;
+    in property <string> total-size-text: "";
     in property <int> selected-entries: 0;
+    in property <string> selected-size-text: "";
     in property <string> status-view-mode: "Details";
     in property <string> sort-by: "Name";
     in property <string> indexer-status: "Stopped";
@@ -639,11 +644,17 @@ export component AtlasWindow inherits Window {
 
             StatusBar {
                 total-entries: root.total-entries;
+                folder-count: root.folder-count;
+                file-count: root.file-count;
+                total-size-text: root.total-size-text;
                 selected-entries: root.selected-entries;
+                selected-size-text: root.selected-size-text;
                 view-mode: root.status-view-mode;
                 sort-by: root.sort-by;
                 indexer-status: root.indexer-status;
             }
+
+            ShortcutFooter { }
         }
 
         // File-operations tray — auto-shown by Rust when ops are queued.

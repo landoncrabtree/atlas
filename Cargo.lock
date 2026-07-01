@@ -471,6 +471,7 @@ dependencies = [
  "arc-swap",
  "atlas-config",
  "atlas-fs",
+ "atlas-keymap",
  "atlas-search",
  "atlas-ui",
  "crossbeam-channel",

@@ -543,6 +543,8 @@ impl AppShell {
             let path = vm.location().to_path_buf();
             // Coerce to trait object so selected_paths / focused_entry can use it.
             let vm_dyn: Arc<dyn LocationViewModel> = vm.clone();
+            // Clone once more for the status subscription thread below.
+            let vm_for_status: Arc<dyn LocationViewModel> = vm.clone();
             if pane == 0 {
                 *shell.pane0_vm.write() = Some(vm_dyn);
                 let vm_typed: Arc<dyn LocationViewModel> = vm;
@@ -576,6 +578,25 @@ impl AppShell {
             }
             let snapshot = shell.workspace.read().clone();
             shell.set_workspace(snapshot);
+
+            // Push updated stats to the status bar. The initial vm may still
+            // be loading — subscribers below will re-push once entries stream
+            // in. For now this reflects zero and shows the pane focus change.
+            shell.refresh_status();
+
+            // Spawn a lightweight watcher that re-computes status whenever
+            // the vm emits an event, then exits when the vm subscription
+            // channel closes (i.e., when the vm is replaced).
+            let shell_bg = Arc::clone(&shell);
+            let events = vm_for_status.subscribe();
+            std::thread::Builder::new()
+                .name(format!("atlas-status-pane{pane}"))
+                .spawn(move || {
+                    while let Ok(_ev) = events.recv() {
+                        shell_bg.refresh_status();
+                    }
+                })
+                .ok();
         });
     }
 
@@ -1334,9 +1355,47 @@ impl AppShell {
             };
             let indexer_status = model.indexer_state.to_string();
             window.set_total_entries(model.total_entries as i32);
+            window.set_folder_count(model.folder_count as i32);
+            window.set_file_count(model.file_count as i32);
+            window.set_total_size_text(crate::format_size(model.total_bytes).into());
             window.set_selected_entries(model.selected_entries as i32);
+            window.set_selected_size_text(crate::format_size(model.selected_bytes).into());
             window.set_indexer_status(indexer_status.into());
         });
+    }
+
+    /// Recompute status stats from the focused pane's current entries and push.
+    ///
+    /// Cheap to call — walks the in-memory entry snapshot. Invoked whenever
+    /// the location changes or the entry list updates.
+    pub fn refresh_status(self: &Arc<Self>) {
+        let pane = self.focused_pane();
+        let vm = if pane == 0 { self.pane0_vm.read().clone() } else { self.pane1_vm.read().clone() };
+        let Some(vm) = vm else { return; };
+        let entries = vm.entries();
+        let mut folders = 0usize;
+        let mut files = 0usize;
+        let mut total_bytes: u64 = 0;
+        for e in &entries {
+            match e.kind {
+                atlas_fs::EntryKind::Dir => folders += 1,
+                _ => {
+                    files += 1;
+                    total_bytes += e.metadata.size;
+                }
+            }
+        }
+        let existing = self.status.read().clone();
+        let model = StatusModel {
+            total_entries: entries.len(),
+            folder_count: folders,
+            file_count: files,
+            total_bytes,
+            selected_entries: existing.selected_entries,
+            selected_bytes: existing.selected_bytes,
+            indexer_state: existing.indexer_state,
+        };
+        self.set_status(model);
     }
 
     /// Apply a theme mode (convenience wrapper over [`Self::apply_theme`]).

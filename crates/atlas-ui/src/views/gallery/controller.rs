@@ -610,9 +610,9 @@ impl Drop for GalleryController {
 
 fn fallback_glyph(kind: &EntryKind) -> &'static str {
     match kind {
-        EntryKind::Dir => "📁",
-        EntryKind::File => "📄",
-        EntryKind::Symlink { .. } => "🔗",
+        EntryKind::Dir => "▸",
+        EntryKind::File => "·",
+        EntryKind::Symlink { .. } => "↳",
         EntryKind::Other => "⚙️",
     }
 }

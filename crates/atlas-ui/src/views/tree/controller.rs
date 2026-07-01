@@ -400,11 +400,11 @@ fn dfs(
     }
 
     let kind_icon = if node.is_symlink {
-        "🔗"
+        "↳"
     } else if node.is_dir {
-        "📁"
+        "▸"
     } else {
-        "📄"
+        "·"
     };
 
     let entry = EntryRowItem {

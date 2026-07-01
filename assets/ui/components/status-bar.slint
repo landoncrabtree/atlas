@@ -2,12 +2,22 @@ import { Theme } from "../theme.slint";
 
 export component StatusBar {
     in property <int> total-entries: 0;
+    in property <int> folder-count: 0;
+    in property <int> file-count: 0;
+    in property <string> total-size-text: "";
     in property <int> selected-entries: 0;
+    in property <string> selected-size-text: "";
     in property <string> view-mode: "Details";
     in property <string> sort-by: "Name";
     in property <string> indexer-status: "Stopped";
 
     height: Theme.statusbar-h;
+
+    pure function primary-text() -> string {
+        selected-entries > 0
+            ? selected-entries + " selected · " + selected-size-text
+            : folder-count + " folders, " + file-count + " files · " + total-size-text
+    }
 
     Rectangle {
         background: Theme.panel-bg;
@@ -26,9 +36,7 @@ export component StatusBar {
             spacing: Theme.space-4;
 
             Text {
-                text: selected-entries > 0
-                    ? selected-entries + " of " + total-entries + " selected"
-                    : total-entries + " items";
+                text: primary-text();
                 color: Theme.fg-muted;
                 font-size: 11px;
                 vertical-alignment: center;

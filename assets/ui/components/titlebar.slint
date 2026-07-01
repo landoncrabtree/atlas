@@ -1,9 +1,11 @@
 import { Theme } from "../theme.slint";
 
 // Custom titlebar. On macOS with no-frame: true the OS draws traffic-light
-// buttons at the left inset, so we leave a 78px spacer for them.
+// buttons at the left inset, so we leave a 78px spacer for them. The
+// address bar + breadcrumbs below already show the current path, so the
+// titlebar is intentionally minimal — no in-content branding, no path.
 export component Titlebar {
-    in property <string> location: "";
+    in property <string> location: "";  // reserved for future use (window title on tab-per-window mode)
 
     height: Theme.titlebar-h;
 
@@ -15,29 +17,6 @@ export component Titlebar {
             y: parent.height - 1px;
             height: 1px;
             background: Theme.border;
-        }
-
-        // macOS traffic-light spacer
-        Rectangle {
-            x: 0px;
-            y: 0px;
-            width: 78px;
-            height: Theme.titlebar-h;
-            background: transparent;
-        }
-
-        // Centered path (caption style, muted)
-        Text {
-            x: 78px;
-            y: 0px;
-            width: parent.width - 156px;
-            height: parent.height;
-            text: location;
-            color: Theme.fg-muted;
-            font-size: 11px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            overflow: elide;
         }
     }
 }

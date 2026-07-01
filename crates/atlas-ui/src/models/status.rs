@@ -36,8 +36,16 @@ impl std::fmt::Display for IndexerState {
 pub struct StatusModel {
     /// Total visible entries in the active pane.
     pub total_entries: usize,
+    /// Number of directories among the visible entries.
+    pub folder_count: usize,
+    /// Number of files (non-directories) among the visible entries.
+    pub file_count: usize,
+    /// Cumulative byte size of the visible non-directory entries.
+    pub total_bytes: u64,
     /// Number of currently selected entries.
     pub selected_entries: usize,
+    /// Cumulative byte size of the current selection (files only).
+    pub selected_bytes: u64,
     /// Background indexer status.
     pub indexer_state: IndexerState,
 }
@@ -65,6 +73,10 @@ mod tests {
         let status = StatusModel::default();
         assert_eq!(status.total_entries, 0);
         assert_eq!(status.selected_entries, 0);
+        assert_eq!(status.folder_count, 0);
+        assert_eq!(status.file_count, 0);
+        assert_eq!(status.total_bytes, 0);
+        assert_eq!(status.selected_bytes, 0);
         assert_eq!(status.indexer_state, IndexerState::Stopped);
     }
 }

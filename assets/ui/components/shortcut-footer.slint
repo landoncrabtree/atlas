@@ -1,0 +1,61 @@
+import { Theme } from "../theme.slint";
+
+// One key-hint chip: `key` in accent, `label` in muted foreground.
+component KeyHint {
+    in property <string> key;
+    in property <string> label;
+
+    HorizontalLayout {
+        spacing: 4px;
+        Text {
+            text: key;
+            color: Theme.accent;
+            font-size: 11px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Text {
+            text: label;
+            color: Theme.fg-muted;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Marta/NC-style bottom footer that reminds the user which F-key does what.
+// Static content — a purely visual affordance. The FocusScope in atlas.slint
+// actually handles the keys; this component just documents them.
+export component ShortcutFooter {
+    height: 26px;
+
+    Rectangle {
+        background: Theme.panel-bg;
+
+        // Top border
+        Rectangle {
+            x: 0px; y: 0px;
+            height: 1px;
+            width: parent.width;
+            background: Theme.border;
+        }
+
+        HorizontalLayout {
+            padding-left: Theme.space-3;
+            padding-right: Theme.space-3;
+            spacing: Theme.space-4;
+            alignment: center;
+
+            KeyHint { key: "F2"; label: "Rename"; }
+            KeyHint { key: "F3"; label: "View"; }
+            KeyHint { key: "F4"; label: "Edit"; }
+            KeyHint { key: "F5"; label: "Copy"; }
+            KeyHint { key: "F6"; label: "Move"; }
+            KeyHint { key: "F7"; label: "Mkdir"; }
+            KeyHint { key: "F8"; label: "Delete"; }
+            KeyHint { key: "⌘P"; label: "Goto"; }
+            KeyHint { key: "⌘⇧P"; label: "Palette"; }
+            KeyHint { key: "⌘F"; label: "Search"; }
+        }
+    }
+}
