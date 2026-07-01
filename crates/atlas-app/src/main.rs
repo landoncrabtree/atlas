@@ -33,7 +33,7 @@ use arc_swap::ArcSwap;
 use slint::ComponentHandle as _;
 use tracing_subscriber::EnvFilter;
 
-use atlas_keymap::{ActionId, Dispatcher};
+use atlas_keymap::{ActionId, Chord, Dispatcher, Key, Modifiers, NamedKey};
 use atlas_ui::{
     actions::{ActionSink, UiAction},
     models::{PaletteModel, StatusModel},
@@ -315,10 +315,9 @@ fn main() -> Result<()> {
     }
 
     // Build the keymap dispatcher and register handlers for common action IDs.
-    // The palette on_dispatch callback routes through this dispatcher so that
-    // palette-triggered actions use the same code paths as keyboard-triggered ones.
-    // The Slint FocusScope → Dispatcher::handle_key wiring is tracked separately
-    // in the `gap-keymap-slint-routing` follow-up todo.
+    // Both palette confirms AND every Slint chord press route through this
+    // dispatcher so the keymap TOML is the single source of truth for
+    // keyboard shortcuts.
     let dispatcher = build_dispatcher(keymap, &shell, &nav);
 
     // Wire palette confirm → dispatcher so picking an action from the palette
@@ -330,6 +329,28 @@ fn main() -> Result<()> {
             .set_on_dispatch(move |action_id| {
                 d.dispatch_action(&ActionId::new(action_id));
             });
+    }
+
+    // ── Route Slint key events through the dispatcher ────────────────────
+    //
+    // Every non-plain key press bubbles through `handle-key-chord` on the
+    // Slint root; we normalise the platform-native modifier bools to
+    // physical semantics, build an atlas-keymap `ChordSequence`, and
+    // dispatch under the {Global, Pane} context stack. Handlers registered
+    // in `build_dispatcher` do the actual work.
+    {
+        let dispatcher = Arc::clone(&dispatcher);
+        shell.install_key_dispatcher(move |key, ctrl, alt, shift, cmd| {
+            let Some(seq) = build_sequence_from_slint(&key, ctrl, alt, shift, cmd) else {
+                return false;
+            };
+            let contexts = [String::from("Global"), String::from("Pane")];
+            let hit = dispatcher.handle_key(&seq, &contexts);
+            if hit {
+                tracing::debug!(chord = %seq, "keymap: dispatched");
+            }
+            hit
+        });
     }
 
     // ── Quit confirmation ────────────────────────────────────────────────
@@ -824,6 +845,158 @@ fn build_dispatcher(
         });
     }
 
+    // ── App-level actions ─────────────────────────────────────────────────
+    {
+        let s = Arc::clone(shell);
+        d.register("app::Quit", move || {
+            tracing::info!("app::Quit — hiding window");
+            if let Some(w) = s.window_weak().upgrade() {
+                let _ = w.hide();
+            }
+        });
+        d.register("app::OpenSettings", || {
+            tracing::info!(
+                "app::OpenSettings: no in-app settings UI yet — edit ~/.config/atlas/config.toml"
+            );
+        });
+    }
+
+    // ── File-list navigation (bindings j/k/h/l when no vim-mode filter) ──
+    // These are the "Pane" context bindings from the default keymap.
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::MoveLeft", move || {
+            s.go_up(s.focused_pane_id());
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::MoveRight", move || {
+            let id = s.focused_pane_id();
+            if let Some(ctrl) = s.pane_by_id(id) {
+                ctrl.details.activate_focused();
+            }
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::Activate", move || {
+            let id = s.focused_pane_id();
+            if let Some(ctrl) = s.pane_by_id(id) {
+                ctrl.details.activate_focused();
+            }
+        });
+    }
+
+    // ── Tab commands (Cmd+T new, Cmd+W close, Cmd+1..9 select) ───────────
+    {
+        let s = Arc::clone(shell);
+        d.register("tab::New", move || {
+            s.new_tab(s.focused_pane_id());
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("tab::Close", move || {
+            let id = s.focused_pane_id();
+            let active = s.active_tab_index(id).unwrap_or(0);
+            s.close_tab(id, active);
+        });
+    }
+    for (id, index) in [
+        ("tab::Select1", 0_usize),
+        ("tab::Select2", 1),
+        ("tab::Select3", 2),
+        ("tab::Select4", 3),
+        ("tab::Select5", 4),
+        ("tab::Select6", 5),
+        ("tab::Select7", 6),
+        ("tab::Select8", 7),
+        ("tab::Select9", 8),
+    ] {
+        let s = Arc::clone(shell);
+        d.register(id, move || {
+            s.select_tab(s.focused_pane_id(), index);
+        });
+    }
+
+    // ── File-system F-keys → invoke the existing Slint callbacks so we
+    //    share their logic (destination-pane resolution, selection lookup,
+    //    ops-controller submission).
+    let win_weak = shell.window_weak();
+    {
+        let w = win_weak.clone();
+        d.register("fs::Copy", move || {
+            if let Some(win) = w.upgrade() { win.invoke_fs_copy(); }
+        });
+    }
+    {
+        let w = win_weak.clone();
+        d.register("fs::Move", move || {
+            if let Some(win) = w.upgrade() { win.invoke_fs_move(); }
+        });
+    }
+    {
+        let w = win_weak.clone();
+        d.register("fs::Delete", move || {
+            if let Some(win) = w.upgrade() { win.invoke_fs_delete(); }
+        });
+    }
+    {
+        let w = win_weak.clone();
+        d.register("fs::Rename", move || {
+            if let Some(win) = w.upgrade() { win.invoke_fs_rename(); }
+        });
+    }
+    {
+        let w = win_weak.clone();
+        d.register("fs::Mkdir", move || {
+            if let Some(win) = w.upgrade() { win.invoke_fs_mkdir(); }
+        });
+    }
+
+    // ── Search / ops / bulk-rename toggles ────────────────────────────────
+    {
+        let search = shell.search();
+        let search2 = Arc::clone(&search);
+        d.register("search::Toggle", move || {
+            if search.is_open() { search.close(); } else { search.open(); }
+        });
+        d.register("search::Open", move || {
+            search2.open();
+        });
+    }
+    {
+        let ops = shell.ops();
+        d.register("ops::TogglePanel", move || {
+            ops.toggle_visible();
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("rename::OpenBulk", move || {
+            let focused = s.focused_pane_id();
+            let paths = s.selected_paths(focused);
+            s.bulk_rename().open(paths);
+        });
+    }
+
+    // ── Dual-pane toggle (Cmd+\) ──────────────────────────────────────────
+    {
+        let s = Arc::clone(shell);
+        d.register("workspace::ToggleDualPane", move || {
+            let leaves = s.pane_id_for_index(1).is_some();
+            if leaves {
+                if let Some(id1) = s.pane_id_for_index(1) {
+                    s.set_focused_pane_id(id1);
+                    s.close_focused_pane();
+                }
+            } else {
+                s.split_focused(atlas_ui::SplitDirection::Horizontal);
+            }
+        });
+    }
+
     tracing::info!(handlers = d.handler_count(), "keymap dispatcher ready");
     d
 }
@@ -911,5 +1084,104 @@ fn apply_density_override(tokens: &mut ThemeTokens, density: atlas_config::Densi
             tokens.chrome.row_h_default_px = tokens.chrome.row_h_spacious_px;
         }
         atlas_config::Density::Comfortable => {}
+    }
+}
+
+/// Translate a raw Slint key event into an atlas-keymap [`ChordSequence`].
+///
+/// Slint 1.17 delivers modifier state as an opaque `KeyboardModifiers`
+/// struct whose `control` / `meta` fields are *swapped* on macOS as a
+/// cross-platform-shortcut convenience. This function undoes that so the
+/// keymap always sees physical semantics — a user binding `ctrl-h` in
+/// `~/.config/atlas/keymaps/default.toml` gets the physical ⌃ key regardless
+/// of platform, and `cmd-p` maps to ⌘ on macOS and Ctrl on Linux/Windows.
+///
+/// The `key` string is:
+///   - a single character (letter, digit, punctuation) — mapped to [`Key::Char`],
+///   - a Slint NamedKey escape (delivered as a special multi-byte string) —
+///     mapped to the corresponding [`NamedKey`],
+///   - or one of `"f1"`..`"f24"` — mapped to [`Key::Function`].
+///
+/// Returns `None` for keys that don't produce a meaningful chord (e.g. bare
+/// modifier presses, unknown escape sequences).
+fn build_sequence_from_slint(
+    key_text: &str,
+    ctrl_raw: bool,
+    alt_raw: bool,
+    shift: bool,
+    cmd_raw: bool,
+) -> Option<atlas_keymap::ChordSequence> {
+    use atlas_keymap::ChordSequence;
+
+    // Slint's KeyboardModifiers::control and ::meta are swapped on macOS
+    // (see https://github.com/slint-ui/slint/issues/2011). Normalise both
+    // to physical: `cmd` = the ⌘/Super key, `ctrl` = the ⌃ key.
+    #[cfg(target_os = "macos")]
+    let (ctrl, cmd) = (cmd_raw, ctrl_raw);
+    #[cfg(not(target_os = "macos"))]
+    let (ctrl, cmd) = (ctrl_raw, cmd_raw);
+
+    let key = slint_key_text_to_keymap_key(key_text)?;
+    let chord = Chord {
+        modifiers: Modifiers {
+            ctrl,
+            alt: alt_raw,
+            shift,
+            cmd,
+        },
+        key,
+    };
+    let mut seq = ChordSequence::default();
+    seq.0.push(chord);
+    Some(seq)
+}
+
+/// Map a Slint `KeyEvent.text` payload to an atlas-keymap [`Key`].
+///
+/// Slint encodes named / function keys as characters in the Unicode Private
+/// Use Area (see `i_slint_common::key_codes`). This function matches those
+/// PUA codepoints directly rather than going through `SharedString`
+/// comparisons.
+///
+/// C0 control codes (Ctrl+letter can arrive as 0x01..0x1a on macOS text
+/// bindings) are folded to their letter equivalent.
+fn slint_key_text_to_keymap_key(text: &str) -> Option<Key> {
+    let mut chars = text.chars();
+    let first = chars.next()?;
+    if chars.next().is_some() {
+        // Multi-character text: only PUA-range single chars are keys we care
+        // about here; anything else (e.g. multi-byte input) is not a chord.
+        return None;
+    }
+    match first {
+        // ── C0 named keys ─────────────────────────────────────────────
+        '\u{0008}' => Some(Key::Named(NamedKey::Backspace)),
+        '\u{0009}' => Some(Key::Named(NamedKey::Tab)),
+        '\u{000a}' => Some(Key::Named(NamedKey::Enter)),
+        '\u{001b}' => Some(Key::Named(NamedKey::Escape)),
+        '\u{007f}' => Some(Key::Named(NamedKey::Delete)),
+        '\u{0020}' => Some(Key::Named(NamedKey::Space)),
+        // ── Private-Use-Area named keys (arrows, F-keys, nav) ─────────
+        '\u{F700}' => Some(Key::Named(NamedKey::Up)),
+        '\u{F701}' => Some(Key::Named(NamedKey::Down)),
+        '\u{F702}' => Some(Key::Named(NamedKey::Left)),
+        '\u{F703}' => Some(Key::Named(NamedKey::Right)),
+        c @ '\u{F704}'..='\u{F71B}' => {
+            let n = (c as u32 - 0xF704 + 1) as u8;
+            Some(Key::Function(n))
+        }
+        '\u{F727}' => Some(Key::Named(NamedKey::Insert)),
+        '\u{F729}' => Some(Key::Named(NamedKey::Home)),
+        '\u{F72B}' => Some(Key::Named(NamedKey::End)),
+        '\u{F72C}' => Some(Key::Named(NamedKey::PageUp)),
+        '\u{F72D}' => Some(Key::Named(NamedKey::PageDown)),
+        // ── Bare modifier presses — ignore ─────────────────────────────
+        '\u{0010}'..='\u{0018}' => None,
+        // ── C0 control codes: fold Ctrl+letter (0x01..0x1a) → letter. ──
+        c @ '\u{0001}'..='\u{001a}' => {
+            Some(Key::Char(char::from(c as u8 + b'a' - 1)))
+        }
+        // ── Plain printable character ──────────────────────────────────
+        c => Some(Key::Char(c.to_ascii_lowercase())),
     }
 }

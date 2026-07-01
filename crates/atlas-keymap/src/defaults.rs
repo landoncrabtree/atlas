@@ -87,6 +87,13 @@ pub fn default_bindings() -> Vec<Binding> {
         b("cmd-shift-]", "Pane", "tab::CycleNext"),
         // tab::Reopen supersedes tab::ReopenClosed on cmd-shift-t (last wins).
         b("cmd-shift-t", "Global", "tab::Reopen"),
+        // ── Search / ops / rename / dual-pane ─────────────────────────────────
+        b("cmd-f", "Global", "search::Toggle"),
+        b("cmd-shift-f", "Global", "search::Open"),
+        b("cmd-j", "Global", "ops::TogglePanel"),
+        b("cmd-shift-f2", "Pane", "rename::OpenBulk"),
+        b("cmd-\\", "Global", "workspace::ToggleDualPane"),
+        b("cmd-shift-n", "Pane", "fs::Mkdir"),
     ]
 }
 
@@ -182,6 +189,37 @@ pub fn default_actions() -> Vec<ActionMeta> {
         action!("tab::CyclePrev", "Previous Tab", None, &["Pane"]),
         action!("tab::CycleNext", "Next Tab", None, &["Pane"]),
         action!("tab::Reopen", "Reopen Closed Tab", None, &["Global"]),
+        // ── Search / ops / rename / dual-pane ─────────────────────────────────
+        action!(
+            "search::Toggle",
+            "Toggle Search Panel",
+            Some("Show or hide the right-hand search panel.".into()),
+            &["Global"]
+        ),
+        action!(
+            "search::Open",
+            "Open Search Panel",
+            Some("Show the search panel and focus the query input.".into()),
+            &["Global"]
+        ),
+        action!(
+            "ops::TogglePanel",
+            "Toggle Operations Panel",
+            Some("Show or hide the bottom operations tray.".into()),
+            &["Global"]
+        ),
+        action!(
+            "rename::OpenBulk",
+            "Open Bulk Rename",
+            Some("Open the bulk-rename modal with the focused pane's selection.".into()),
+            &["Pane"]
+        ),
+        action!(
+            "workspace::ToggleDualPane",
+            "Toggle Dual Pane",
+            Some("Add a second pane, or close it if one already exists.".into()),
+            &["Global"]
+        ),
     ]
 }
 

@@ -729,10 +729,45 @@ impl AppShell {
         }
     }
 
+    /// Return a weak reference to the Slint window backing this shell.
+    /// Consumers can `upgrade()` to invoke Slint callbacks or getters.
+    #[must_use]
+    pub fn window_weak(&self) -> slint::Weak<AtlasWindow> {
+        self.window.clone()
+    }
+
+    /// Install the atlas-keymap dispatch hook on the Slint `handle-key-chord`
+    /// callback. Called once at startup after both `AppShell` and the
+    /// `Dispatcher` exist. `hook` is invoked with the raw event fields
+    /// (key text + physical modifier bools) and returns `true` if it
+    /// consumed the event.
+    ///
+    /// Physical-modifier normalisation happens on the caller side so this
+    /// method stays UI-only.
+    pub fn install_key_dispatcher<F>(&self, hook: F)
+    where
+        F: Fn(SharedString, bool, bool, bool, bool) -> bool + 'static,
+    {
+        if let Some(window) = self.window.upgrade() {
+            window.on_handle_key_chord(move |key, ctrl, alt, shift, cmd| {
+                hook(key, ctrl, alt, shift, cmd)
+            });
+        }
+    }
+
     /// Resolve a Slint pane index (0 or 1) to a [`PaneId`] via DFS leaf order.
-    fn pane_id_for_index(&self, index: usize) -> Option<PaneId> {
+    /// Resolve a Slint pane index (0 or 1) to a [`PaneId`] via DFS leaf order.
+    #[must_use]
+    pub fn pane_id_for_index(&self, index: usize) -> Option<PaneId> {
         let leaves = self.workspace.read().layout.all_leaves();
         leaves.get(index).copied()
+    }
+
+    /// Return the index of the currently-active tab in pane `id`, or `None`
+    /// if the pane doesn't exist.
+    #[must_use]
+    pub fn active_tab_index(&self, id: PaneId) -> Option<usize> {
+        self.workspace.read().pane(id).map(|p| p.active_tab)
     }
 
     /// Split the focused pane in `direction`. Returns the new [`PaneId`].
@@ -1704,52 +1739,12 @@ impl AppShell {
             });
         }
 
-        // ── Multi-pane workspace commands ──
-        //
-        // split-right / split-down split the focused pane. Phase 4 removed the
-        // 2-pane compat gate — the Slint UI now renders N panes.
-        {
-            let shell = self.clone();
-            window.on_pane_split_right(move || {
-                tracing::info!("keybind: pane-split-right (cmd+d)");
-                shell.split_focused(SplitDirection::Horizontal);
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane_split_down(move || {
-                tracing::info!("keybind: pane-split-down (cmd+shift+d)");
-                shell.split_focused(SplitDirection::Vertical);
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane_close(move || {
-                tracing::info!("keybind: pane-close (cmd+shift+w)");
-                shell.close_focused_pane();
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane_cycle_view_mode(move || {
-                tracing::info!("keybind: pane-cycle-view-mode (cmd+shift+e)");
-                shell.cycle_view_mode();
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane_focus_direction(move |dir| {
-                tracing::info!(direction = %dir, "keybind: pane-focus-direction (ctrl+hjkl)");
-                let cardinal = match dir.as_str() {
-                    "left" => Cardinal::Left,
-                    "right" => Cardinal::Right,
-                    "up" => Cardinal::Up,
-                    "down" => Cardinal::Down,
-                    _ => return,
-                };
-                shell.focus_direction(cardinal);
-            });
-        }
+        // Note: Multi-pane workspace commands (pane-split-right / -down /
+        // -close / -cycle-view-mode / -focus-direction) used to be wired via
+        // dedicated Slint callbacks. They're now dispatched exclusively
+        // through atlas-keymap (see build_dispatcher in main.rs), so the
+        // Slint callbacks were deleted — every chord flows through
+        // `handle-key-chord` on the AtlasWindow root.
 
         // ── Focused-pane navigation callbacks ────────────────────────────
         // The FocusScope in atlas.slint dispatches these when no modal or

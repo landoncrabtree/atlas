@@ -340,3 +340,39 @@ action = "tab::CycleNext"
 context = "Global"
 key = "shift-cmd-t"
 action = "tab::Reopen"
+
+# [Global] Toggle Search Panel
+[[bindings]]
+context = "Global"
+key = "cmd-f"
+action = "search::Toggle"
+
+# [Global] Open Search Panel
+[[bindings]]
+context = "Global"
+key = "shift-cmd-f"
+action = "search::Open"
+
+# [Global] Toggle Operations Panel
+[[bindings]]
+context = "Global"
+key = "cmd-j"
+action = "ops::TogglePanel"
+
+# [Pane] Open Bulk Rename
+[[bindings]]
+context = "Pane"
+key = "shift-cmd-f2"
+action = "rename::OpenBulk"
+
+# [Global] Toggle Dual Pane
+[[bindings]]
+context = "Global"
+key = "cmd-\\"
+action = "workspace::ToggleDualPane"
+
+# [Pane] New Directory
+[[bindings]]
+context = "Pane"
+key = "shift-cmd-n"
+action = "fs::Mkdir"

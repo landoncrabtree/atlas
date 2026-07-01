@@ -345,12 +345,29 @@ export component AtlasWindow inherits Window {
     // Tab switching — pane-id indexed.
     callback select-tab(int /*pane-id*/, int /*tab*/);
     callback cycle-tab(int /*pane-id*/, int /*delta*/);
-    // Pane-workspace commands.
-    callback pane-split-right();          // Cmd+D
-    callback pane-split-down();           // Cmd+Shift+D
-    callback pane-close();                // Cmd+Shift+W
-    callback pane-focus-direction(string); // "left" | "right" | "up" | "down"
-    callback pane-cycle-view-mode();      // Cmd+Shift+E
+
+    // ── Keymap dispatcher bridge ──────────────────────────────────────────
+    //
+    // Forward every key event through the atlas-keymap Dispatcher on the
+    // Rust side, which resolves the chord against `~/.config/atlas/keymaps/
+    // default.toml` + built-in defaults and invokes the registered action
+    // handler. Returns true when a handler was called (Slint then swallows
+    // the event so it doesn't bubble to a TextInput).
+    //
+    // `key` is the physical key name — a single lowercase character for
+    // letters/digits/punctuation, or a NamedKey token ("escape", "enter",
+    // "tab", "backspace", "delete", "space", "up", "down", "left", "right",
+    // "home", "end", "pageup", "pagedown", "insert"), or "f1".."f24".
+    //
+    // Modifier bools are already normalised by Rust to physical semantics:
+    //   cmd  = ⌘ (macOS) or Meta/Super (Linux/Windows)
+    //   ctrl = ⌃ Control (physical, on every platform)
+    //   alt  = ⌥ Option / Alt
+    //   shift = ⇧
+    //
+    // MVP: pane-context distinction is deferred; the shell always
+    // dispatches with both "Global" and "Pane" contexts stacked.
+    callback handle-key-chord(string /*key*/, bool /*ctrl*/, bool /*alt*/, bool /*shift*/, bool /*cmd*/) -> bool;
 
     // ── Theme bridges ─────────────────────────────────────────────────────────
 
@@ -479,236 +496,95 @@ export component AtlasWindow inherits Window {
         property <int> refocus-tick: root.refocus-tick;
         changed refocus-tick => { self.focus(); }
 
-        // Use capture-key-pressed so global shortcuts run BEFORE children (like
-        // the AddressBar's TextInput) can consume them. TextInputs still get
-        // their key events for anything we `reject` at the bottom, so plain
-        // typing keeps working.
+        // Route every key press through the atlas-keymap Dispatcher on the
+        // Rust side. This is the SINGLE source of truth for keyboard shortcuts:
+        // atlas-keymap resolves the physical chord against the user's
+        // `~/.config/atlas/keymaps/default.toml` (layered over defaults) and
+        // invokes the registered handler. The `handle-key-chord` callback
+        // returns true when a handler ran, so we can `return accept` and stop
+        // propagation.
+        //
+        // We use `capture-key-pressed` so shortcuts fire BEFORE any child
+        // TextInput (address bar, palette, bulk-rename) can consume the key.
+        // Modal-specific keys (Escape → dismiss palette, Tab → cycle panes)
+        // are still handled here so they beat both text inputs and the
+        // dispatcher's global bindings.
         capture-key-pressed(event) => {
-            if event.text == Key.Escape && palette-visible {
-                root.palette-dismiss();
-                return accept;
+            // ── Modal-specific Escape / drag-cancel ────────────────────────
+            //
+            // These MUST run before the dispatcher; otherwise typing Escape
+            // in the palette query field would fall through to whatever the
+            // user bound to `escape` globally.
+            if event.text == Key.Escape {
+                if is-dragging          { root.drag-cancel();          return accept; }
+                if palette-visible      { root.palette-dismiss();      return accept; }
+                if search-panel-visible { root.search-close();         return accept; }
+                if bulk-rename-visible  { root.bulk-rename-cancel();   return accept; }
             }
-            // Cancel an in-flight drag before dismissing anything else.
-            if event.text == Key.Escape && is-dragging {
-                root.drag-cancel();
-                return accept;
-            }
-            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "P" || event.text == "p") {
-                root.toggle-palette();
-                return accept;
-            }
-            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && event.text == "p" {
-                root.open-goto();
-                return accept;
-            }
-            if event.text == Key.Tab && panes.length > 1 && !palette-visible {
+
+            // Tab cycles pane focus when a workspace has 2+ panes. Handled
+            // outside the keymap because Tab in a TextInput has native
+            // meaning (focus-nav / autocomplete).
+            if event.text == Key.Tab && panes.length > 1 && !palette-visible
+                && !search-panel-visible && !bulk-rename-visible {
                 root.cycle-pane-focus();
                 return accept;
             }
-            if event.text == Key.Escape && search-panel-visible {
-                root.search-close();
-                return accept;
-            }
-            if event.text == Key.Escape && bulk-rename-visible {
-                root.bulk-rename-cancel();
-                return accept;
-            }
-            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "f" || event.text == "F") {
-                root.toggle-search-panel();
-                return accept;
-            }
-            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "f" || event.text == "F") {
-                root.open-search-panel();
-                return accept;
-            }
-            // Toggle ops panel with Cmd+J on macOS / Ctrl+J on Linux/Windows.
-            // Uses only `modifiers.control` (which is physical Cmd on macOS)
-            // so that Ctrl+J (macOS physical Ctrl → modifiers.meta) stays
-            // available for vim pane-down navigation below.
-            if event.modifiers.control && !event.modifiers.meta && !event.modifiers.shift && (event.text == "j" || event.text == "J") {
-                root.toggle-ops-panel();
-                return accept;
-            }
-            // File-operation F-keys (NC/Midnight Commander convention).
-            // Cmd/Ctrl+Shift+F2 opens the Bulk Rename modal.
-            if event.text == Key.F2 && (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && !palette-visible {
-                root.open-bulk-rename();
-                return accept;
-            }
-            if event.text == Key.F2 && !palette-visible && !bulk-rename-visible {
-                root.fs-rename();
-                return accept;
-            }
-            if event.text == Key.F5 && !palette-visible {
-                root.fs-copy();
-                return accept;
-            }
-            if event.text == Key.F6 && !palette-visible {
-                root.fs-move();
-                return accept;
-            }
-            if event.text == Key.F7 && !palette-visible {
-                root.fs-mkdir();
-                return accept;
-            }
-            if event.text == Key.F8 && !palette-visible {
-                root.fs-delete();
-                return accept;
-            }
-            // Cmd/Ctrl+Backslash — toggle dual-pane mode.
-            if (event.modifiers.meta || event.modifiers.control) && event.text == "\\" && !palette-visible && !search-panel-visible && !bulk-rename-visible {
-                root.toggle-dual-pane();
-                return accept;
-            }
 
-            // ── macOS-standard shortcuts ────────────────────────────────
-            // Cmd/Ctrl+T — new tab in the focused pane.
-            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "t" || event.text == "T") && !palette-visible && !bulk-rename-visible {
-                root.new-tab(focused-pane-id);
-                return accept;
-            }
-            // Cmd/Ctrl+W — close active tab in the focused pane.
-            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "w" || event.text == "W") && !palette-visible && !bulk-rename-visible {
-                root.tab-closed(focused-pane-id, panes[focus-index].active-tab);
-                return accept;
-            }
-            // Cmd/Ctrl+Shift+N — new folder (alias for F7 mkdir).
-            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "n" || event.text == "N") && !palette-visible && !bulk-rename-visible {
-                root.fs-mkdir();
-                return accept;
-            }
-
-            // Cmd/Ctrl+1..9 — switch tab N (1-indexed) in the focused pane.
-            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && !palette-visible && !bulk-rename-visible {
-                if event.text == "1" { root.select-tab(focused-pane-id, 0); return accept; }
-                if event.text == "2" { root.select-tab(focused-pane-id, 1); return accept; }
-                if event.text == "3" { root.select-tab(focused-pane-id, 2); return accept; }
-                if event.text == "4" { root.select-tab(focused-pane-id, 3); return accept; }
-                if event.text == "5" { root.select-tab(focused-pane-id, 4); return accept; }
-                if event.text == "6" { root.select-tab(focused-pane-id, 5); return accept; }
-                if event.text == "7" { root.select-tab(focused-pane-id, 6); return accept; }
-                if event.text == "8" { root.select-tab(focused-pane-id, 7); return accept; }
-                if event.text == "9" { root.select-tab(focused-pane-id, 8); return accept; }
-            }
-
-            // Cmd/Ctrl+Shift+[ / Cmd/Ctrl+Shift+] — cycle to previous/next tab.
-            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && !palette-visible && !bulk-rename-visible {
-                if event.text == "[" || event.text == "{" {
-                    root.cycle-tab(focused-pane-id, -1);
-                    return accept;
-                }
-                if event.text == "]" || event.text == "}" {
-                    root.cycle-tab(focused-pane-id, 1);
-                    return accept;
-                }
-            }
-
-            // ── Multi-pane workspace ──────────────────────────────────────
-
-            // Cmd/Ctrl+D (no shift) — split the focused pane to the right.
-            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "d" || event.text == "D") && !palette-visible && !bulk-rename-visible {
-                root.pane-split-right();
-                return accept;
-            }
-            // Cmd/Ctrl+Shift+D — split the focused pane downward.
-            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "d" || event.text == "D") && !palette-visible && !bulk-rename-visible {
-                root.pane-split-down();
-                return accept;
-            }
-            // Cmd/Ctrl+Shift+W — close the focused pane.
-            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "w" || event.text == "W") && !palette-visible && !bulk-rename-visible {
-                root.pane-close();
-                return accept;
-            }
-            // Cmd/Ctrl+Shift+E — cycle view mode in the focused pane.
-            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "e" || event.text == "E") && !palette-visible && !bulk-rename-visible {
-                root.pane-cycle-view-mode();
-                return accept;
-            }
-            // Ctrl+H/J/K/L — vim-style pane focus.
+            // ── Keymap dispatcher ──────────────────────────────────────────
             //
-            // Modifier semantics differ by platform in Slint 1.17:
-            //   - macOS: modifiers.meta    = physical Ctrl (⌃)
-            //            modifiers.control = physical Cmd  (⌘)
-            //   - Linux/Windows: modifiers.control = physical Ctrl
-            // We want the PHYSICAL Ctrl key here (Cmd+H is macOS "minimize"),
-            // so we accept EITHER modifiers.meta (macOS physical Ctrl) OR
-            // modifiers.control-only (Linux/Windows physical Ctrl). The
-            // exclusive-of-shift and exclusive-of-alt checks prevent
-            // collisions with other chords.
-            //
-            // Some macOS text bindings also deliver Ctrl+letter as the
-            // corresponding C0 control code (BS=0x08 for H, LF=0x0a for J,
-            // VT=0x0b for K, FF=0x0c for L) with no visible text, so we
-            // match those too.
-            if (event.modifiers.meta || (event.modifiers.control && !event.modifiers.meta)) && !event.modifiers.shift && !event.modifiers.alt && !palette-visible && !bulk-rename-visible {
-                if event.text == "h" || event.text == "H" || event.text == "\u{0008}" { root.pane-focus-direction("left");  return accept; }
-                if event.text == "j" || event.text == "J" || event.text == "\u{000a}" { root.pane-focus-direction("down");  return accept; }
-                if event.text == "k" || event.text == "K" || event.text == "\u{000b}" { root.pane-focus-direction("up");    return accept; }
-                if event.text == "l" || event.text == "L" || event.text == "\u{000c}" { root.pane-focus-direction("right"); return accept; }
-            }
-
-            // ── View navigation ───────────────────────────────────────────
-            //
-            // These fall through to the child's key-pressed via `reject` when
-            // a TextInput has focus (so plain typing still works in the
-            // address bar / palette / bulk-rename inputs). When no TextInput
-            // is focused, capture-key-pressed short-circuits them here.
-            if !palette-visible && !search-panel-visible && !bulk-rename-visible {
-                // Only consume plain nav keys if no text-input child has
-                // focus — we approximate that by checking modifiers: if a
-                // modifier is held, treat as command; otherwise the reject
-                // path lets TextInputs claim character keys.
-                if event.text == Key.DownArrow {
-                    root.pane-move-focus(1);
+            // Only fire when at least one modifier is held OR the key is a
+            // named/function key. Plain letters go straight to text inputs
+            // (address bar, palette query) so users can type. Vim `hjkl`
+            // for file navigation lives in the fallback `key-pressed`
+            // handler below, gated on `vim-mode`, so it doesn't collide
+            // with typing in a TextInput.
+            if event.modifiers.control || event.modifiers.meta
+                || event.modifiers.alt || event.modifiers.shift
+                || event.text == Key.F1 || event.text == Key.F2
+                || event.text == Key.F3 || event.text == Key.F4
+                || event.text == Key.F5 || event.text == Key.F6
+                || event.text == Key.F7 || event.text == Key.F8
+                || event.text == Key.F9 || event.text == Key.F10
+                || event.text == Key.F11 || event.text == Key.F12 {
+                if root.handle-key-chord(event.text,
+                                         event.modifiers.control,
+                                         event.modifiers.alt,
+                                         event.modifiers.shift,
+                                         event.modifiers.meta) {
                     return accept;
                 }
-                if event.text == Key.UpArrow {
-                    root.pane-move-focus(-1);
-                    return accept;
-                }
-                if event.text == Key.Return || event.text == "\n" {
-                    // Reject so TextInputs (address bar / palette / bulk-rename)
-                    // can still fire their `accepted` callback for Enter.
-                    // Non-textinput panes will handle Enter via their own
-                    // key-pressed handlers, if any.
-                    return reject;
-                }
-                // Vim h/j/k/l — only when vim_mode is on. Reject so plain
-                // typing in text inputs still works: capture-key-pressed
-                // fires FIRST, so we only intercept when the character is
-                // not meant for a text field. Approximation: only fire the
-                // vim binding when no text is being edited, i.e. when the
-                // event has no shift modifier — but that doesn't help.
-                // Instead, we DON'T bind vim hjkl in capture; leave to the
-                // per-pane key handler.
             }
 
             reject;
         }
 
-        // Fallback for keys not consumed by any child (e.g. arrow keys with
-        // no TextInput focused). Also where vim-mode hjkl navigation lives —
-        // TextInputs get letter keys first (bubble phase), so vim keys only
-        // fire when no text field is focused.
+        // Fallback for keys the dispatcher didn't consume and that no child
+        // TextInput handled either. This is the file-list navigation path:
+        //
+        //   - Arrow keys / Enter / Backspace: always active (once no
+        //     TextInput has focus).
+        //   - Vim `hjkl` (no modifiers): only when `vim_mode` config is
+        //     true. Deliberately hardcoded here — configurable through
+        //     `general.vim_mode` — so casual users who don't want the
+        //     letter keys hijacked can turn it off.
         key-pressed(event) => {
             if palette-visible || search-panel-visible || bulk-rename-visible {
                 return reject;
             }
             if vim-mode {
-                if event.text == "j" { root.pane-move-focus(1);  return accept; }
-                if event.text == "k" { root.pane-move-focus(-1); return accept; }
-                if event.text == "l" { root.pane-activate-focused(); return accept; }
-                if event.text == "h" { root.pane-go-up();        return accept; }
+                if event.text == "j" { root.pane-move-focus(1);       return accept; }
+                if event.text == "k" { root.pane-move-focus(-1);      return accept; }
+                if event.text == "l" { root.pane-activate-focused();  return accept; }
+                if event.text == "h" { root.pane-go-up();             return accept; }
             }
-            if event.text == Key.Return || event.text == "\n" || event.text == Key.RightArrow {
-                root.pane-activate-focused();
-                return accept;
-            }
-            if event.text == Key.Backspace || event.text == Key.LeftArrow {
-                root.pane-go-up();
-                return accept;
-            }
+            if event.text == Key.DownArrow  { root.pane-move-focus(1);       return accept; }
+            if event.text == Key.UpArrow    { root.pane-move-focus(-1);      return accept; }
+            if event.text == Key.Return
+                || event.text == "\n"
+                || event.text == Key.RightArrow { root.pane-activate-focused();  return accept; }
+            if event.text == Key.Backspace
+                || event.text == Key.LeftArrow  { root.pane-go-up();             return accept; }
             reject;
         }
 
