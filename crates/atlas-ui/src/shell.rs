@@ -466,6 +466,35 @@ impl AppShell {
         self.select_tab(pane, target);
     }
 
+    /// Phase-0 stub: split the focused pane. In the current 2-pane model,
+    /// enabling dual-pane counts as "splitting" pane 0 rightward; requests
+    /// for a 3rd pane are a no-op logged as a warning. Full N-pane support
+    /// lands in Phase 4 (see `.github/instructions/multi-pane-refactor`).
+    pub fn split_focused_or_toggle_dual(self: &Arc<Self>) {
+        if self.is_dual_pane() {
+            tracing::warn!(
+                "split_focused: 3rd pane not supported until Phase 4 (multi-pane refactor); ignoring"
+            );
+            return;
+        }
+        self.set_dual_pane(true);
+    }
+
+    /// Phase-0 stub: close the focused pane. In the 2-pane model this
+    /// disables dual-pane mode when pane 1 is focused; refuses to close
+    /// pane 0 (which would leave zero panes).
+    pub fn close_focused_pane(self: &Arc<Self>) {
+        if !self.is_dual_pane() {
+            tracing::debug!("close_focused: only one pane open; refusing");
+            return;
+        }
+        // Regardless of which pane is focused, disabling dual-pane collapses
+        // to the pane-0 view. That preserves the current active-tab / view
+        // mode on pane 0 — which is what users want when they close the
+        // pane they were viewing (they're back to a single-pane workflow).
+        self.set_dual_pane(false);
+    }
+
     /// Append a new tab to `pane` pointing at the pane's current location.
     /// The new tab becomes active. No-op if `pane` is out of range.
     pub fn new_tab(self: &Arc<Self>, pane: usize) {
@@ -735,6 +764,60 @@ impl AppShell {
                 if pane >= 0 {
                     shell.cycle_tab(pane as usize, delta as isize);
                 }
+            });
+        }
+
+        // ── Multi-pane workspace commands (Phase 0) ──
+        //
+        // These operate on the current 2-pane model: split-right / split-down
+        // both open the second pane if it's not already open; requests for a
+        // third pane are logged as a warning until the full N-pane refactor
+        // lands (see .github/instructions/multi-pane-refactor).
+        {
+            let shell = self.clone();
+            window.on_pane_split_right(move || shell.split_focused_or_toggle_dual());
+        }
+        {
+            let shell = self.clone();
+            window.on_pane_split_down(move || shell.split_focused_or_toggle_dual());
+        }
+        {
+            let shell = self.clone();
+            window.on_pane_close(move || shell.close_focused_pane());
+        }
+        {
+            let shell = self.clone();
+            window.on_pane_cycle_view_mode(move || {
+                let pane = shell.focused_pane();
+                let cur = shell
+                    .workspace
+                    .read()
+                    .panes
+                    .get(pane)
+                    .map(|p| p.view_mode)
+                    .unwrap_or(crate::models::ViewMode::Details);
+                let next = match cur {
+                    crate::models::ViewMode::Details => crate::models::ViewMode::Grid,
+                    crate::models::ViewMode::Grid => crate::models::ViewMode::Gallery,
+                    crate::models::ViewMode::Gallery => crate::models::ViewMode::Miller,
+                    crate::models::ViewMode::Miller => crate::models::ViewMode::Tree,
+                    crate::models::ViewMode::Tree => crate::models::ViewMode::Details,
+                };
+                shell.set_view_mode(pane, next);
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_pane_focus_direction(move |dir| {
+                // In the 2-pane model, only left/right are meaningful.
+                // Up/Down are placeholders for the tiled N-pane layout.
+                let cur = shell.focused_pane();
+                let target = match dir.as_str() {
+                    "left" if cur == 1 => 0,
+                    "right" if cur == 0 && shell.is_dual_pane() => 1,
+                    _ => return,
+                };
+                shell.set_focused_pane(target);
             });
         }
 

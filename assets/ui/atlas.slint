@@ -306,6 +306,13 @@ export component AtlasWindow inherits Window {
     callback palette-selection-delta(int);  // arrow up/down while palette open
     callback select-tab(int /*pane*/, int /*tab*/);
     callback cycle-tab(int /*pane*/, int /*delta*/);
+    // Pane-workspace commands (see .github/instructions/multi-pane-refactor
+    // for the phased N-pane plan; today these operate on the 2-pane model).
+    callback pane-split-right();          // Cmd+D
+    callback pane-split-down();           // Cmd+Shift+D
+    callback pane-close();                // Cmd+Shift+W
+    callback pane-focus-direction(string); // "left" | "right" | "up" | "down"
+    callback pane-cycle-view-mode();      // Cmd+Shift+E
 
     pure function location-str() -> string {
         dual-pane
@@ -548,6 +555,39 @@ export component AtlasWindow inherits Window {
                     root.cycle-tab(focus-index, 1);
                     return accept;
                 }
+            }
+
+            // ── Multi-pane workspace (Phase 0 keybinds, see
+            // .github/instructions/multi-pane-refactor for the full plan) ──
+
+            // Cmd/Ctrl+D (no shift) — split the focused pane to the right.
+            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "d" || event.text == "D") && !palette-visible && !bulk-rename-visible {
+                root.pane-split-right();
+                return accept;
+            }
+            // Cmd/Ctrl+Shift+D — split the focused pane downward.
+            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "d" || event.text == "D") && !palette-visible && !bulk-rename-visible {
+                root.pane-split-down();
+                return accept;
+            }
+            // Cmd/Ctrl+Shift+W — close the focused pane.
+            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "w" || event.text == "W") && !palette-visible && !bulk-rename-visible {
+                root.pane-close();
+                return accept;
+            }
+            // Cmd/Ctrl+Shift+E — cycle view mode in the focused pane.
+            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "e" || event.text == "E") && !palette-visible && !bulk-rename-visible {
+                root.pane-cycle-view-mode();
+                return accept;
+            }
+            // Ctrl+H/J/K/L — vim-style pane focus (works alongside modal
+            // guards). Deliberately Ctrl-only (no Cmd) so it doesn't clash
+            // with macOS system shortcuts.
+            if event.modifiers.control && !event.modifiers.meta && !event.modifiers.shift && !palette-visible && !bulk-rename-visible {
+                if event.text == "h" || event.text == "H" { root.pane-focus-direction("left");  return accept; }
+                if event.text == "j" || event.text == "J" { root.pane-focus-direction("down");  return accept; }
+                if event.text == "k" || event.text == "K" { root.pane-focus-direction("up");    return accept; }
+                if event.text == "l" || event.text == "L" { root.pane-focus-direction("right"); return accept; }
             }
 
             // ── View navigation (when no modal has focus) ────────────────
