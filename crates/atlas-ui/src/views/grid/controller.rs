@@ -271,6 +271,47 @@ impl GridController {
         self.push_selection_to_ui();
     }
 
+    /// Move focus AND single-select the new cell — keyboard-navigation
+    /// parity with left-click.
+    pub fn move_and_select(self: &Arc<Self>, delta_row: isize, delta_col: isize) {
+        let len = self.entries.read().len();
+        if len == 0 {
+            return;
+        }
+        let cols = self.columns.load(Ordering::Relaxed).max(1);
+        let current = self.focused.load(Ordering::Relaxed);
+        let current_idx = if current == NO_FOCUS { 0 } else { current };
+        let new_idx = grid_move(current_idx, delta_row, delta_col, cols, len);
+        {
+            let mut sel = self.selection.write();
+            sel.resize(len);
+            sel.select_single(new_idx);
+        }
+        self.focused.store(new_idx, Ordering::Relaxed);
+        self.push_selection_to_ui();
+    }
+
+    /// Move focus and extend the range selection from anchor
+    /// (Shift+Arrow / Shift+j/k).
+    pub fn extend_selection(self: &Arc<Self>, delta_row: isize, delta_col: isize) {
+        let len = self.entries.read().len();
+        if len == 0 {
+            return;
+        }
+        let cols = self.columns.load(Ordering::Relaxed).max(1);
+        let current = self.focused.load(Ordering::Relaxed);
+        let current_idx = if current == NO_FOCUS { 0 } else { current };
+        let new_idx = grid_move(current_idx, delta_row, delta_col, cols, len);
+        let anchor = self.selection.read().anchor.unwrap_or(new_idx);
+        {
+            let mut sel = self.selection.write();
+            sel.resize(len);
+            sel.select_range(anchor, new_idx);
+        }
+        self.focused.store(new_idx, Ordering::Relaxed);
+        self.push_selection_to_ui();
+    }
+
     /// Called by the Slint `thumbnail-visible` callback; enqueues a thumbnail
     /// request for the entry at `cell_index` if it is thumbnailable.
     pub fn thumbnail_visible(self: &Arc<Self>, cell_index: usize) {

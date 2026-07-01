@@ -82,7 +82,10 @@ export component GridCell {
                     self.drag-initiated = false;
                 }
                 if pe.kind == PointerEventKind.up && pe.button == PointerEventButton.right {
-                    root.context-menu(self.mouse-x, self.mouse-y);
+                    root.context-menu(
+                        self.absolute-position.x + self.mouse-x,
+                        self.absolute-position.y + self.mouse-y,
+                    );
                 }
             }
 

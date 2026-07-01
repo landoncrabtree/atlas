@@ -722,10 +722,13 @@ fn build_dispatcher(
     }
 
     // ── Pane cursor movement ──────────────────────────────────────────────
+    // ── File-list navigation (arrow keys + vim hjkl) ─────────────────────
     //
     // Route by view mode so hjkl / arrows work in every view (details,
-    // grid, gallery, miller, tree). The details controller was previously
-    // the only recipient — a bug for panes in grid mode etc.
+    // grid, gallery, miller, tree). Details/Grid update the selection
+    // to match focus (Finder/Explorer parity — keyboard nav "picks" the
+    // row just like a click); Gallery/Tree/Miller focus one at a time by
+    // design so plain move_focus is fine.
     {
         let s = Arc::clone(shell);
         d.register("pane::MoveDown", move || {
@@ -733,8 +736,8 @@ fn build_dispatcher(
             let mode = s.pane_view_mode(id);
             let Some(ctrl) = s.pane_by_id(id) else { return };
             match mode {
-                atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(1_i64),
-                atlas_ui::models::ViewMode::Grid => { ctrl.grid.move_focus(1_isize, 0); }
+                atlas_ui::models::ViewMode::Details => ctrl.details.move_and_select(1_i64),
+                atlas_ui::models::ViewMode::Grid => ctrl.grid.move_and_select(1_isize, 0),
                 atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(1_isize),
                 atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(1_isize),
                 atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(1_isize),
@@ -748,8 +751,42 @@ fn build_dispatcher(
             let mode = s.pane_view_mode(id);
             let Some(ctrl) = s.pane_by_id(id) else { return };
             match mode {
-                atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(-1_i64),
-                atlas_ui::models::ViewMode::Grid => { ctrl.grid.move_focus(-1_isize, 0); }
+                atlas_ui::models::ViewMode::Details => ctrl.details.move_and_select(-1_i64),
+                atlas_ui::models::ViewMode::Grid => ctrl.grid.move_and_select(-1_isize, 0),
+                atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(-1_isize),
+                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(-1_isize),
+                atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(-1_isize),
+            }
+        });
+    }
+    // Shift+Arrow / Shift+j / Shift+k extends the range selection in
+    // Details and Grid; degrades to plain move_focus for the
+    // single-focus views (Gallery/Tree/Miller) where range extend has
+    // no obvious meaning.
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::ExtendDown", move || {
+            let id = s.focused_pane_id();
+            let mode = s.pane_view_mode(id);
+            let Some(ctrl) = s.pane_by_id(id) else { return };
+            match mode {
+                atlas_ui::models::ViewMode::Details => ctrl.details.extend_selection(1_i64),
+                atlas_ui::models::ViewMode::Grid => ctrl.grid.extend_selection(1_isize, 0),
+                atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(1_isize),
+                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(1_isize),
+                atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(1_isize),
+            }
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::ExtendUp", move || {
+            let id = s.focused_pane_id();
+            let mode = s.pane_view_mode(id);
+            let Some(ctrl) = s.pane_by_id(id) else { return };
+            match mode {
+                atlas_ui::models::ViewMode::Details => ctrl.details.extend_selection(-1_i64),
+                atlas_ui::models::ViewMode::Grid => ctrl.grid.extend_selection(-1_isize, 0),
                 atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(-1_isize),
                 atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(-1_isize),
                 atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(-1_isize),
@@ -885,19 +922,14 @@ fn build_dispatcher(
 
     // ── File-list navigation (arrow keys + vim hjkl) ──────────────────────
     //
-    // fs::View unifies "open" for folders and files: cd into folders,
-    // hand files off to the OS default application (Preview.app for
-    // images, VS Code for source files, …). pane::Activate is kept as
-    // an alias so existing user keymaps that bind to it keep working.
+    // fs::View is the ONE "open" action: cd into folders, hand files off
+    // to the OS default application (Preview.app for images, VS Code for
+    // source files, …). Any number of keybinds may bind to it (Enter, l,
+    // →, dblclick, context-menu Open); actions have no aliases — only
+    // keybinds do.
     {
         let s = Arc::clone(shell);
         d.register("fs::View", move || {
-            s.view_focused_entry(s.focused_pane_id());
-        });
-    }
-    {
-        let s = Arc::clone(shell);
-        d.register("pane::Activate", move || {
             s.view_focused_entry(s.focused_pane_id());
         });
     }
@@ -943,24 +975,24 @@ fn build_dispatcher(
     let win_weak = shell.window_weak();
     {
         let s = Arc::clone(shell);
-        d.register("fs::CopyToClipboard", move || {
+        d.register("fs::Copy", move || {
             let paths = s.selected_paths(s.focused_pane_id());
             s.clipboard().copy(paths);
         });
     }
     {
         let s = Arc::clone(shell);
-        d.register("fs::CutToClipboard", move || {
+        d.register("fs::Cut", move || {
             let paths = s.selected_paths(s.focused_pane_id());
             s.clipboard().cut(paths);
         });
     }
     {
         let s = Arc::clone(shell);
-        d.register("fs::PasteFromClipboard", move || {
+        d.register("fs::Paste", move || {
             let focused = s.focused_pane_id();
             let Some(dest) = s.pane_location(focused) else {
-                tracing::warn!(?focused, "fs::PasteFromClipboard: no pane location");
+                tracing::warn!(?focused, "fs::Paste: no pane location");
                 return;
             };
             s.clipboard().paste(dest);
@@ -1223,9 +1255,9 @@ fn slint_key_text_to_keymap_key(text: &str) -> Option<Key> {
 /// so user rebindings appear immediately. Actions with no binding in the
 /// current keymap are silently dropped.
 const FOOTER_ACTIONS: &[(&str, &str)] = &[
-    ("fs::CopyToClipboard", "Copy"),
-    ("fs::CutToClipboard", "Cut"),
-    ("fs::PasteFromClipboard", "Paste"),
+    ("fs::Copy", "Copy"),
+    ("fs::Cut", "Cut"),
+    ("fs::Paste", "Paste"),
     ("fs::Rename", "Rename"),
     ("fs::Mkdir", "New Folder"),
     ("fs::Delete", "Trash"),

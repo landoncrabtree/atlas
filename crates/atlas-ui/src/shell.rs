@@ -1322,6 +1322,35 @@ impl AppShell {
             tracing::debug!(?id, "fs::View: no focused entry");
             return;
         };
+        self.view_path(id, path);
+    }
+
+    /// Open a specific entry `index` within pane `id`, bypassing the
+    /// Rust-side focused-index cache. Used by double-click and grid /
+    /// tree cell activation: those handlers know exactly which row was
+    /// clicked and pushing an index avoids the "clicked config.json but
+    /// opened the previously selected file" race, where `select_index`
+    /// has scheduled the model update but the Rust cache reads through
+    /// the stale value.
+    pub fn view_entry_at_index(self: &Arc<Self>, id: PaneId, index: usize) {
+        let path = {
+            let vms = self.vms.read();
+            vms.get(&id)
+                .and_then(|vm| vm.entries().get(index).map(|e| e.path.clone()))
+        };
+        let Some(path) = path else {
+            tracing::debug!(?id, index, "fs::View: index out of range");
+            return;
+        };
+        self.view_path(id, path);
+    }
+
+    /// Common tail: cd into `path` if it's a directory, or hand it off
+    /// to the OS default handler otherwise. Public so views with
+    /// non-trivial index → path resolution (Tree, Miller) can push the
+    /// path directly instead of round-tripping through a focused-index
+    /// cache.
+    pub fn view_path(self: &Arc<Self>, id: PaneId, path: PathBuf) {
         if path.is_dir() {
             {
                 let mut ws = self.workspace.write();
@@ -1868,10 +1897,8 @@ impl AppShell {
                     return;
                 };
                 match mode {
-                    ViewMode::Details => ctrl.details.move_focus(delta as i64),
-                    ViewMode::Grid => {
-                        ctrl.grid.move_focus(delta as isize, 0);
-                    }
+                    ViewMode::Details => ctrl.details.move_and_select(delta as i64),
+                    ViewMode::Grid => ctrl.grid.move_and_select(delta as isize, 0),
                     ViewMode::Gallery => ctrl.gallery.move_focus(delta as isize),
                     ViewMode::Miller => ctrl.miller.move_focus(delta as isize),
                     ViewMode::Tree => ctrl.tree.move_focus(delta as isize),
@@ -2051,10 +2078,11 @@ impl AppShell {
                 if let Some(c) = shell.pane_by_id(id) {
                     c.details.select_index(index as usize, false, false);
                 }
-                // Route through view_focused_entry so files open with the
-                // OS default handler and folders navigate — same code path
-                // as Enter / vim-l.
-                shell.view_focused_entry(id);
+                // Resolve the target directly from the double-click index
+                // rather than reading the (potentially stale) focused-entry
+                // cache — otherwise the previously-selected row would open
+                // on the first double-click after a selection change.
+                shell.view_entry_at_index(id, index as usize);
                 shell.bump_refocus_tick();
             });
         }
@@ -2106,7 +2134,7 @@ impl AppShell {
                 if let Some(c) = shell.pane_by_id(id) {
                     c.grid.select_index(index as usize, false, false);
                 }
-                shell.view_focused_entry(id);
+                shell.view_entry_at_index(id, index as usize);
                 shell.bump_refocus_tick();
             });
         }
@@ -2207,10 +2235,16 @@ impl AppShell {
             window.on_tree_row_double_clicked(move |pane_id, index| {
                 let id = PaneId(pane_id as u32);
                 shell.set_focused_pane_id(id);
-                if let Some(c) = shell.pane_by_id(id) {
+                let path = shell.pane_by_id(id).and_then(|c| {
                     c.tree.select_index(index as usize, false, false);
+                    let visible = c.tree.build_visible_nodes();
+                    visible
+                        .get(index as usize)
+                        .map(|row| PathBuf::from(row.node_id.as_str()))
+                });
+                if let Some(path) = path {
+                    shell.view_path(id, path);
                 }
-                shell.view_focused_entry(id);
                 shell.bump_refocus_tick();
             });
         }
@@ -2247,10 +2281,13 @@ impl AppShell {
             window.on_miller_row_double_clicked(move |pane_id, col, row| {
                 let id = PaneId(pane_id as u32);
                 shell.set_focused_pane_id(id);
-                if let Some(c) = shell.pane_by_id(id) {
+                let path = shell.pane_by_id(id).and_then(|c| {
                     c.miller.select_row(col as usize, row as usize);
+                    c.miller.entry_path_at(col as usize, row as usize)
+                });
+                if let Some(path) = path {
+                    shell.view_path(id, path);
                 }
-                shell.view_focused_entry(id);
                 shell.bump_refocus_tick();
             });
         }
@@ -2389,8 +2426,8 @@ impl AppShell {
         //
         // Pane-to-pane copy/move (Norton F5/F6) was deleted: it didn't
         // scale beyond 2 panes ("which one is the destination?") and
-        // clipboard copy/paste (fs::CopyToClipboard / fs::PasteFromClipboard)
-        // covers the same use case with clearer semantics.
+        // clipboard copy/paste (fs::Copy / fs::Paste) covers the same use
+        // case with clearer semantics.
         {
             let shell = Arc::clone(self);
             window.on_fs_delete(move || {

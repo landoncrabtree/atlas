@@ -139,6 +139,30 @@ context = "Pane"
 key = "space"
 action = "pane::ToggleSelection"
 
+# [Pane] Extend Selection Down
+[[bindings]]
+context = "Pane"
+key = "shift-down"
+action = "pane::ExtendDown"
+
+# [Pane] Extend Selection Up
+[[bindings]]
+context = "Pane"
+key = "shift-up"
+action = "pane::ExtendUp"
+
+# [Pane] Extend Selection Down
+[[bindings]]
+context = "Pane"
+key = "shift-j"
+action = "pane::ExtendDown"
+
+# [Pane] Extend Selection Up
+[[bindings]]
+context = "Pane"
+key = "shift-k"
+action = "pane::ExtendUp"
+
 # [Pane] Select All
 [[bindings]]
 context = "Pane"
@@ -275,19 +299,19 @@ action = "view::Cycle"
 [[bindings]]
 context = "Pane"
 key = "ctrl-c"
-action = "fs::CopyToClipboard"
+action = "fs::Copy"
 
 # [Pane] Cut
 [[bindings]]
 context = "Pane"
 key = "ctrl-x"
-action = "fs::CutToClipboard"
+action = "fs::Cut"
 
 # [Pane] Paste
 [[bindings]]
 context = "Pane"
 key = "ctrl-v"
-action = "fs::PasteFromClipboard"
+action = "fs::Paste"
 
 # [Pane] Move to Trash
 [[bindings]]

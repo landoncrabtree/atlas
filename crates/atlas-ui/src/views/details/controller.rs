@@ -297,6 +297,54 @@ impl DetailsController {
         self.push_selection_to_ui();
     }
 
+    /// Move focus by `delta` AND single-select the new focused row —
+    /// keyboard-navigation parity with left-click.
+    pub fn move_and_select(self: &Arc<Self>, delta: i64) {
+        let len = self.entries.read().len();
+        if len == 0 {
+            return;
+        }
+        let current = self.focused.load(Ordering::Relaxed);
+        let current_i64 = if current == NO_FOCUS {
+            0
+        } else {
+            current as i64
+        };
+        let next = (current_i64 + delta).clamp(0, (len as i64) - 1) as usize;
+        {
+            let mut selection = self.selection.write();
+            selection.resize(len);
+            selection.select_single(next);
+        }
+        self.focused.store(next, Ordering::Relaxed);
+        self.push_selection_to_ui();
+    }
+
+    /// Move focus by `delta` and extend the range selection from the
+    /// anchor to the new focused row (Shift+Arrow / Shift+j/k). If no
+    /// anchor exists yet the current focus becomes the anchor.
+    pub fn extend_selection(self: &Arc<Self>, delta: i64) {
+        let len = self.entries.read().len();
+        if len == 0 {
+            return;
+        }
+        let current = self.focused.load(Ordering::Relaxed);
+        let current_i64 = if current == NO_FOCUS {
+            0
+        } else {
+            current as i64
+        };
+        let next = (current_i64 + delta).clamp(0, (len as i64) - 1) as usize;
+        let anchor = self.selection.read().anchor.unwrap_or(next);
+        {
+            let mut selection = self.selection.write();
+            selection.resize(len);
+            selection.select_range(anchor, next);
+        }
+        self.focused.store(next, Ordering::Relaxed);
+        self.push_selection_to_ui();
+    }
+
     fn stop_subscription(&self) {
         let subscription = self.subscription.lock().take();
         if let Some(SubscriptionState { handle, stop_tx }) = subscription {

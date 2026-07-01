@@ -77,8 +77,10 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         // always active regardless of vim mode.
         //
         // `fs::View` handles BOTH cd-into-folder and open-file-with-OS —
-        // there's no separate "activate" action anymore. `pane::Activate`
-        // is kept as an alias in the dispatcher for backward compat.
+        // there is no separate "activate" action; the single action ID
+        // is the source of truth and any number of chords may bind to
+        // it (multiple keybinds → one action, never one keybind →
+        // multiple aliased actions).
         b("j", "Pane", "pane::MoveDown"),
         b("k", "Pane", "pane::MoveUp"),
         b("h", "Pane", "pane::GoUp"),
@@ -96,7 +98,14 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         b("backspace", "Pane", "pane::GoUp"),
         b("alt-left", "Pane", "pane::Back"),
         b("alt-right", "Pane", "pane::Forward"),
+        // Space toggles the focused entry's selected state (multi-select
+        // support), Shift+Arrow/j/k extends the range selection while
+        // moving focus.
         b("space", "Pane", "pane::ToggleSelection"),
+        b("shift-down", "Pane", "pane::ExtendDown"),
+        b("shift-up", "Pane", "pane::ExtendUp"),
+        b("shift-j", "Pane", "pane::ExtendDown"),
+        b("shift-k", "Pane", "pane::ExtendUp"),
         p("a", ("Pane", "pane::SelectAll")),
         ps("a", ("Pane", "pane::DeselectAll")),
         // ── Tabs ──────────────────────────────────────────────────────────
@@ -125,9 +134,9 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         //
         // Copy / cut / paste go through the OS clipboard so the user can
         // paste into Atlas, Finder, VS Code, TextEdit, anything.
-        p("c", ("Pane", "fs::CopyToClipboard")),
-        p("x", ("Pane", "fs::CutToClipboard")),
-        p("v", ("Pane", "fs::PasteFromClipboard")),
+        p("c", ("Pane", "fs::Copy")),
+        p("x", ("Pane", "fs::Cut")),
+        p("v", ("Pane", "fs::Paste")),
         // Delete → move to Trash. macOS uses ⌘⌫; Linux/Windows use the
         // plain Delete key (matching Nautilus / Explorer).
         match platform {
@@ -196,11 +205,22 @@ pub fn default_actions() -> Vec<ActionMeta> {
         action!("pane::MoveToTop", "Move to Top", None, &["Pane"]),
         action!("pane::MoveToBottom", "Move to Bottom", None, &["Pane"]),
         action!("pane::SearchInPlace", "Search in Place", None, &["Pane"]),
-        action!("pane::Activate", "Activate", None, &["Pane"]),
         action!("pane::GoUp", "Go Up (Parent Directory)", None, &["Pane"]),
         action!("pane::Back", "Navigate Back", None, &["Pane"]),
         action!("pane::Forward", "Navigate Forward", None, &["Pane"]),
         action!("pane::ToggleSelection", "Toggle Selection", None, &["Pane"]),
+        action!(
+            "pane::ExtendDown",
+            "Extend Selection Down",
+            Some("Move focus down while extending the range selection.".into()),
+            &["Pane"]
+        ),
+        action!(
+            "pane::ExtendUp",
+            "Extend Selection Up",
+            Some("Move focus up while extending the range selection.".into()),
+            &["Pane"]
+        ),
         action!("pane::SelectAll", "Select All", None, &["Pane"]),
         action!("pane::DeselectAll", "Deselect All", None, &["Pane"]),
         action!("tab::New", "New Tab", None, &["Global"]),
@@ -235,19 +255,19 @@ pub fn default_actions() -> Vec<ActionMeta> {
             &["Pane"]
         ),
         action!(
-            "fs::CopyToClipboard",
+            "fs::Copy",
             "Copy",
             Some("Copy the selection to the OS clipboard as file paths.".into()),
             &["Pane"]
         ),
         action!(
-            "fs::CutToClipboard",
+            "fs::Cut",
             "Cut",
             Some("Copy the selection to the clipboard; paste moves instead of copying.".into()),
             &["Pane"]
         ),
         action!(
-            "fs::PasteFromClipboard",
+            "fs::Paste",
             "Paste",
             Some("Paste files from the clipboard into the focused pane's directory.".into()),
             &["Pane"]

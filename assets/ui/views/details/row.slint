@@ -117,7 +117,14 @@ export component EntryRow {
                     self.drag-initiated = false;
                 }
                 if pe.kind == PointerEventKind.up && pe.button == PointerEventButton.right {
-                    root.context-menu(self.mouse-x, self.mouse-y);
+                    // Translate TouchArea-relative (mouse-x, mouse-y) up
+                    // to window coordinates so ContextMenuArea.show() at
+                    // the root paints the menu at the pointer, not at
+                    // the top-left of the window.
+                    root.context-menu(
+                        self.absolute-position.x + self.mouse-x,
+                        self.absolute-position.y + self.mouse-y,
+                    );
                 }
             }
 

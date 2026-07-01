@@ -159,6 +159,18 @@ impl MillerController {
         self.push_ui_metadata();
     }
 
+    /// Resolve the on-disk path of the entry at `(column, row)` without
+    /// modifying focus state. Callers use this for double-click / context
+    /// menu targeting where they need the path but not the selection
+    /// side-effects of [`Self::select_row`].
+    #[must_use]
+    pub fn entry_path_at(&self, column: usize, row: usize) -> Option<PathBuf> {
+        let cols = self.columns.read();
+        let sub = cols.get(column)?;
+        let entries = sub.column.entries.read();
+        entries.get(row).map(|e| e.path.clone())
+    }
+
     /// Move the focused row within the focused column by `delta` rows.
     ///
     /// Movement is clamped to the valid range; the focused column is not
