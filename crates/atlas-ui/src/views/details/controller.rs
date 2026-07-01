@@ -16,15 +16,17 @@ use std::{
 use atlas_fs::{Entry, EntryKind, LocationViewModel, SortKey, SortOrder, SortSpec, ViewModelEvent};
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use parking_lot::{Mutex, RwLock};
-use slint::{ModelRc, SharedString, VecModel};
+use slint::SharedString;
 
 use crate::{
     actions::{ActionSink, UiAction},
+    models::split::PaneId,
+    shell::AppShell,
     views::details::{
         columns::{default_columns, ColumnKind, ColumnSpec},
         format::{format_relative_time, format_size},
     },
-    AtlasWindow, EntryRowItem,
+    EntryRowItem,
 };
 
 /// Sentinel value meaning "no focused index".
@@ -101,22 +103,23 @@ pub struct DetailsController {
     focused: AtomicUsize,
     /// Column definitions, including sort state.
     columns: RwLock<Vec<ColumnSpec>>,
-    /// Which pane (0 or 1) this controller drives.
-    pane: usize,
+    /// Semantic id of the pane this controller drives.
+    pane_id: PaneId,
     /// Shared action sink for emitting navigation actions.
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
-    /// Weak reference to the Slint window for property updates.
-    window: slint::Weak<AtlasWindow>,
+    /// Weak reference to the shell so `publish_*` calls can rebuild the
+    /// per-pane render cache and push it to Slint.
+    shell: std::sync::Weak<AppShell>,
     /// Background subscription thread state.
     subscription: Mutex<Option<SubscriptionState>>,
 }
 
 impl DetailsController {
-    /// Create a new controller for the given pane index.
+    /// Create a new controller for the given pane id.
     #[must_use]
     pub fn new(
-        pane: usize,
-        window: slint::Weak<AtlasWindow>,
+        pane_id: PaneId,
+        shell: std::sync::Weak<AppShell>,
         actions: Arc<Mutex<Box<dyn ActionSink>>>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -125,9 +128,9 @@ impl DetailsController {
             selection: RwLock::new(Selection::default()),
             focused: AtomicUsize::new(NO_FOCUS),
             columns: RwLock::new(default_columns()),
-            pane,
+            pane_id,
             actions,
-            window,
+            shell,
             subscription: Mutex::new(None),
         })
     }
@@ -148,14 +151,14 @@ impl DetailsController {
         let controller = Arc::clone(self);
 
         match std::thread::Builder::new()
-            .name(format!("atlas-details-pane{}", self.pane))
+            .name(format!("atlas-details-pane{}", self.pane_id.0))
             .spawn(move || controller.run_subscription(rx, stop_rx))
         {
             Ok(handle) => {
                 *self.subscription.lock() = Some(SubscriptionState { handle, stop_tx });
             }
             Err(error) => {
-                tracing::error!(pane = self.pane, %error, "failed to spawn details subscription thread");
+                tracing::error!(pane = self.pane_id.0, %error, "failed to spawn details subscription thread");
             }
         }
 
@@ -264,8 +267,13 @@ impl DetailsController {
         };
 
         if let Some(path) = target {
+            let slot = self
+                .shell
+                .upgrade()
+                .and_then(|s| s.slint_slot_for(self.pane_id))
+                .unwrap_or(0);
             self.actions.lock().dispatch(UiAction::Navigate {
-                pane: self.pane,
+                pane: slot,
                 path,
             });
         }
@@ -293,11 +301,11 @@ impl DetailsController {
         let subscription = self.subscription.lock().take();
         if let Some(SubscriptionState { handle, stop_tx }) = subscription {
             if let Err(error) = stop_tx.send(()) {
-                tracing::debug!(pane = self.pane, %error, "details subscription already stopped");
+                tracing::debug!(pane = self.pane_id.0, %error, "details subscription already stopped");
             }
             if let Err(error) = handle.join() {
                 tracing::warn!(
-                    pane = self.pane,
+                    pane = self.pane_id.0,
                     ?error,
                     "details subscription thread panicked"
                 );
@@ -318,7 +326,7 @@ impl DetailsController {
                             self.refresh_from_location();
                         }
                         ViewModelEvent::Error(message) => {
-                            tracing::warn!(pane = self.pane, %message, "location view model error");
+                            tracing::warn!(pane = self.pane_id.0, %message, "location view model error");
                         }
                     }
                 }
@@ -372,32 +380,13 @@ impl DetailsController {
             .map(ColumnSpec::to_slint)
             .collect();
 
-        let pane = self.pane;
-        let window = self.window.clone();
-
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(window) = window.upgrade() else {
-                return;
-            };
-
-            let rows_model = ModelRc::new(VecModel::from(row_items));
-            let columns_model = ModelRc::new(VecModel::from(column_specs));
-            let mask_model = ModelRc::new(VecModel::from(mask));
-
-            if pane == 0 {
-                window.set_pane0_details_rows(rows_model);
-                window.set_pane0_details_columns(columns_model);
-                window.set_pane0_details_selected_mask(mask_model);
-                window.set_pane0_details_selected_anchor(anchor);
-                window.set_pane0_details_focused_index(focused_i32);
-            } else {
-                window.set_pane1_details_rows(rows_model);
-                window.set_pane1_details_columns(columns_model);
-                window.set_pane1_details_selected_mask(mask_model);
-                window.set_pane1_details_selected_anchor(anchor);
-                window.set_pane1_details_focused_index(focused_i32);
-            }
-        });
+        if let Some(shell) = self.shell.upgrade() {
+            shell.publish_details_rows(self.pane_id, row_items);
+            shell.publish_details_columns(self.pane_id, column_specs);
+            shell.publish_details_selected_mask(self.pane_id, mask);
+            shell.publish_details_selected_anchor(self.pane_id, anchor);
+            shell.publish_details_focused_index(self.pane_id, focused_i32);
+        }
     }
 
     fn push_columns_to_ui(&self) {
@@ -407,20 +396,9 @@ impl DetailsController {
             .iter()
             .map(ColumnSpec::to_slint)
             .collect();
-        let pane = self.pane;
-        let window = self.window.clone();
-
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(window) = window.upgrade() else {
-                return;
-            };
-            let columns_model = ModelRc::new(VecModel::from(column_specs));
-            if pane == 0 {
-                window.set_pane0_details_columns(columns_model);
-            } else {
-                window.set_pane1_details_columns(columns_model);
-            }
-        });
+        if let Some(shell) = self.shell.upgrade() {
+            shell.publish_details_columns(self.pane_id, column_specs);
+        }
     }
 
     fn push_selection_to_ui(&self) {
@@ -437,25 +415,11 @@ impl DetailsController {
             focused as i32
         };
 
-        let pane = self.pane;
-        let window = self.window.clone();
-
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(window) = window.upgrade() else {
-                return;
-            };
-            let mask_model = ModelRc::new(VecModel::from(mask));
-
-            if pane == 0 {
-                window.set_pane0_details_selected_mask(mask_model);
-                window.set_pane0_details_selected_anchor(anchor);
-                window.set_pane0_details_focused_index(focused_i32);
-            } else {
-                window.set_pane1_details_selected_mask(mask_model);
-                window.set_pane1_details_selected_anchor(anchor);
-                window.set_pane1_details_focused_index(focused_i32);
-            }
-        });
+        if let Some(shell) = self.shell.upgrade() {
+            shell.publish_details_selected_mask(self.pane_id, mask);
+            shell.publish_details_selected_anchor(self.pane_id, anchor);
+            shell.publish_details_focused_index(self.pane_id, focused_i32);
+        }
     }
 }
 

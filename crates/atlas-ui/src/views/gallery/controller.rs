@@ -13,22 +13,23 @@ use atlas_fs::{Entry, EntryKind, LocationViewModel, ViewModelEvent};
 use atlas_thumbs::{can_thumbnail, SqliteCache};
 use crossbeam_channel::{unbounded, Sender};
 use parking_lot::{Mutex, RwLock};
-use slint::{ModelRc, SharedString, VecModel};
 
 use crate::{
     actions::ActionSink,
+    models::split::PaneId,
+    shell::AppShell,
     views::{
         details::{format_relative_time, format_size},
         gallery::{
             metadata::{self, Metadata},
             thumbs::{
-                decoded_to_slint, DecodedPixels, GalleryThumbEvent, GalleryThumbRequester,
-                GalleryThumbTarget, PREVIEW_TARGET_DIM, STRIP_TARGET_DIM,
+                DecodedPixels, GalleryThumbEvent, GalleryThumbRequester, GalleryThumbTarget,
+                PREVIEW_TARGET_DIM, STRIP_TARGET_DIM,
             },
         },
         grid::controller::entry_to_row_item,
     },
-    AtlasWindow, EntryRowItem,
+    EntryRowItem, MetadataFields,
 };
 
 const NO_FOCUS: usize = usize::MAX;
@@ -50,7 +51,7 @@ struct UiMetadataFields {
 
 /// Drives the Slint Gallery view from a [`atlas_fs::LocationViewModel`] stream.
 pub struct GalleryController {
-    pane: usize,
+    pane_id: PaneId,
     location: RwLock<Option<Arc<dyn LocationViewModel>>>,
     entries: RwLock<Vec<Entry>>,
     focused: AtomicUsize,
@@ -64,17 +65,17 @@ pub struct GalleryController {
     metadata_generation: AtomicU64,
     thumb_requester: Arc<GalleryThumbRequester>,
     subscription: Mutex<Option<SubscriptionState>>,
-    window: slint::Weak<AtlasWindow>,
+    shell: std::sync::Weak<AppShell>,
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
 }
 
 impl GalleryController {
-    /// Construct a new controller for `pane`.
+    /// Construct a new controller for `pane_id`.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        pane: usize,
-        window: slint::Weak<AtlasWindow>,
+        pane_id: PaneId,
+        shell: std::sync::Weak<AppShell>,
         actions: Arc<Mutex<Box<dyn ActionSink>>>,
         cache: Arc<SqliteCache>,
         worker_count: usize,
@@ -86,7 +87,7 @@ impl GalleryController {
             let weak_ctrl = weak.clone();
             let requester = GalleryThumbRequester::new(
                 cache,
-                format!("atlas-gallery-thumbs-pane{pane}"),
+                format!("atlas-gallery-thumbs-pane{}", pane_id.0),
                 Arc::new(move |event| {
                     if let Some(controller) = weak_ctrl.upgrade() {
                         controller.handle_thumb_event(event);
@@ -99,7 +100,7 @@ impl GalleryController {
             );
 
             Self {
-                pane,
+                pane_id,
                 location: RwLock::new(None),
                 entries: RwLock::new(Vec::new()),
                 focused: AtomicUsize::new(NO_FOCUS),
@@ -113,7 +114,7 @@ impl GalleryController {
                 metadata_generation: AtomicU64::new(0),
                 thumb_requester: requester,
                 subscription: Mutex::new(None),
-                window,
+                shell,
                 actions,
             }
         })
@@ -140,14 +141,14 @@ impl GalleryController {
         let (stop_tx, stop_rx) = unbounded();
         let controller = Arc::clone(self);
         match std::thread::Builder::new()
-            .name(format!("atlas-gallery-pane{}", self.pane))
+            .name(format!("atlas-gallery-pane{}", self.pane_id.0))
             .spawn(move || controller.run_subscription(rx, stop_rx))
         {
             Ok(handle) => {
                 *self.subscription.lock() = Some(SubscriptionState { handle, stop_tx });
             }
             Err(error) => {
-                tracing::error!(pane = self.pane, %error, "failed to spawn gallery subscription thread");
+                tracing::error!(pane = self.pane_id.0, %error, "failed to spawn gallery subscription thread");
             }
         }
 
@@ -197,10 +198,15 @@ impl GalleryController {
                 .map(|entry| entry.path.clone())
         };
         if let Some(path) = target {
+            let slot = self
+                .shell
+                .upgrade()
+                .and_then(|s| s.slint_slot_for(self.pane_id))
+                .unwrap_or(0);
             self.actions
                 .lock()
                 .dispatch(crate::actions::UiAction::Navigate {
-                    pane: self.pane,
+                    pane: slot,
                     path,
                 });
         }
@@ -246,11 +252,11 @@ impl GalleryController {
         let state = self.subscription.lock().take();
         if let Some(SubscriptionState { handle, stop_tx }) = state {
             if let Err(error) = stop_tx.send(()) {
-                tracing::debug!(pane = self.pane, %error, "gallery subscription already stopped");
+                tracing::debug!(pane = self.pane_id.0, %error, "gallery subscription already stopped");
             }
             if let Err(error) = handle.join() {
                 tracing::warn!(
-                    pane = self.pane,
+                    pane = self.pane_id.0,
                     ?error,
                     "gallery subscription thread panicked"
                 );
@@ -271,7 +277,7 @@ impl GalleryController {
                     match event {
                         ViewModelEvent::EntriesChanged | ViewModelEvent::Loaded => self.refresh_from_location(),
                         ViewModelEvent::Error(message) => {
-                            tracing::warn!(pane = self.pane, %message, "gallery location error");
+                            tracing::warn!(pane = self.pane_id.0, %message, "gallery location error");
                         }
                     }
                 }
@@ -396,7 +402,7 @@ impl GalleryController {
         let path = entry.path.clone();
         let kind = entry.kind.clone();
         if let Err(error) = std::thread::Builder::new()
-            .name(format!("atlas-gallery-metadata-pane{}", self.pane))
+            .name(format!("atlas-gallery-metadata-pane{}", self.pane_id.0))
             .spawn(move || {
                 let Ok(meta) = std::fs::metadata(&path) else {
                     tracing::debug!(path = ?path, "gallery metadata stat failed");
@@ -408,7 +414,7 @@ impl GalleryController {
                 }
             })
         {
-            tracing::warn!(pane = self.pane, %error, "failed to spawn gallery metadata thread");
+            tracing::warn!(pane = self.pane_id.0, %error, "failed to spawn gallery metadata thread");
         }
     }
 
@@ -505,40 +511,16 @@ impl GalleryController {
     }
 
     fn push_rows_to_ui(&self, row_items: Vec<EntryRowItem>) {
-        let pane = self.pane;
-        let window = self.window.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(window) = window.upgrade() else {
-                return;
-            };
-            let model = ModelRc::new(VecModel::from(row_items));
-            if pane == 0 {
-                window.set_pane0_details_rows(model);
-            } else {
-                window.set_pane1_details_rows(model);
-            }
-        });
+        if let Some(shell) = self.shell.upgrade() {
+            shell.publish_details_rows(self.pane_id, row_items);
+        }
     }
 
     fn push_strip_to_ui(&self) {
         let decoded = self.strip_thumbs.read().clone();
-        let pane = self.pane;
-        let window = self.window.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(window) = window.upgrade() else {
-                return;
-            };
-            let images: Vec<slint::Image> = decoded
-                .iter()
-                .map(|thumb| thumb.as_ref().map(decoded_to_slint).unwrap_or_default())
-                .collect();
-            let model = ModelRc::new(VecModel::from(images));
-            if pane == 0 {
-                window.set_pane0_gallery_strip_thumbnails(model);
-            } else {
-                window.set_pane1_gallery_strip_thumbnails(model);
-            }
-        });
+        if let Some(shell) = self.shell.upgrade() {
+            shell.publish_gallery_strip_thumbs(self.pane_id, decoded);
+        }
     }
 
     fn push_focus_to_ui(&self) {
@@ -548,66 +530,33 @@ impl GalleryController {
         } else {
             focused as i32
         };
-        let pane = self.pane;
-        let window = self.window.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(window) = window.upgrade() else {
-                return;
-            };
-            if pane == 0 {
-                window.set_pane0_gallery_focused_index(focused);
-            } else {
-                window.set_pane1_gallery_focused_index(focused);
-            }
-        });
+        if let Some(shell) = self.shell.upgrade() {
+            shell.publish_gallery_focused_index(self.pane_id, focused);
+        }
     }
 
     fn push_preview_to_ui(&self) {
         let preview = self.preview.read().clone();
         let loading = self.preview_loading.load(Ordering::Relaxed);
         let fallback = self.preview_fallback_glyph.read().clone();
-        let pane = self.pane;
-        let window = self.window.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(window) = window.upgrade() else {
-                return;
-            };
-            let image = preview.as_ref().map(decoded_to_slint).unwrap_or_default();
-            let fallback = SharedString::from(fallback.as_str());
-            if pane == 0 {
-                window.set_pane0_gallery_preview_image(image);
-                window.set_pane0_gallery_preview_loading(loading);
-                window.set_pane0_gallery_preview_fallback_glyph(fallback);
-            } else {
-                window.set_pane1_gallery_preview_image(image);
-                window.set_pane1_gallery_preview_loading(loading);
-                window.set_pane1_gallery_preview_fallback_glyph(fallback);
-            }
-        });
+        if let Some(shell) = self.shell.upgrade() {
+            shell.publish_gallery_preview(self.pane_id, preview, loading, fallback);
+        }
     }
 
     fn push_metadata_to_ui(&self) {
         let metadata = self.metadata.read().clone();
-        let pane = self.pane;
-        let window = self.window.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(window) = window.upgrade() else {
-                return;
-            };
-            let metadata = crate::MetadataFields {
-                name: metadata.name.into(),
-                path: metadata.path.into(),
-                size_text: metadata.size_text.into(),
-                modified_text: metadata.modified_text.into(),
-                kind: metadata.kind.into(),
-                dimensions: metadata.dimensions.into(),
-            };
-            if pane == 0 {
-                window.set_pane0_gallery_metadata(metadata);
-            } else {
-                window.set_pane1_gallery_metadata(metadata);
-            }
-        });
+        let metadata = MetadataFields {
+            name: metadata.name.into(),
+            path: metadata.path.into(),
+            size_text: metadata.size_text.into(),
+            modified_text: metadata.modified_text.into(),
+            kind: metadata.kind.into(),
+            dimensions: metadata.dimensions.into(),
+        };
+        if let Some(shell) = self.shell.upgrade() {
+            shell.publish_gallery_metadata(self.pane_id, metadata);
+        }
     }
 }
 
@@ -686,8 +635,8 @@ mod tests {
             SqliteCache::open(&cache_dir.join("thumbs.db")).expect("open thumbnail cache"),
         );
         GalleryController::new(
-            0,
-            slint::Weak::default(),
+            PaneId(0),
+            std::sync::Weak::new(),
             actions,
             cache,
             0,

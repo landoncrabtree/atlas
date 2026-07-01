@@ -19,15 +19,17 @@ use atlas_fs::{Entry, EntryKind, LocationViewModel, ViewModelEvent};
 use atlas_thumbs::{can_thumbnail, SqliteCache};
 use crossbeam_channel::{unbounded, Sender};
 use parking_lot::{Mutex, RwLock};
-use slint::{ModelRc, SharedString, VecModel};
+use slint::SharedString;
 
 use crate::{
     actions::{ActionSink, UiAction},
+    models::split::PaneId,
+    shell::AppShell,
     views::details::{format_relative_time, format_size},
-    AtlasWindow, EntryRowItem,
+    EntryRowItem,
 };
 
-use super::thumbs::{decoded_to_slint, ThumbRequester, DEFAULT_TARGET_DIM};
+use super::thumbs::{ThumbRequester, DEFAULT_TARGET_DIM};
 
 /// Sentinel meaning "no focused index".
 const NO_FOCUS: usize = usize::MAX;
@@ -101,7 +103,7 @@ struct SubscriptionState {
 /// [`GridController::set_location`] to navigate; the previous subscription
 /// thread is stopped gracefully before the new one starts.
 pub struct GridController {
-    pane: usize,
+    pane_id: PaneId,
     location: RwLock<Option<Arc<dyn LocationViewModel>>>,
     entries: RwLock<Vec<Entry>>,
     selection: RwLock<GridSelection>,
@@ -111,11 +113,11 @@ pub struct GridController {
     thumb_requester: Arc<ThumbRequester>,
     subscription: Mutex<Option<SubscriptionState>>,
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
-    window: slint::Weak<AtlasWindow>,
+    shell: std::sync::Weak<AppShell>,
 }
 
 impl GridController {
-    /// Construct a new controller for the given pane index.
+    /// Construct a new controller for the given pane id.
     ///
     /// Accepts a shared [`SqliteCache`] for thumbnail persistence and starts
     /// the drain background thread inside [`ThumbRequester`].
@@ -125,8 +127,8 @@ impl GridController {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        pane: usize,
-        window: slint::Weak<AtlasWindow>,
+        pane_id: PaneId,
+        shell: std::sync::Weak<AppShell>,
         actions: Arc<Mutex<Box<dyn ActionSink>>>,
         cache: Arc<SqliteCache>,
         worker_count: usize,
@@ -136,15 +138,15 @@ impl GridController {
     ) -> Arc<Self> {
         let thumb_requester = ThumbRequester::new(
             cache,
-            pane,
-            window.clone(),
+            pane_id,
+            shell.clone(),
             worker_count,
             max_cache_bytes,
             thumbs_enabled,
             max_file_bytes,
         );
         Arc::new(Self {
-            pane,
+            pane_id,
             location: RwLock::new(None),
             entries: RwLock::new(Vec::new()),
             selection: RwLock::new(GridSelection::default()),
@@ -153,7 +155,7 @@ impl GridController {
             thumb_requester,
             subscription: Mutex::new(None),
             actions,
-            window,
+            shell,
         })
     }
 
@@ -174,14 +176,14 @@ impl GridController {
         let ctrl = Arc::clone(self);
 
         match std::thread::Builder::new()
-            .name(format!("atlas-grid-pane{}", self.pane))
+            .name(format!("atlas-grid-pane{}", self.pane_id.0))
             .spawn(move || ctrl.run_subscription(rx, stop_rx))
         {
             Ok(handle) => {
                 *self.subscription.lock() = Some(SubscriptionState { handle, stop_tx });
             }
             Err(error) => {
-                tracing::error!(pane = self.pane, %error, "failed to spawn grid subscription thread");
+                tracing::error!(pane = self.pane_id.0, %error, "failed to spawn grid subscription thread");
             }
         }
 
@@ -238,8 +240,13 @@ impl GridController {
                 .map(|entry| entry.path.clone())
         };
         if let Some(path) = target {
+            let slot = self
+                .shell
+                .upgrade()
+                .and_then(|s| s.slint_slot_for(self.pane_id))
+                .unwrap_or(0);
             self.actions.lock().dispatch(UiAction::Navigate {
-                pane: self.pane,
+                pane: slot,
                 path,
             });
         }
@@ -284,10 +291,10 @@ impl GridController {
         let state = self.subscription.lock().take();
         if let Some(SubscriptionState { handle, stop_tx }) = state {
             if let Err(e) = stop_tx.send(()) {
-                tracing::debug!(pane = self.pane, %e, "grid subscription already stopped");
+                tracing::debug!(pane = self.pane_id.0, %e, "grid subscription already stopped");
             }
             if let Err(e) = handle.join() {
-                tracing::warn!(pane = self.pane, ?e, "grid subscription thread panicked");
+                tracing::warn!(pane = self.pane_id.0, ?e, "grid subscription thread panicked");
             }
         }
     }
@@ -307,7 +314,7 @@ impl GridController {
                             self.refresh_from_location();
                         }
                         ViewModelEvent::Error(msg) => {
-                            tracing::warn!(pane = self.pane, %msg, "grid location error");
+                            tracing::warn!(pane = self.pane_id.0, %msg, "grid location error");
                         }
                     }
                 }
@@ -340,7 +347,7 @@ impl GridController {
 
         *self.entries.write() = entries;
 
-        let (mask, anchor) = {
+        let (mask, _anchor) = {
             let mut sel = self.selection.write();
             sel.resize(len);
             if let Some(a) = sel.anchor {
@@ -360,41 +367,17 @@ impl GridController {
         };
 
         // snapshot() returns (Vec<Option<DecodedPixels>>, Vec<bool>).
-        // Conversion to slint::Image happens inside invoke_from_event_loop.
+        // Conversion to slint::Image happens inside push_pane_data_to_slint.
         let (decoded_snap, has_snap) = self.thumb_requester.snapshot();
 
-        let pane = self.pane;
-        let window = self.window.clone();
-
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(w) = window.upgrade() else { return };
-
-            let thumbs: Vec<slint::Image> = decoded_snap
-                .iter()
-                .map(|d| d.as_ref().map(decoded_to_slint).unwrap_or_default())
-                .collect();
-
-            let rows_model = ModelRc::new(VecModel::from(row_items));
-            let mask_model = ModelRc::new(VecModel::from(mask));
-            let thumb_model = ModelRc::new(VecModel::from(thumbs));
-            let has_model = ModelRc::new(VecModel::from(has_snap));
-
-            if pane == 0 {
-                w.set_pane0_details_rows(rows_model);
-                w.set_pane0_grid_selected_mask(mask_model);
-                w.set_pane0_grid_focused_index(focused_i32);
-                w.set_pane0_grid_thumbnails(thumb_model);
-                w.set_pane0_grid_has_thumbs(has_model);
-            } else {
-                w.set_pane1_details_rows(rows_model);
-                w.set_pane1_grid_selected_mask(mask_model);
-                w.set_pane1_grid_focused_index(focused_i32);
-                w.set_pane1_grid_thumbnails(thumb_model);
-                w.set_pane1_grid_has_thumbs(has_model);
-            }
-
-            let _ = anchor; // stored for shift-selection, not forwarded separately
-        });
+        if let Some(shell) = self.shell.upgrade() {
+            // Details rows are shared for the grid view label strip.
+            shell.publish_details_rows(self.pane_id, row_items);
+            shell.publish_grid_selected_mask(self.pane_id, mask);
+            shell.publish_grid_focused_index(self.pane_id, focused_i32);
+            shell.publish_grid_thumbs(self.pane_id, decoded_snap);
+            shell.publish_grid_has_thumbs(self.pane_id, has_snap);
+        }
     }
 
     fn push_selection_to_ui(&self) {
@@ -406,20 +389,10 @@ impl GridController {
             focused as i32
         };
 
-        let pane = self.pane;
-        let window = self.window.clone();
-
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(w) = window.upgrade() else { return };
-            let mask_model = ModelRc::new(VecModel::from(mask));
-            if pane == 0 {
-                w.set_pane0_grid_selected_mask(mask_model);
-                w.set_pane0_grid_focused_index(focused_i32);
-            } else {
-                w.set_pane1_grid_selected_mask(mask_model);
-                w.set_pane1_grid_focused_index(focused_i32);
-            }
-        });
+        if let Some(shell) = self.shell.upgrade() {
+            shell.publish_grid_selected_mask(self.pane_id, mask);
+            shell.publish_grid_focused_index(self.pane_id, focused_i32);
+        }
     }
 }
 

@@ -103,74 +103,42 @@ export component AtlasWindow inherits Window {
     /// Resize handles for every internal split node; pushed alongside `panes`.
     in property <[SplitHandle]> split-handles;
 
-    // ── Per-slot heavy data (DFS positions 0 and 1) ───────────────────────────
+    // ── Per-pane heavy data (nested arrays, indexed by DFS position) ─────────
     //
-    // View controllers (details/grid/gallery/miller/tree) push their heavy
-    // per-pane data directly to these properties using the pane's DFS slot
-    // index.  Phase 4.1 will migrate controllers to a nested-array model and
-    // remove these per-slot properties.
+    // The Rust `AppShell` maintains a `PaneRenderCache` keyed by PaneId and,
+    // whenever a controller publishes new data, rebuilds these outer arrays
+    // in DFS-leaf order and pushes the entire nested VecModel here.
+    // The `for pane[i] in panes` loop below reads slot `i` from every array
+    // in tandem so any number of panes is supported.
 
-    in property <[TabEntry]> pane0-tabs: [{ title: "Home", dirty: false }];
-    in property <int> pane0-active-tab: 0;
-    in property <[string]> pane0-segments: [];
-    in property <[EntryRowItem]> pane0-details-rows: [];
-    in property <[ColumnSpec]> pane0-details-columns: [];
-    in property <[bool]> pane0-details-selected-mask: [];
-    in property <int> pane0-details-selected-anchor: -1;
-    in property <int> pane0-details-focused-index: -1;
-    in property <[image]> pane0-grid-thumbnails: [];
-    in property <[bool]> pane0-grid-has-thumbs: [];
-    in property <[bool]> pane0-grid-selected-mask: [];
-    in property <int> pane0-grid-focused-index: -1;
-    in property <[image]> pane0-gallery-strip-thumbnails: [];
-    in property <image> pane0-gallery-preview-image;
-    in property <bool> pane0-gallery-preview-loading: false;
-    in property <string> pane0-gallery-preview-fallback-glyph: "";
-    in property <int> pane0-gallery-focused-index: -1;
-    in property <MetadataFields> pane0-gallery-metadata: {
-        name: "",
-        path: "",
-        size-text: "",
-        modified-text: "",
-        kind: "",
-        dimensions: "",
-    };
-    in property <[TreeNode]> pane0-tree-nodes: [];
-    in property <int> pane0-tree-focused-index: -1;
-    in property <int> pane0-tree-selected-index: -1;
-    in property <[MillerColData]> pane0-miller-columns: [];
-    in property <int> pane0-miller-focused-col: 0;
+    in property <[[TabEntry]]> panes-tabs: [];
+    in property <[[string]]> panes-segments: [];
+    in property <[int]> panes-active-tab: [];
 
-    in property <[TabEntry]> pane1-tabs: [];
-    in property <int> pane1-active-tab: 0;
-    in property <[string]> pane1-segments: [];
-    in property <[EntryRowItem]> pane1-details-rows: [];
-    in property <[ColumnSpec]> pane1-details-columns: [];
-    in property <[bool]> pane1-details-selected-mask: [];
-    in property <int> pane1-details-selected-anchor: -1;
-    in property <int> pane1-details-focused-index: -1;
-    in property <[image]> pane1-grid-thumbnails: [];
-    in property <[bool]> pane1-grid-has-thumbs: [];
-    in property <[bool]> pane1-grid-selected-mask: [];
-    in property <int> pane1-grid-focused-index: -1;
-    in property <[image]> pane1-gallery-strip-thumbnails: [];
-    in property <image> pane1-gallery-preview-image;
-    in property <bool> pane1-gallery-preview-loading: false;
-    in property <string> pane1-gallery-preview-fallback-glyph: "";
-    in property <int> pane1-gallery-focused-index: -1;
-    in property <MetadataFields> pane1-gallery-metadata: {
-        name: "",
-        path: "",
-        size-text: "",
-        modified-text: "",
-        kind: "",
-        dimensions: "",
-    };
-    in property <[TreeNode]> pane1-tree-nodes: [];
-    in property <int> pane1-tree-focused-index: -1;
-    in property <int> pane1-tree-selected-index: -1;
-    in property <[MillerColData]> pane1-miller-columns: [];
-    in property <int> pane1-miller-focused-col: 0;
+    in property <[[EntryRowItem]]> panes-details-rows: [];
+    in property <[[ColumnSpec]]> panes-details-columns: [];
+    in property <[[bool]]> panes-details-selected-mask: [];
+    in property <[int]> panes-details-selected-anchor: [];
+    in property <[int]> panes-details-focused-index: [];
+
+    in property <[[image]]> panes-grid-thumbnails: [];
+    in property <[[bool]]> panes-grid-has-thumbs: [];
+    in property <[[bool]]> panes-grid-selected-mask: [];
+    in property <[int]> panes-grid-focused-index: [];
+
+    in property <[[image]]> panes-gallery-strip-thumbnails: [];
+    in property <[image]> panes-gallery-preview-image: [];
+    in property <[bool]> panes-gallery-preview-loading: [];
+    in property <[string]> panes-gallery-preview-fallback-glyph: [];
+    in property <[int]> panes-gallery-focused-index: [];
+    in property <[MetadataFields]> panes-gallery-metadata: [];
+
+    in property <[[TreeNode]]> panes-tree-nodes: [];
+    in property <[int]> panes-tree-focused-index: [];
+    in property <[int]> panes-tree-selected-index: [];
+
+    in property <[[MillerColData]]> panes-miller-columns: [];
+    in property <[int]> panes-miller-focused-col: [];
 
     // ── Status bar ───────────────────────────────────────────────────────────
 
@@ -709,36 +677,37 @@ export component AtlasWindow inherits Window {
                     show-breadcrumbs: root.show-breadcrumbs;
                     focused-border-px: root.active-pane-border-px;
 
-                    // Per-slot data — routed by DFS position i.
-                    // Phase 4.1: replace with panes-*[i] once controllers support N slots.
-                    path-segments: i == 0 ? pane0-segments : pane1-segments;
-                    tabs: i == 0 ? pane0-tabs : pane1-tabs;
-                    active-tab: i == 0 ? pane0-active-tab : pane1-active-tab;
+                    // Per-pane heavy data — routed by DFS position `i` from
+                    // the parallel nested arrays. AppShell rebuilds these in
+                    // DFS-leaf order whenever the pane cache updates.
+                    path-segments: panes-segments[i];
+                    tabs: panes-tabs[i];
+                    active-tab: panes-active-tab[i];
 
-                    details-rows: i == 0 ? pane0-details-rows : pane1-details-rows;
-                    details-columns: i == 0 ? pane0-details-columns : pane1-details-columns;
-                    details-selected-mask: i == 0 ? pane0-details-selected-mask : pane1-details-selected-mask;
-                    details-selected-anchor: i == 0 ? pane0-details-selected-anchor : pane1-details-selected-anchor;
-                    details-focused-index: i == 0 ? pane0-details-focused-index : pane1-details-focused-index;
+                    details-rows: panes-details-rows[i];
+                    details-columns: panes-details-columns[i];
+                    details-selected-mask: panes-details-selected-mask[i];
+                    details-selected-anchor: panes-details-selected-anchor[i];
+                    details-focused-index: panes-details-focused-index[i];
 
-                    grid-thumbnails: i == 0 ? pane0-grid-thumbnails : pane1-grid-thumbnails;
-                    grid-has-thumbs: i == 0 ? pane0-grid-has-thumbs : pane1-grid-has-thumbs;
-                    grid-selected-mask: i == 0 ? pane0-grid-selected-mask : pane1-grid-selected-mask;
-                    grid-focused-index: i == 0 ? pane0-grid-focused-index : pane1-grid-focused-index;
+                    grid-thumbnails: panes-grid-thumbnails[i];
+                    grid-has-thumbs: panes-grid-has-thumbs[i];
+                    grid-selected-mask: panes-grid-selected-mask[i];
+                    grid-focused-index: panes-grid-focused-index[i];
 
-                    gallery-strip-thumbnails: i == 0 ? pane0-gallery-strip-thumbnails : pane1-gallery-strip-thumbnails;
-                    gallery-preview-image: i == 0 ? pane0-gallery-preview-image : pane1-gallery-preview-image;
-                    gallery-preview-loading: i == 0 ? pane0-gallery-preview-loading : pane1-gallery-preview-loading;
-                    gallery-preview-fallback-glyph: i == 0 ? pane0-gallery-preview-fallback-glyph : pane1-gallery-preview-fallback-glyph;
-                    gallery-focused-index: i == 0 ? pane0-gallery-focused-index : pane1-gallery-focused-index;
-                    gallery-metadata: i == 0 ? pane0-gallery-metadata : pane1-gallery-metadata;
+                    gallery-strip-thumbnails: panes-gallery-strip-thumbnails[i];
+                    gallery-preview-image: panes-gallery-preview-image[i];
+                    gallery-preview-loading: panes-gallery-preview-loading[i];
+                    gallery-preview-fallback-glyph: panes-gallery-preview-fallback-glyph[i];
+                    gallery-focused-index: panes-gallery-focused-index[i];
+                    gallery-metadata: panes-gallery-metadata[i];
 
-                    tree-nodes: i == 0 ? pane0-tree-nodes : pane1-tree-nodes;
-                    tree-focused-index: i == 0 ? pane0-tree-focused-index : pane1-tree-focused-index;
-                    tree-selected-index: i == 0 ? pane0-tree-selected-index : pane1-tree-selected-index;
+                    tree-nodes: panes-tree-nodes[i];
+                    tree-focused-index: panes-tree-focused-index[i];
+                    tree-selected-index: panes-tree-selected-index[i];
 
-                    miller-columns: i == 0 ? pane0-miller-columns : pane1-miller-columns;
-                    miller-focused-col: i == 0 ? pane0-miller-focused-col : pane1-miller-focused-col;
+                    miller-columns: panes-miller-columns[i];
+                    miller-focused-col: panes-miller-focused-col[i];
 
                     // Unified callbacks — all route through pane.id.
                     address-submitted(p) => { root.address-submitted(pane.id, p); }

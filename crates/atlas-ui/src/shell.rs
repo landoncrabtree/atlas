@@ -42,19 +42,8 @@ use crate::{
     views::grid::GridController,
     views::miller::MillerController,
     views::tree::TreeController,
-    AtlasWindow, PaletteEntry, PaneSlintData, SplitHandle, TabEntry,
+    AtlasWindow, EntryRowItem, PaletteEntry, PaneSlintData, SplitHandle, TabEntry,
 };
-
-fn to_tab_model(tabs: &[crate::models::TabModel]) -> ModelRc<TabEntry> {
-    let entries: Vec<TabEntry> = tabs
-        .iter()
-        .map(|tab| TabEntry {
-            title: SharedString::from(tab.title.as_str()),
-            dirty: tab.dirty,
-        })
-        .collect();
-    ModelRc::new(VecModel::from(entries))
-}
 
 fn to_palette_model(results: &[PaletteResult]) -> ModelRc<PaletteEntry> {
     let entries: Vec<PaletteEntry> = results
@@ -64,14 +53,6 @@ fn to_palette_model(results: &[PaletteResult]) -> ModelRc<PaletteEntry> {
             subtitle: SharedString::from(result.subtitle.as_str()),
             action_id: SharedString::from(result.action_id.as_str()),
         })
-        .collect();
-    ModelRc::new(VecModel::from(entries))
-}
-
-fn to_segments_model(segments: &[String]) -> ModelRc<SharedString> {
-    let entries: Vec<SharedString> = segments
-        .iter()
-        .map(|segment| SharedString::from(segment.as_str()))
         .collect();
     ModelRc::new(VecModel::from(entries))
 }
@@ -289,11 +270,103 @@ pub struct PaneControllers {
     pub gallery: Arc<crate::views::gallery::GalleryController>,
 }
 
+/// Send/Sync-safe per-pane snapshot of a single Miller column.
+///
+/// The generated Slint [`MillerColData`] type embeds a `ModelRc<EntryRowItem>`
+/// which is not `Send`; we therefore stage the raw fields in the pane cache
+/// and rebuild `MillerColData` on the UI thread inside
+/// [`AppShell::push_pane_data_to_slint`].
+#[derive(Default, Clone)]
+pub struct MillerColumnCache {
+    /// Column header (usually the directory name).
+    pub title: String,
+    /// Column entries as pre-formatted Slint rows.
+    pub entries: Vec<EntryRowItem>,
+    /// Focused row within the column (`-1` for none).
+    pub focused: i32,
+    /// True while the column's initial load is in flight.
+    pub loading: bool,
+}
+
+/// Cached Rust-side snapshot of every view's per-pane state.
+///
+/// View controllers push new data into this cache via the `AppShell`
+/// `publish_*` methods; the shell then rebuilds the outer nested [`VecModel`]s
+/// in DFS-leaf order and pushes them to the Slint window inside a single
+/// `invoke_from_event_loop` call.
+///
+/// Every field is `Send + Sync` so the whole cache can live behind an
+/// [`ahash::AHashMap`] guarded by a [`parking_lot::RwLock`]. Heavy types that
+/// are not `Send` (e.g. [`slint::Image`], `ModelRc<T>`) are staged as their
+/// `Send`-safe intermediaries here and materialised into their Slint
+/// counterparts only on the UI thread.
+#[derive(Default, Clone)]
+pub struct PaneRenderCache {
+    // ── Light per-pane data (also shown in PaneSlintData) ────────────────
+    /// Tab entries pre-formatted as Slint rows.
+    pub tabs: Vec<TabEntry>,
+    /// Path segments for the breadcrumb strip.
+    pub segments: Vec<SharedString>,
+    /// Active-tab index within `tabs`.
+    pub active_tab: i32,
+
+    // ── Details view ─────────────────────────────────────────────────────
+    /// Row items for the Details table.
+    pub details_rows: Vec<EntryRowItem>,
+    /// Column descriptors for the Details table.
+    pub details_columns: Vec<crate::ColumnSpec>,
+    /// One bit per row indicating whether the row is selected.
+    pub details_selected_mask: Vec<bool>,
+    /// Shift-range selection anchor (`-1` = unset).
+    pub details_selected_anchor: i32,
+    /// Currently focused row (`-1` = unset).
+    pub details_focused_index: i32,
+
+    // ── Grid view ────────────────────────────────────────────────────────
+    /// Decoded thumbnail pixels for each grid cell (converted to
+    /// [`slint::Image`] on the UI thread).
+    pub grid_thumbs: Vec<Option<crate::views::grid::thumbs::DecodedPixels>>,
+    /// One bit per cell indicating whether a thumbnail has been decoded.
+    pub grid_has_thumbs: Vec<bool>,
+    /// One bit per cell indicating whether the cell is selected.
+    pub grid_selected_mask: Vec<bool>,
+    /// Currently focused grid cell (`-1` = unset).
+    pub grid_focused_index: i32,
+
+    // ── Gallery view ─────────────────────────────────────────────────────
+    /// Decoded strip thumbnails.
+    pub gallery_strip_thumbs: Vec<Option<crate::views::gallery::thumbs::DecodedPixels>>,
+    /// Decoded preview image, if any.
+    pub gallery_preview: Option<crate::views::gallery::thumbs::DecodedPixels>,
+    /// Whether the preview is still decoding.
+    pub gallery_preview_loading: bool,
+    /// Glyph shown in place of the preview when unavailable.
+    pub gallery_preview_fallback_glyph: String,
+    /// Currently focused gallery entry (`-1` = unset).
+    pub gallery_focused_index: i32,
+    /// Metadata sidebar contents.
+    pub gallery_metadata: crate::MetadataFields,
+
+    // ── Tree view ────────────────────────────────────────────────────────
+    /// Currently visible tree rows in DFS order.
+    pub tree_nodes: Vec<crate::TreeNode>,
+    /// Currently focused tree row (`-1` = unset).
+    pub tree_focused_index: i32,
+    /// Currently selected tree row (`-1` = unset).
+    pub tree_selected_index: i32,
+
+    // ── Miller view ──────────────────────────────────────────────────────
+    /// Column snapshots; rebuilt into `MillerColData` on the UI thread.
+    pub miller_columns: Vec<MillerColumnCache>,
+    /// Focused column index within `miller_columns`.
+    pub miller_focused_col: i32,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_pane_controllers(
     pane_id: PaneId,
-    slint_index: usize,
     window: &AtlasWindow,
+    shell: std::sync::Weak<AppShell>,
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
     thumb_cache: Arc<atlas_thumbs::SqliteCache>,
     thumb_worker_count: usize,
@@ -301,10 +374,10 @@ fn build_pane_controllers(
     thumbs_enabled: bool,
     thumb_max_file_bytes: u64,
 ) -> PaneControllers {
-    let details = DetailsController::new(slint_index, window.as_weak(), Arc::clone(&actions));
+    let details = DetailsController::new(pane_id, shell.clone(), Arc::clone(&actions));
     let grid = GridController::new(
-        slint_index,
-        window.as_weak(),
+        pane_id,
+        shell.clone(),
         Arc::clone(&actions),
         Arc::clone(&thumb_cache),
         thumb_worker_count,
@@ -313,8 +386,8 @@ fn build_pane_controllers(
         thumb_max_file_bytes,
     );
     let gallery = GalleryController::new(
-        slint_index,
-        window.as_weak(),
+        pane_id,
+        shell.clone(),
         Arc::clone(&actions),
         Arc::clone(&thumb_cache),
         thumb_worker_count,
@@ -322,9 +395,9 @@ fn build_pane_controllers(
         thumbs_enabled,
         thumb_max_file_bytes,
     );
-    let tree = TreeController::new(slint_index, Arc::clone(&actions));
+    let tree = TreeController::new(pane_id, shell.clone(), Arc::clone(&actions));
     tree.attach_window(window.as_weak());
-    let miller = MillerController::new(actions);
+    let miller = MillerController::new(pane_id, shell, actions);
     miller.attach_window(window.as_weak());
 
     PaneControllers {
@@ -384,6 +457,11 @@ pub struct AppShell {
     workspace: RwLock<WorkspaceModel>,
     /// Per-pane view controllers keyed by pane id.
     panes_ctrl: RwLock<AHashMap<PaneId, PaneControllers>>,
+    /// Per-pane snapshot of view data (rows, columns, thumbs, …) staged for
+    /// Slint. View controllers push into this cache via the `publish_*`
+    /// methods; the shell rebuilds the outer nested [`VecModel`]s in DFS
+    /// order and dispatches to the window on the Slint event loop.
+    pane_cache: RwLock<AHashMap<PaneId, PaneRenderCache>>,
     /// Current location view model per pane id.
     vms: RwLock<AHashMap<PaneId, Arc<dyn LocationViewModel>>>,
     /// Maps `PaneId` → Slint slot index (0 or 1) for the compat layer.
@@ -445,24 +523,11 @@ impl AppShell {
         let workspace = WorkspaceModel::new_default();
         let initial_pane_id = workspace.focused;
 
-        let mut panes_ctrl = AHashMap::default();
-        panes_ctrl.insert(
-            initial_pane_id,
-            build_pane_controllers(
-                initial_pane_id,
-                0,
-                window,
-                Arc::clone(&actions),
-                Arc::clone(&thumb_cache),
-                thumb_worker_count,
-                thumb_max_cache_bytes,
-                thumbs_enabled,
-                thumb_max_file_bytes,
-            ),
-        );
-
         let mut pane_slint_index = AHashMap::default();
         pane_slint_index.insert(initial_pane_id, 0usize);
+
+        let mut pane_cache = AHashMap::default();
+        pane_cache.insert(initial_pane_id, PaneRenderCache::default());
 
         let palette_ctrl = build_palette_controller(window, Arc::clone(&actions), bookmarks);
         search.set_action_sink(Arc::clone(&actions));
@@ -470,28 +535,49 @@ impl AppShell {
         ops.attach_window(window.as_weak());
         let bulk_rename = BulkRenameController::new(Arc::clone(&ops), Arc::clone(&actions));
         bulk_rename.attach_window(window.as_weak());
-        let shell = Arc::new(Self {
-            window: window.as_weak(),
-            workspace: RwLock::new(workspace),
-            panes_ctrl: RwLock::new(panes_ctrl),
-            vms: RwLock::new(AHashMap::default()),
-            pane_slint_index: RwLock::new(pane_slint_index),
-            palette: RwLock::new(PaletteModel::default()),
-            status: RwLock::new(StatusModel::default()),
-            actions,
-            navigation: nav,
-            palette_ctrl,
-            search,
-            ops,
-            bulk_rename,
-            thumb_cache,
-            thumb_worker_count,
-            thumb_max_cache_bytes,
-            thumbs_enabled,
-            thumb_max_file_bytes,
-            closed_tabs: RwLock::new(AHashMap::default()),
-            drag_armed: RwLock::new(None),
-            dragging: RwLock::new(None),
+
+        // Construct the shell cyclically so controllers can hold a weak
+        // reference to it (used to route publish_* calls back into the cache).
+        let shell = Arc::new_cyclic(|weak: &std::sync::Weak<Self>| {
+            let mut panes_ctrl = AHashMap::default();
+            panes_ctrl.insert(
+                initial_pane_id,
+                build_pane_controllers(
+                    initial_pane_id,
+                    window,
+                    weak.clone(),
+                    Arc::clone(&actions),
+                    Arc::clone(&thumb_cache),
+                    thumb_worker_count,
+                    thumb_max_cache_bytes,
+                    thumbs_enabled,
+                    thumb_max_file_bytes,
+                ),
+            );
+            Self {
+                window: window.as_weak(),
+                workspace: RwLock::new(workspace),
+                panes_ctrl: RwLock::new(panes_ctrl),
+                pane_cache: RwLock::new(pane_cache),
+                vms: RwLock::new(AHashMap::default()),
+                pane_slint_index: RwLock::new(pane_slint_index),
+                palette: RwLock::new(PaletteModel::default()),
+                status: RwLock::new(StatusModel::default()),
+                actions,
+                navigation: nav,
+                palette_ctrl,
+                search,
+                ops,
+                bulk_rename,
+                thumb_cache,
+                thumb_worker_count,
+                thumb_max_cache_bytes,
+                thumbs_enabled,
+                thumb_max_file_bytes,
+                closed_tabs: RwLock::new(AHashMap::default()),
+                drag_armed: RwLock::new(None),
+                dragging: RwLock::new(None),
+            }
         });
 
         shell.wire_callbacks(window);
@@ -673,12 +759,19 @@ impl AppShell {
         // Assign the new pane to its DFS slot.
         self.pane_slint_index.write().insert(new_id, new_slot);
 
-        // Build controllers for the new pane (slot index used for push routing).
+        // Seed an empty render-cache entry so the outer VecModels always have
+        // a slot for every live pane (built inside push_pane_data_to_slint).
+        self.pane_cache
+            .write()
+            .insert(new_id, PaneRenderCache::default());
+
+        // Build controllers for the new pane; they hold a weak reference to
+        // this shell so their publish_* calls route back into the cache.
         let window = self.window.upgrade().expect("window must be alive");
         let new_ctrl = build_pane_controllers(
             new_id,
-            new_slot,
             &window,
+            Arc::downgrade(self),
             Arc::clone(&self.actions),
             Arc::clone(&self.thumb_cache),
             self.thumb_worker_count,
@@ -707,13 +800,14 @@ impl AppShell {
 
         self.panes_ctrl.write().remove(&outcome.removed);
         self.vms.write().remove(&outcome.removed);
+        self.pane_cache.write().remove(&outcome.removed);
 
         // Reassign Slint slot indices for the remaining panes in DFS order.
         let leaves = self.workspace.read().layout.all_leaves();
         {
             let mut idx_map = self.pane_slint_index.write();
             idx_map.clear();
-            for (i, &leaf) in leaves.iter().enumerate().take(2) {
+            for (i, &leaf) in leaves.iter().enumerate() {
                 idx_map.insert(leaf, i);
             }
         }
@@ -1218,9 +1312,8 @@ impl AppShell {
 
     /// Return the filesystem paths of all selected entries in pane `id`.
     ///
-    /// Reads the selection mask from the Slint window and the entry list from
-    /// the stored location view model. **Must be called on the Slint
-    /// event-loop thread.**
+    /// Reads the selection mask from the [`PaneRenderCache`] and the entry
+    /// list from the stored location view model. Safe to call from any thread.
     ///
     /// # Caveats
     ///
@@ -1228,17 +1321,12 @@ impl AppShell {
     /// reading is a TODO once those views expose a unified selection API.
     #[must_use]
     pub fn selected_paths(&self, id: PaneId) -> Vec<PathBuf> {
-        let Some(slint_idx) = self.pane_slint_index.read().get(&id).copied() else {
-            return Vec::new();
-        };
-        let Some(window) = self.window.upgrade() else {
-            return Vec::new();
-        };
-
-        let mask_model = if slint_idx == 0 {
-            window.get_pane0_details_selected_mask()
-        } else {
-            window.get_pane1_details_selected_mask()
+        let mask = {
+            let cache = self.pane_cache.read();
+            let Some(entry) = cache.get(&id) else {
+                return Vec::new();
+            };
+            entry.details_selected_mask.clone()
         };
 
         let vm_guard = self.vms.read();
@@ -1247,16 +1335,16 @@ impl AppShell {
         };
         let entries = vm.entries();
 
-        use slint::Model as _;
-        (0..mask_model.row_count())
-            .filter(|&i| mask_model.row_data(i).unwrap_or(false))
-            .filter_map(|i| entries.get(i).map(|e| e.path.clone()))
+        mask.iter()
+            .enumerate()
+            .filter(|(_, &sel)| sel)
+            .filter_map(|(i, _)| entries.get(i).map(|e| e.path.clone()))
             .collect()
     }
 
     /// Return the path of the focused (cursor) entry in pane `id`, if any.
     ///
-    /// **Must be called on the Slint event-loop thread.**
+    /// Safe to call from any thread.
     ///
     /// # Caveats
     ///
@@ -1264,14 +1352,11 @@ impl AppShell {
     /// are a TODO.
     #[must_use]
     pub fn focused_entry(&self, id: PaneId) -> Option<PathBuf> {
-        let slint_idx = self.pane_slint_index.read().get(&id).copied()?;
-        let window = self.window.upgrade()?;
-
-        let focused_idx = if slint_idx == 0 {
-            window.get_pane0_details_focused_index()
-        } else {
-            window.get_pane1_details_focused_index()
-        };
+        let focused_idx = self
+            .pane_cache
+            .read()
+            .get(&id)
+            .map(|c| c.details_focused_index)?;
 
         if focused_idx < 0 {
             return None;
@@ -2291,15 +2376,17 @@ impl AppShell {
     /// Project the N-pane workspace layout onto Slint.
     ///
     /// Builds a [`PaneSlintData`] entry for every leaf pane in DFS order and
-    /// pushes it via `set_panes`.  Also pushes split-handle descriptors, the
-    /// focused-pane id, and the per-slot light data (`pane0-*` / `pane1-*`
-    /// tabs/segments/active-tab) used by the per-slot conditional routing in
-    /// the `for pane[i] in panes` loop until view controllers are migrated to
-    /// full N-pane parallel arrays in Phase 4.1.
+    /// pushes it via `set_panes`. Also pushes split-handle descriptors and the
+    /// focused-pane id. The pane's per-view heavy data (details rows,
+    /// thumbnails, tree nodes, etc.) is written into the [`PaneRenderCache`]
+    /// by view controllers via `publish_*` methods and re-projected here via
+    /// [`Self::push_pane_data_to_slint`] so both light and heavy data reach
+    /// Slint in the same DFS-leaf order.
     pub fn project_workspace_to_slint(self: &Arc<Self>) {
         /// Cheap-to-clone snapshot of one pane's light data.
         struct PaneData {
-            id: i32,
+            id: PaneId,
+            id_i32: i32,
             x: f32,
             y: f32,
             width: f32,
@@ -2334,7 +2421,8 @@ impl AppShell {
                     let pane = ws.pane(*id).expect("leaf in layout must have pane state");
                     let location = pane.active_location();
                     PaneData {
-                        id: id.0 as i32,
+                        id: *id,
+                        id_i32: id.0 as i32,
                         x: rect.x,
                         y: rect.y,
                         width: rect.width,
@@ -2353,6 +2441,29 @@ impl AppShell {
             (focused.0 as i32, focus_idx, pane_data, handle_data)
         };
 
+        // Update the tabs / segments / active-tab entries in the pane cache so
+        // push_pane_data_to_slint sees the freshest values when it runs.
+        {
+            let mut cache = self.pane_cache.write();
+            for p in &pane_data {
+                let entry = cache.entry(p.id).or_default();
+                entry.tabs = p
+                    .tabs
+                    .iter()
+                    .map(|t| TabEntry {
+                        title: SharedString::from(t.title.as_str()),
+                        dirty: t.dirty,
+                    })
+                    .collect();
+                entry.segments = p
+                    .segments
+                    .iter()
+                    .map(|s| SharedString::from(s.as_str()))
+                    .collect();
+                entry.active_tab = p.active_tab;
+            }
+        }
+
         let weak = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(window) = weak.upgrade() else {
@@ -2364,7 +2475,7 @@ impl AppShell {
             let slint_panes: Vec<PaneSlintData> = pane_data
                 .iter()
                 .map(|p| PaneSlintData {
-                    id: p.id,
+                    id: p.id_i32,
                     x: p.x,
                     y: p.y,
                     width: p.width,
@@ -2377,23 +2488,6 @@ impl AppShell {
             window.set_panes(ModelRc::new(VecModel::from(slint_panes)));
             window.set_focused_pane_id(focused_id);
             window.set_focus_index(focus_idx);
-
-            // Per-slot light data: tabs and path-segments for slots 0 and 1.
-            // Phase 4.1: generalise this once controllers emit to N-pane arrays.
-            if let Some(p) = pane_data.first() {
-                window.set_pane0_tabs(to_tab_model(&p.tabs));
-                window.set_pane0_active_tab(p.active_tab);
-                window.set_pane0_segments(to_segments_model(&p.segments));
-            }
-            if let Some(p) = pane_data.get(1) {
-                window.set_pane1_tabs(to_tab_model(&p.tabs));
-                window.set_pane1_active_tab(p.active_tab);
-                window.set_pane1_segments(to_segments_model(&p.segments));
-            } else {
-                window.set_pane1_tabs(ModelRc::new(VecModel::from(Vec::<TabEntry>::new())));
-                window.set_pane1_active_tab(0);
-                window.set_pane1_segments(ModelRc::new(VecModel::from(Vec::<SharedString>::new())));
-            }
 
             // Split-handle descriptors.
             let slint_handles: Vec<SplitHandle> = handle_data
@@ -2408,6 +2502,358 @@ impl AppShell {
                 })
                 .collect();
             window.set_split_handles(ModelRc::new(VecModel::from(slint_handles)));
+        });
+
+        // Push the freshest cache snapshot (tabs/segments/heavy data) to Slint.
+        self.push_pane_data_to_slint();
+    }
+
+    /// Return the current Slint slot (DFS-leaf position) of `id`, if any.
+    ///
+    /// Used by view controllers when they need to translate a semantic
+    /// [`PaneId`] into the positional index that legacy [`UiAction`] variants
+    /// still carry.  Kept in sync by
+    /// [`Self::project_workspace_to_slint`] and split/close operations.
+    #[must_use]
+    pub fn slint_slot_for(&self, id: PaneId) -> Option<usize> {
+        self.pane_slint_index.read().get(&id).copied()
+    }
+
+    // ── Fine-grained cache publishers ────────────────────────────────────
+    //
+    // Each publisher stores its value into the per-pane render cache and
+    // then triggers one push of every panes-* Slint array in DFS order.  The
+    // pushes are idempotent, so multiple back-to-back publishes coalesce
+    // safely on the Slint event loop.
+
+    fn with_cache<F>(&self, id: PaneId, apply: F)
+    where
+        F: FnOnce(&mut PaneRenderCache),
+    {
+        let mut cache = self.pane_cache.write();
+        let entry = cache.entry(id).or_default();
+        apply(entry);
+    }
+
+    /// Publish the Details view row list for pane `id`.
+    pub fn publish_details_rows(self: &Arc<Self>, id: PaneId, rows: Vec<EntryRowItem>) {
+        self.with_cache(id, |c| c.details_rows = rows);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Details view column specs for pane `id`.
+    pub fn publish_details_columns(self: &Arc<Self>, id: PaneId, columns: Vec<crate::ColumnSpec>) {
+        self.with_cache(id, |c| c.details_columns = columns);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Details view selection mask for pane `id`.
+    pub fn publish_details_selected_mask(self: &Arc<Self>, id: PaneId, mask: Vec<bool>) {
+        self.with_cache(id, |c| c.details_selected_mask = mask);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Details view selection anchor for pane `id`.
+    pub fn publish_details_selected_anchor(self: &Arc<Self>, id: PaneId, anchor: i32) {
+        self.with_cache(id, |c| c.details_selected_anchor = anchor);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Details view focused-row index for pane `id`.
+    pub fn publish_details_focused_index(self: &Arc<Self>, id: PaneId, focus: i32) {
+        self.with_cache(id, |c| c.details_focused_index = focus);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Grid view thumbnails for pane `id`.
+    pub fn publish_grid_thumbs(
+        self: &Arc<Self>,
+        id: PaneId,
+        thumbs: Vec<Option<crate::views::grid::thumbs::DecodedPixels>>,
+    ) {
+        self.with_cache(id, |c| c.grid_thumbs = thumbs);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Grid view has-thumb flags for pane `id`.
+    pub fn publish_grid_has_thumbs(self: &Arc<Self>, id: PaneId, has: Vec<bool>) {
+        self.with_cache(id, |c| c.grid_has_thumbs = has);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Grid view selection mask for pane `id`.
+    pub fn publish_grid_selected_mask(self: &Arc<Self>, id: PaneId, mask: Vec<bool>) {
+        self.with_cache(id, |c| c.grid_selected_mask = mask);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Grid view focused-cell index for pane `id`.
+    pub fn publish_grid_focused_index(self: &Arc<Self>, id: PaneId, focus: i32) {
+        self.with_cache(id, |c| c.grid_focused_index = focus);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Gallery strip thumbnails for pane `id`.
+    pub fn publish_gallery_strip_thumbs(
+        self: &Arc<Self>,
+        id: PaneId,
+        thumbs: Vec<Option<crate::views::gallery::thumbs::DecodedPixels>>,
+    ) {
+        self.with_cache(id, |c| c.gallery_strip_thumbs = thumbs);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Gallery preview image and its loading state for pane `id`.
+    pub fn publish_gallery_preview(
+        self: &Arc<Self>,
+        id: PaneId,
+        preview: Option<crate::views::gallery::thumbs::DecodedPixels>,
+        loading: bool,
+        fallback_glyph: String,
+    ) {
+        self.with_cache(id, |c| {
+            c.gallery_preview = preview;
+            c.gallery_preview_loading = loading;
+            c.gallery_preview_fallback_glyph = fallback_glyph;
+        });
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Gallery focused index for pane `id`.
+    pub fn publish_gallery_focused_index(self: &Arc<Self>, id: PaneId, focus: i32) {
+        self.with_cache(id, |c| c.gallery_focused_index = focus);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Gallery metadata sidebar for pane `id`.
+    pub fn publish_gallery_metadata(
+        self: &Arc<Self>,
+        id: PaneId,
+        metadata: crate::MetadataFields,
+    ) {
+        self.with_cache(id, |c| c.gallery_metadata = metadata);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Tree view visible node list for pane `id`.
+    pub fn publish_tree_nodes(self: &Arc<Self>, id: PaneId, nodes: Vec<crate::TreeNode>) {
+        self.with_cache(id, |c| c.tree_nodes = nodes);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Tree view focused index for pane `id`.
+    pub fn publish_tree_focused_index(self: &Arc<Self>, id: PaneId, focus: i32) {
+        self.with_cache(id, |c| c.tree_focused_index = focus);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Tree view selected index for pane `id`.
+    pub fn publish_tree_selected_index(self: &Arc<Self>, id: PaneId, selected: i32) {
+        self.with_cache(id, |c| c.tree_selected_index = selected);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Miller columns snapshot for pane `id`.
+    pub fn publish_miller_columns(
+        self: &Arc<Self>,
+        id: PaneId,
+        columns: Vec<MillerColumnCache>,
+    ) {
+        self.with_cache(id, |c| c.miller_columns = columns);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Publish the Miller focused-column index for pane `id`.
+    pub fn publish_miller_focused_col(self: &Arc<Self>, id: PaneId, focused: i32) {
+        self.with_cache(id, |c| c.miller_focused_col = focused);
+        self.push_pane_data_to_slint();
+    }
+
+    /// Rebuild every `panes-*` nested [`VecModel`] from the current cache in
+    /// DFS-leaf order and push them to the Slint window.
+    ///
+    /// Runs the actual property writes inside `invoke_from_event_loop` so it
+    /// is safe to call from any thread. Cheap because per-pane state is
+    /// shallow-cloned once and Slint only redraws affected rows.
+    pub fn push_pane_data_to_slint(self: &Arc<Self>) {
+        // Snapshot the DFS leaf order under a short read lock so we do not
+        // hold the workspace lock while touching the cache or the UI thread.
+        let leaves = self.workspace.read().layout.all_leaves();
+
+        // Clone the per-pane cache entries in DFS order into `Send`-safe
+        // structures.  We cannot capture `Arc<AppShell>` in the closure and
+        // then re-lock the cache from the UI thread because that would make
+        // controller writes deadlock the render loop.
+        let snapshots: Vec<PaneRenderCache> = {
+            let cache = self.pane_cache.read();
+            leaves
+                .iter()
+                .map(|id| cache.get(id).cloned().unwrap_or_default())
+                .collect()
+        };
+
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+
+            // Tabs / segments / active-tab.
+            let tabs: Vec<ModelRc<TabEntry>> = snapshots
+                .iter()
+                .map(|s| ModelRc::new(VecModel::from(s.tabs.clone())))
+                .collect();
+            window.set_panes_tabs(ModelRc::new(VecModel::from(tabs)));
+
+            let segments: Vec<ModelRc<SharedString>> = snapshots
+                .iter()
+                .map(|s| ModelRc::new(VecModel::from(s.segments.clone())))
+                .collect();
+            window.set_panes_segments(ModelRc::new(VecModel::from(segments)));
+
+            let active_tab: Vec<i32> = snapshots.iter().map(|s| s.active_tab).collect();
+            window.set_panes_active_tab(ModelRc::new(VecModel::from(active_tab)));
+
+            // Details.
+            let d_rows: Vec<ModelRc<EntryRowItem>> = snapshots
+                .iter()
+                .map(|s| ModelRc::new(VecModel::from(s.details_rows.clone())))
+                .collect();
+            window.set_panes_details_rows(ModelRc::new(VecModel::from(d_rows)));
+
+            let d_cols: Vec<ModelRc<crate::ColumnSpec>> = snapshots
+                .iter()
+                .map(|s| ModelRc::new(VecModel::from(s.details_columns.clone())))
+                .collect();
+            window.set_panes_details_columns(ModelRc::new(VecModel::from(d_cols)));
+
+            let d_mask: Vec<ModelRc<bool>> = snapshots
+                .iter()
+                .map(|s| ModelRc::new(VecModel::from(s.details_selected_mask.clone())))
+                .collect();
+            window.set_panes_details_selected_mask(ModelRc::new(VecModel::from(d_mask)));
+
+            let d_anchor: Vec<i32> = snapshots.iter().map(|s| s.details_selected_anchor).collect();
+            window.set_panes_details_selected_anchor(ModelRc::new(VecModel::from(d_anchor)));
+
+            let d_focus: Vec<i32> = snapshots.iter().map(|s| s.details_focused_index).collect();
+            window.set_panes_details_focused_index(ModelRc::new(VecModel::from(d_focus)));
+
+            // Grid.
+            let g_thumbs: Vec<ModelRc<slint::Image>> = snapshots
+                .iter()
+                .map(|s| {
+                    let images: Vec<slint::Image> = s
+                        .grid_thumbs
+                        .iter()
+                        .map(|opt| {
+                            opt.as_ref()
+                                .map(crate::views::grid::thumbs::decoded_to_slint)
+                                .unwrap_or_default()
+                        })
+                        .collect();
+                    ModelRc::new(VecModel::from(images))
+                })
+                .collect();
+            window.set_panes_grid_thumbnails(ModelRc::new(VecModel::from(g_thumbs)));
+
+            let g_has: Vec<ModelRc<bool>> = snapshots
+                .iter()
+                .map(|s| ModelRc::new(VecModel::from(s.grid_has_thumbs.clone())))
+                .collect();
+            window.set_panes_grid_has_thumbs(ModelRc::new(VecModel::from(g_has)));
+
+            let g_mask: Vec<ModelRc<bool>> = snapshots
+                .iter()
+                .map(|s| ModelRc::new(VecModel::from(s.grid_selected_mask.clone())))
+                .collect();
+            window.set_panes_grid_selected_mask(ModelRc::new(VecModel::from(g_mask)));
+
+            let g_focus: Vec<i32> = snapshots.iter().map(|s| s.grid_focused_index).collect();
+            window.set_panes_grid_focused_index(ModelRc::new(VecModel::from(g_focus)));
+
+            // Gallery.
+            let gal_strip: Vec<ModelRc<slint::Image>> = snapshots
+                .iter()
+                .map(|s| {
+                    let images: Vec<slint::Image> = s
+                        .gallery_strip_thumbs
+                        .iter()
+                        .map(|opt| {
+                            opt.as_ref()
+                                .map(crate::views::gallery::thumbs::decoded_to_slint)
+                                .unwrap_or_default()
+                        })
+                        .collect();
+                    ModelRc::new(VecModel::from(images))
+                })
+                .collect();
+            window.set_panes_gallery_strip_thumbnails(ModelRc::new(VecModel::from(gal_strip)));
+
+            let gal_prev: Vec<slint::Image> = snapshots
+                .iter()
+                .map(|s| {
+                    s.gallery_preview
+                        .as_ref()
+                        .map(crate::views::gallery::thumbs::decoded_to_slint)
+                        .unwrap_or_default()
+                })
+                .collect();
+            window.set_panes_gallery_preview_image(ModelRc::new(VecModel::from(gal_prev)));
+
+            let gal_loading: Vec<bool> = snapshots
+                .iter()
+                .map(|s| s.gallery_preview_loading)
+                .collect();
+            window.set_panes_gallery_preview_loading(ModelRc::new(VecModel::from(gal_loading)));
+
+            let gal_glyph: Vec<SharedString> = snapshots
+                .iter()
+                .map(|s| SharedString::from(s.gallery_preview_fallback_glyph.as_str()))
+                .collect();
+            window.set_panes_gallery_preview_fallback_glyph(ModelRc::new(VecModel::from(gal_glyph)));
+
+            let gal_focus: Vec<i32> = snapshots.iter().map(|s| s.gallery_focused_index).collect();
+            window.set_panes_gallery_focused_index(ModelRc::new(VecModel::from(gal_focus)));
+
+            let gal_meta: Vec<crate::MetadataFields> =
+                snapshots.iter().map(|s| s.gallery_metadata.clone()).collect();
+            window.set_panes_gallery_metadata(ModelRc::new(VecModel::from(gal_meta)));
+
+            // Tree.
+            let t_nodes: Vec<ModelRc<crate::TreeNode>> = snapshots
+                .iter()
+                .map(|s| ModelRc::new(VecModel::from(s.tree_nodes.clone())))
+                .collect();
+            window.set_panes_tree_nodes(ModelRc::new(VecModel::from(t_nodes)));
+
+            let t_focus: Vec<i32> = snapshots.iter().map(|s| s.tree_focused_index).collect();
+            window.set_panes_tree_focused_index(ModelRc::new(VecModel::from(t_focus)));
+
+            let t_sel: Vec<i32> = snapshots.iter().map(|s| s.tree_selected_index).collect();
+            window.set_panes_tree_selected_index(ModelRc::new(VecModel::from(t_sel)));
+
+            // Miller.
+            let m_cols: Vec<ModelRc<crate::MillerColData>> = snapshots
+                .iter()
+                .map(|s| {
+                    let cols: Vec<crate::MillerColData> = s
+                        .miller_columns
+                        .iter()
+                        .map(|c| crate::MillerColData {
+                            title: SharedString::from(c.title.as_str()),
+                            entries: ModelRc::new(VecModel::from(c.entries.clone())),
+                            focused: c.focused,
+                            loading: c.loading,
+                        })
+                        .collect();
+                    ModelRc::new(VecModel::from(cols))
+                })
+                .collect();
+            window.set_panes_miller_columns(ModelRc::new(VecModel::from(m_cols)));
+
+            let m_focus: Vec<i32> = snapshots.iter().map(|s| s.miller_focused_col).collect();
+            window.set_panes_miller_focused_col(ModelRc::new(VecModel::from(m_focus)));
         });
     }
 

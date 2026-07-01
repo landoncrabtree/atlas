@@ -27,7 +27,7 @@ use crossbeam_channel::RecvTimeoutError;
 use parking_lot::Mutex;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
-use crate::AtlasWindow;
+use crate::{models::split::PaneId, shell::AppShell};
 
 /// Default target dimension for thumbnails (longer side, in pixels).
 pub const DEFAULT_TARGET_DIM: u32 = 256;
@@ -76,10 +76,10 @@ struct Shared {
 pub struct ThumbRequester {
     generator: Arc<Generator>,
     shared: Arc<Shared>,
-    pane: usize,
+    pane_id: PaneId,
     stop: Arc<AtomicBool>,
     drain_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
-    window: slint::Weak<AtlasWindow>,
+    shell: std::sync::Weak<AppShell>,
     /// Whether thumbnail generation is enabled at all (config: thumbnails.enabled).
     enabled: bool,
     /// Skip requests for files above this size (config: thumbnails.generate_for_size_up_to_mb).
@@ -97,8 +97,8 @@ impl ThumbRequester {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         cache: Arc<SqliteCache>,
-        pane: usize,
-        window: slint::Weak<AtlasWindow>,
+        pane_id: PaneId,
+        shell: std::sync::Weak<AppShell>,
         worker_count: usize,
         max_cache_bytes: u64,
         enabled: bool,
@@ -125,10 +125,10 @@ impl ThumbRequester {
         let requester = Arc::new(Self {
             generator,
             shared,
-            pane,
+            pane_id,
             stop: Arc::clone(&stop),
             drain_handle: Mutex::new(None),
-            window,
+            shell,
             enabled,
             max_file_bytes,
         });
@@ -203,12 +203,12 @@ impl ThumbRequester {
         let shared = Arc::clone(&self.shared);
         let result_rx = self.generator.results();
         let stop = Arc::clone(&self.stop);
-        let pane = self.pane;
-        let window = self.window.clone();
+        let pane_id = self.pane_id;
+        let shell = self.shell.clone();
 
         let handle = std::thread::Builder::new()
-            .name(format!("atlas-grid-thumbs-pane{pane}"))
-            .spawn(move || drain_loop(&shared, &result_rx, &stop, pane, &window))
+            .name(format!("atlas-grid-thumbs-pane{}", pane_id.0))
+            .spawn(move || drain_loop(&shared, &result_rx, &stop, pane_id, &shell))
             .expect("failed to spawn grid thumb drain thread");
 
         *self.drain_handle.lock() = Some(handle);
@@ -243,8 +243,8 @@ fn drain_loop(
     shared: &Arc<Shared>,
     result_rx: &crossbeam_channel::Receiver<ThumbResult>,
     stop: &Arc<AtomicBool>,
-    pane: usize,
-    window: &slint::Weak<AtlasWindow>,
+    pane_id: PaneId,
+    shell: &std::sync::Weak<AppShell>,
 ) {
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -292,30 +292,15 @@ fn drain_loop(
             }
         }
 
-        // Snapshot and push to UI.  Converting to slint::Image happens inside
-        // invoke_from_event_loop so it runs on the Slint event thread.
+        // Snapshot and publish through the shell cache; conversion to
+        // slint::Image happens on the Slint event loop inside
+        // push_pane_data_to_slint.
         let decoded_snap = shared.decoded.lock().clone();
         let has_snap = shared.has_thumbs.lock().clone();
-        let window = window.clone();
 
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(w) = window.upgrade() else { return };
-
-            let thumbs: Vec<slint::Image> = decoded_snap
-                .iter()
-                .map(|d| d.as_ref().map(decoded_to_slint).unwrap_or_default())
-                .collect();
-
-            let thumb_model = slint::ModelRc::new(slint::VecModel::from(thumbs));
-            let has_model = slint::ModelRc::new(slint::VecModel::from(has_snap));
-
-            if pane == 0 {
-                w.set_pane0_grid_thumbnails(thumb_model);
-                w.set_pane0_grid_has_thumbs(has_model);
-            } else {
-                w.set_pane1_grid_thumbnails(thumb_model);
-                w.set_pane1_grid_has_thumbs(has_model);
-            }
-        });
+        if let Some(shell) = shell.upgrade() {
+            shell.publish_grid_thumbs(pane_id, decoded_snap);
+            shell.publish_grid_has_thumbs(pane_id, has_snap);
+        }
     }
 }

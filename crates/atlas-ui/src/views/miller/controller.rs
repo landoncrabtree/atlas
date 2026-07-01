@@ -25,15 +25,17 @@ use atlas_fs::{
 };
 use crossbeam_channel::{unbounded, Sender};
 use parking_lot::{Mutex, RwLock};
-use slint::{ModelRc, SharedString, VecModel};
+use slint::SharedString;
 
 use crate::{
     actions::{ActionSink, UiAction},
+    models::split::PaneId,
+    shell::{AppShell, MillerColumnCache},
     views::{
         details::{format_relative_time, format_size},
         miller::column::Column,
     },
-    AtlasWindow, EntryRowItem, MillerColData,
+    AtlasWindow, EntryRowItem,
 };
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -52,12 +54,20 @@ struct ColumnSub {
 /// Call [`MillerController::attach_window`] once the Slint window is available,
 /// then [`MillerController::set_root`] to navigate to an initial directory.
 pub struct MillerController {
+    /// Semantic id of the pane this controller drives.
+    pane_id: PaneId,
     /// Active column stack (index 0 = leftmost).
     columns: RwLock<Vec<ColumnSub>>,
     /// Index of the column that currently holds focus.
     focused_column: AtomicUsize,
     /// Weak reference to the Slint window — set by `attach_window`.
+    /// Retained for backwards-compatibility with callers that still invoke
+    /// [`Self::attach_window`]; per-view data now flows through the shell
+    /// cache via [`crate::shell::AppShell::publish_miller_columns`].
+    #[allow(dead_code)]
     window: RwLock<slint::Weak<AtlasWindow>>,
+    /// Weak reference to the shell so publish_* calls can rebuild the cache.
+    shell: std::sync::Weak<AppShell>,
     /// Shared action sink for emitting navigation / open-file actions.
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
 }
@@ -68,11 +78,17 @@ impl MillerController {
     /// The controller starts with no columns and no window attached.
     /// Call [`Self::attach_window`] and then [`Self::set_root`] to begin.
     #[must_use]
-    pub fn new(actions: Arc<Mutex<Box<dyn ActionSink>>>) -> Arc<Self> {
+    pub fn new(
+        pane_id: PaneId,
+        shell: std::sync::Weak<AppShell>,
+        actions: Arc<Mutex<Box<dyn ActionSink>>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            pane_id,
             columns: RwLock::new(Vec::new()),
             focused_column: AtomicUsize::new(0),
             window: RwLock::new(slint::Weak::default()),
+            shell,
             actions,
         })
     }
@@ -217,8 +233,8 @@ impl MillerController {
 
     /// Activate the currently focused entry in the focused column.
     ///
-    /// - Directory → dispatch [`UiAction::Navigate`] for pane 0.
-    /// - File      → dispatch [`UiAction::OpenFile`] for pane 0.
+    /// - Directory → dispatch [`UiAction::Navigate`].
+    /// - File      → dispatch [`UiAction::OpenFile`].
     pub fn activate_focused(self: &Arc<Self>) {
         let focused_col = self.focused_column.load(Ordering::Relaxed);
         let entry: Option<Entry> = {
@@ -230,14 +246,19 @@ impl MillerController {
             })
         };
         let Some(entry) = entry else { return };
+        let slot = self
+            .shell
+            .upgrade()
+            .and_then(|s| s.slint_slot_for(self.pane_id))
+            .unwrap_or(0);
         if entry.kind.is_dir() {
             self.actions.lock().dispatch(UiAction::Navigate {
-                pane: 0,
+                pane: slot,
                 path: entry.path,
             });
         } else {
             self.actions.lock().dispatch(UiAction::OpenFile {
-                pane: 0,
+                pane: slot,
                 path: entry.path,
             });
         }
@@ -361,12 +382,9 @@ impl MillerController {
         self.push_all_columns_to_ui();
     }
 
-    /// Rebuild all column data and push to the Slint window.
+    /// Rebuild all column data and push to the Slint window via the shell cache.
     fn push_all_columns_to_ui(&self) {
-        // Collect raw (Send-safe) data before the invoke_from_event_loop closure.
-        // `ModelRc` uses `Rc` internally and is not `Send`, so we must not create
-        // it before the closure — construct it inside the closure instead.
-        let raw_cols: Vec<(SharedString, Vec<EntryRowItem>, i32, bool)> = {
+        let raw_cols: Vec<MillerColumnCache> = {
             let cols = self.columns.read();
             cols.iter()
                 .map(|sub| {
@@ -379,31 +397,20 @@ impl MillerController {
                     } else {
                         focused as i32
                     };
-                    (
-                        col_title(&sub.column.path),
-                        row_items,
-                        focused_i32,
-                        !sub.column.loaded.load(Ordering::Relaxed),
-                    )
+                    MillerColumnCache {
+                        title: col_title(&sub.column.path).to_string(),
+                        entries: row_items,
+                        focused: focused_i32,
+                        loading: !sub.column.loaded.load(Ordering::Relaxed),
+                    }
                 })
                 .collect()
         };
         let focused_col = self.focused_column.load(Ordering::Relaxed) as i32;
-        let window = self.window.read().clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(w) = window.upgrade() else { return };
-            let col_data: Vec<MillerColData> = raw_cols
-                .into_iter()
-                .map(|(title, entries, focused, loading)| MillerColData {
-                    title,
-                    entries: ModelRc::new(VecModel::from(entries)),
-                    focused,
-                    loading,
-                })
-                .collect();
-            w.set_pane0_miller_columns(ModelRc::new(VecModel::from(col_data)));
-            w.set_pane0_miller_focused_col(focused_col);
-        });
+        if let Some(shell) = self.shell.upgrade() {
+            shell.publish_miller_columns(self.pane_id, raw_cols);
+            shell.publish_miller_focused_col(self.pane_id, focused_col);
+        }
     }
 
     /// Push `focused-column` to the Slint window (columns unchanged).
@@ -510,6 +517,10 @@ mod tests {
         Arc::new(Mutex::new(Box::new(Noop)))
     }
 
+    fn make_ctrl() -> Arc<MillerController> {
+        MillerController::new(PaneId(0), std::sync::Weak::new(), make_actions())
+    }
+
     /// Spin-wait until `predicate` returns `true`, or panic after ~5 s.
     fn wait_until(predicate: impl Fn() -> bool) {
         for _ in 0..200 {
@@ -536,7 +547,7 @@ mod tests {
     #[test]
     fn set_root_opens_one_column() {
         let dir = make_tree();
-        let ctrl = MillerController::new(make_actions());
+        let ctrl = make_ctrl();
         ctrl.set_root(dir.path().to_path_buf());
 
         wait_until(|| ctrl.column_loaded(0));
@@ -557,7 +568,7 @@ mod tests {
         // Put a file inside subdir_a so the child column has entries.
         fs::write(dir.path().join("subdir_a").join("child.txt"), b"c").expect("write child");
 
-        let ctrl = MillerController::new(make_actions());
+        let ctrl = make_ctrl();
         ctrl.set_root(dir.path().to_path_buf());
         wait_until(|| ctrl.column_loaded(0));
 
@@ -581,7 +592,7 @@ mod tests {
     #[test]
     fn select_row_on_file_does_not_open_column() {
         let dir = make_tree();
-        let ctrl = MillerController::new(make_actions());
+        let ctrl = make_ctrl();
         ctrl.set_root(dir.path().to_path_buf());
         wait_until(|| ctrl.column_loaded(0));
 
@@ -609,7 +620,7 @@ mod tests {
         fs::create_dir(&nested).expect("create nested");
         fs::write(nested.join("deep.txt"), b"d").expect("write deep");
 
-        let ctrl = MillerController::new(make_actions());
+        let ctrl = make_ctrl();
         ctrl.set_root(dir.path().to_path_buf());
         wait_until(|| ctrl.column_loaded(0));
 
@@ -651,7 +662,7 @@ mod tests {
     #[test]
     fn move_column_left_closes_rightmost() {
         let dir = make_tree();
-        let ctrl = MillerController::new(make_actions());
+        let ctrl = make_ctrl();
         ctrl.set_root(dir.path().to_path_buf());
         wait_until(|| ctrl.column_loaded(0));
 

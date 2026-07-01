@@ -20,10 +20,12 @@ use std::{
 use ahash::AHashMap;
 use atlas_fs::{sort_in_place, Entry, EntryKind, ListEvent, ListRequest, SortSpec};
 use parking_lot::{Mutex, RwLock};
-use slint::{ModelRc, SharedString, VecModel};
+use slint::SharedString;
 
 use crate::{
     actions::{ActionSink, UiAction},
+    models::split::PaneId,
+    shell::AppShell,
     AtlasWindow, EntryRowItem, TreeNode,
 };
 
@@ -42,8 +44,8 @@ const NO_IDX: usize = usize::MAX;
 ///
 /// The controller is `Send + Sync` and safe to share across threads via `Arc`.
 pub struct TreeController {
-    /// Pane index (0 or 1) this controller drives.
-    pane: usize,
+    /// Semantic id of the pane this controller drives.
+    pane_id: PaneId,
     /// Root path of the current tree.
     root: RwLock<Option<PathBuf>>,
     /// All known nodes keyed by canonical path.
@@ -54,27 +56,36 @@ pub struct TreeController {
     selected: AtomicUsize,
     /// Whether hidden entries appear in the visible list.
     show_hidden: AtomicBool,
-    /// Weak reference to the Slint window (absent during tests).
+    /// Weak reference to the Slint window (absent during tests). Kept for
+    /// callers that already relied on it; view data is now pushed through the
+    /// shell cache instead.
     window: RwLock<Option<slint::Weak<AtlasWindow>>>,
+    /// Weak reference to the shell for pushing view data via publish_*.
+    shell: std::sync::Weak<AppShell>,
     /// Shared action sink for navigation.
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
 }
 
 impl TreeController {
-    /// Create a new controller for `pane`.
+    /// Create a new controller for `pane_id`.
     ///
     /// Call [`attach_window`](Self::attach_window) before triggering any
     /// navigation to enable UI pushes.
     #[must_use]
-    pub fn new(pane: usize, actions: Arc<Mutex<Box<dyn ActionSink>>>) -> Arc<Self> {
+    pub fn new(
+        pane_id: PaneId,
+        shell: std::sync::Weak<AppShell>,
+        actions: Arc<Mutex<Box<dyn ActionSink>>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            pane,
+            pane_id,
             root: RwLock::new(None),
             nodes: RwLock::new(AHashMap::new()),
             focused: AtomicUsize::new(NO_IDX),
             selected: AtomicUsize::new(NO_IDX),
             show_hidden: AtomicBool::new(false),
             window: RwLock::new(None),
+            shell,
             actions,
         })
     }
@@ -215,8 +226,13 @@ impl TreeController {
         // set_root which needs a write lock → parking_lot deadlock).
         let is_dir = self.nodes.read().get(&path).is_some_and(|n| n.is_dir);
         if is_dir {
+            let slot = self
+                .shell
+                .upgrade()
+                .and_then(|s| s.slint_slot_for(self.pane_id))
+                .unwrap_or(0);
             self.actions.lock().dispatch(UiAction::Navigate {
-                pane: self.pane,
+                pane: slot,
                 path,
             });
         }
@@ -259,13 +275,13 @@ impl TreeController {
     fn load_children(self: &Arc<Self>, path: PathBuf) {
         let ctrl = Arc::clone(self);
         match std::thread::Builder::new()
-            .name(format!("atlas-tree-p{}-load", self.pane))
+            .name(format!("atlas-tree-p{}-load", self.pane_id.0))
             .spawn(move || ctrl.do_load_children(path))
         {
             Ok(_) => {}
             Err(error) => {
                 tracing::error!(
-                    pane = self.pane,
+                    pane = self.pane_id.0,
                     %error,
                     "failed to spawn tree load thread"
                 );
@@ -292,7 +308,7 @@ impl TreeController {
                     error,
                 } => {
                     tracing::warn!(
-                        pane = self.pane,
+                        pane = self.pane_id.0,
                         path = %err_path.display(),
                         %error,
                         "tree child load error"
@@ -354,23 +370,11 @@ impl TreeController {
         } else {
             selected as i32
         };
-        let pane = self.pane;
-        let window_opt = self.window.read().clone();
-        let Some(window) = window_opt else { return };
-
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(w) = window.upgrade() else { return };
-            let model = ModelRc::new(VecModel::from(visible));
-            if pane == 0 {
-                w.set_pane0_tree_nodes(model);
-                w.set_pane0_tree_focused_index(focused_i32);
-                w.set_pane0_tree_selected_index(selected_i32);
-            } else {
-                w.set_pane1_tree_nodes(model);
-                w.set_pane1_tree_focused_index(focused_i32);
-                w.set_pane1_tree_selected_index(selected_i32);
-            }
-        });
+        if let Some(shell) = self.shell.upgrade() {
+            shell.publish_tree_nodes(self.pane_id, visible);
+            shell.publish_tree_focused_index(self.pane_id, focused_i32);
+            shell.publish_tree_selected_index(self.pane_id, selected_i32);
+        }
     }
 
     /// Expose the internal node map for testing.
@@ -447,7 +451,7 @@ mod tests {
 
     fn make_controller() -> Arc<TreeController> {
         let actions: Arc<Mutex<Box<dyn ActionSink>>> = Arc::new(Mutex::new(Box::new(NoopSink)));
-        TreeController::new(0, actions)
+        TreeController::new(PaneId(0), std::sync::Weak::new(), actions)
     }
 
     fn wait_for<F: Fn() -> bool>(f: F, timeout: Duration) -> bool {
