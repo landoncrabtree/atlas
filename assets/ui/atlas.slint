@@ -283,6 +283,12 @@ export component AtlasWindow inherits Window {
     callback toggle-dual-pane();
     callback open-goto();
     callback cycle-pane-focus();
+    // Focused-pane view navigation (routed by the shell to the currently
+    // focused pane's active view controller).
+    callback pane-move-focus(int);          // delta rows (-1 up, +1 down)
+    callback pane-activate-focused();       // Enter: cd into or open the focused entry
+    callback pane-go-up();                  // Backspace / left arrow: parent dir
+    callback palette-selection-delta(int);  // arrow up/down while palette open
 
     pure function location-str() -> string {
         dual-pane
@@ -385,6 +391,12 @@ export component AtlasWindow inherits Window {
     changed theme-row-h-spacious => { Theme.row-h-spacious = theme-row-h-spacious; }
 
     FocusScope {
+        // Force the FocusScope to own keyboard focus at startup so global
+        // shortcuts (Cmd+P, arrows, F-keys, etc.) work without the user
+        // first clicking on the address bar. Text inputs will steal focus
+        // when clicked; the palette dismiss handler re-focuses this scope.
+        init => { self.focus(); }
+
         key-pressed(event) => {
             if event.text == Key.Escape && palette-visible {
                 root.palette-dismiss();
@@ -454,6 +466,53 @@ export component AtlasWindow inherits Window {
                 root.toggle-dual-pane();
                 return accept;
             }
+
+            // ── macOS-standard shortcuts ────────────────────────────────
+            // Cmd/Ctrl+T — new tab in the focused pane.
+            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "t" || event.text == "T") && !palette-visible && !bulk-rename-visible {
+                if focus-index == 0 {
+                    root.pane0-new-tab();
+                } else {
+                    root.pane1-new-tab();
+                }
+                return accept;
+            }
+            // Cmd/Ctrl+W — close active tab in the focused pane.
+            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "w" || event.text == "W") && !palette-visible && !bulk-rename-visible {
+                if focus-index == 0 {
+                    root.pane0-tab-closed(pane0-active-tab);
+                } else {
+                    root.pane1-tab-closed(pane1-active-tab);
+                }
+                return accept;
+            }
+            // Cmd/Ctrl+Shift+N — new folder (alias for F7 mkdir).
+            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "n" || event.text == "N") && !palette-visible && !bulk-rename-visible {
+                root.fs-mkdir();
+                return accept;
+            }
+
+            // ── View navigation (when no modal has focus) ────────────────
+            // Down arrow / vim j → move focus down
+            if !palette-visible && !search-panel-visible && !bulk-rename-visible {
+                if event.text == Key.DownArrow || event.text == "j" {
+                    root.pane-move-focus(1);
+                    return accept;
+                }
+                if event.text == Key.UpArrow || event.text == "k" {
+                    root.pane-move-focus(-1);
+                    return accept;
+                }
+                if event.text == Key.Return || event.text == "\n" || event.text == "l" || event.text == Key.RightArrow {
+                    root.pane-activate-focused();
+                    return accept;
+                }
+                if event.text == Key.Backspace || event.text == "h" || event.text == Key.LeftArrow {
+                    root.pane-go-up();
+                    return accept;
+                }
+            }
+
             reject;
         }
 
@@ -611,6 +670,7 @@ export component AtlasWindow inherits Window {
             query-changed(q) => { root.palette-query-changed(q); }
             confirm(id) => { root.palette-confirm(id); }
             dismiss => { root.palette-dismiss(); }
+            select-delta(d) => { root.palette-selection-delta(d); }
         }
 
         SearchPanel {

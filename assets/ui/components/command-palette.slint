@@ -14,6 +14,7 @@ export component CommandPalette {
     callback query-changed(string);
     callback confirm(string);
     callback dismiss();
+    callback select-delta(int);
 
     if self.visible : Rectangle {
         width: 100%;
@@ -49,6 +50,7 @@ export component CommandPalette {
                         padding-right: Theme.space-4;
 
                         TextInput {
+                            init => { self.focus(); }
                             text <=> root.query;
                             color: Theme.fg;
                             font-size: 15px;
@@ -65,6 +67,14 @@ export component CommandPalette {
                             key-pressed(event) => {
                                 if event.text == Key.Escape {
                                     root.dismiss();
+                                    return accept;
+                                }
+                                if event.text == Key.DownArrow {
+                                    root.select-delta(1);
+                                    return accept;
+                                }
+                                if event.text == Key.UpArrow {
+                                    root.select-delta(-1);
                                     return accept;
                                 }
                                 reject;

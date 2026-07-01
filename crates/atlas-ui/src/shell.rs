@@ -416,6 +416,51 @@ impl AppShell {
         self.set_workspace(snapshot);
     }
 
+    /// Append a new tab to `pane` pointing at the pane's current location.
+    /// The new tab becomes active. No-op if `pane` is out of range.
+    pub fn new_tab(self: &Arc<Self>, pane: usize) {
+        {
+            let mut ws = self.workspace.write();
+            let Some(p) = ws.panes.get_mut(pane) else {
+                tracing::debug!(pane, "new_tab: pane out of range");
+                return;
+            };
+            let title = p
+                .location
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.location.to_string_lossy().into_owned());
+            p.tabs.push(crate::models::TabModel::new(title));
+            p.active_tab = p.tabs.len() - 1;
+        }
+        let snapshot = self.workspace.read().clone();
+        self.set_workspace(snapshot);
+    }
+
+    /// Remove tab `tab` from `pane`. Refuses to close the last tab
+    /// (the pane must always have at least one). Adjusts active_tab
+    /// so that a still-valid tab remains selected.
+    pub fn close_tab(self: &Arc<Self>, pane: usize, tab: usize) {
+        {
+            let mut ws = self.workspace.write();
+            let Some(p) = ws.panes.get_mut(pane) else {
+                tracing::debug!(pane, tab, "close_tab: pane out of range");
+                return;
+            };
+            if p.tabs.len() <= 1 || tab >= p.tabs.len() {
+                return;
+            }
+            p.tabs.remove(tab);
+            if p.active_tab >= p.tabs.len() {
+                p.active_tab = p.tabs.len() - 1;
+            } else if tab < p.active_tab {
+                p.active_tab -= 1;
+            }
+        }
+        let snapshot = self.workspace.read().clone();
+        self.set_workspace(snapshot);
+    }
+
     /// Return the filesystem paths of all selected entries in `pane`.
     ///
     /// Reads the selection mask from the Slint window and the entry list from
@@ -576,6 +621,37 @@ impl AppShell {
                 palette_ctrl.open(1);
             });
         }
+        {
+            let palette_ctrl = Arc::clone(&self.palette_ctrl);
+            window.on_palette_selection_delta(move |delta| {
+                palette_ctrl.move_selection(delta as isize);
+            });
+        }
+
+        // ── Focused-pane navigation callbacks ────────────────────────────
+        // The FocusScope in atlas.slint dispatches these when no modal or
+        // text input has focus (arrow keys / Enter / Backspace / vim hjkl).
+        {
+            let shell = self.clone();
+            window.on_pane_move_focus(move |delta| {
+                let pane = shell.focused_pane();
+                shell.panes_ctrl[pane].details.move_focus(delta as i64);
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_pane_activate_focused(move || {
+                let pane = shell.focused_pane();
+                shell.panes_ctrl[pane].details.activate_focused();
+            });
+        }
+        {
+            let nav = Arc::clone(&self.navigation);
+            let shell = self.clone();
+            window.on_pane_go_up(move || {
+                nav.go_up(shell.focused_pane());
+            });
+        }
 
         {
             let search_ctrl = Arc::clone(&self.search);
@@ -689,15 +765,17 @@ impl AppShell {
             });
         }
         {
-            let actions = Arc::clone(&self.actions);
+            let shell = self.clone();
             window.on_pane0_tab_closed(move |tab| {
-                actions.lock().dispatch(UiAction::TabClosed {
-                    pane: 0,
-                    tab: tab as usize,
-                });
+                shell.close_tab(0, tab as usize);
             });
         }
-        window.on_pane0_new_tab(dispatch!(self.actions, UiAction::NewTab { pane: 0 }));
+        {
+            let shell = self.clone();
+            window.on_pane0_new_tab(move || {
+                shell.new_tab(0);
+            });
+        }
 
         {
             let details = Arc::clone(&self.panes_ctrl[0].details);
@@ -850,15 +928,17 @@ impl AppShell {
             });
         }
         {
-            let actions = Arc::clone(&self.actions);
+            let shell = self.clone();
             window.on_pane1_tab_closed(move |tab| {
-                actions.lock().dispatch(UiAction::TabClosed {
-                    pane: 1,
-                    tab: tab as usize,
-                });
+                shell.close_tab(1, tab as usize);
             });
         }
-        window.on_pane1_new_tab(dispatch!(self.actions, UiAction::NewTab { pane: 1 }));
+        {
+            let shell = self.clone();
+            window.on_pane1_new_tab(move || {
+                shell.new_tab(1);
+            });
+        }
 
         // Details callbacks — pane 1
         {
