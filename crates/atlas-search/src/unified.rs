@@ -43,6 +43,12 @@ pub struct UnifiedRequest {
     pub max_results_per_source: usize,
     /// Local candidate paths used by [`UnifiedSource::FuzzyLocal`].
     pub candidates: Vec<PathBuf>,
+    /// Glob patterns skipped by the content-search walker. Wired from
+    /// `config.search.default_globs_exclude`.
+    pub exclude_globs: Vec<String>,
+    /// Worker-thread count for the content-search walker. `None` = auto.
+    /// Wired from `config.search.content_search_threads`.
+    pub content_search_threads: Option<usize>,
 }
 
 impl Default for UnifiedRequest {
@@ -53,6 +59,8 @@ impl Default for UnifiedRequest {
             scope: None,
             max_results_per_source: 50,
             candidates: Vec::new(),
+            exclude_globs: Vec::new(),
+            content_search_threads: None,
         }
     }
 }
@@ -212,6 +220,8 @@ pub async fn run(req: UnifiedRequest, index: Option<Arc<IndexClient>>) -> Unifie
                 let cancel = Arc::clone(&cancel);
                 let query = req.query.clone();
                 let scope = req.scope.clone();
+                let exclude_globs = req.exclude_globs.clone();
+                let content_threads = req.content_search_threads;
 
                 std::thread::spawn(move || {
                     let Some(scope) = scope else {
@@ -224,6 +234,14 @@ pub async fn run(req: UnifiedRequest, index: Option<Arc<IndexClient>>) -> Unifie
                         return;
                     };
 
+                    let filter = FileFilter {
+                        exclude_globs,
+                        ..FileFilter::default()
+                    };
+                    let options = SearchOptions {
+                        threads: content_threads,
+                        ..SearchOptions::default()
+                    };
                     let handle = content::run(SearchRequest {
                         roots: vec![scope],
                         pattern: PatternSpec::Literal {
@@ -231,8 +249,8 @@ pub async fn run(req: UnifiedRequest, index: Option<Arc<IndexClient>>) -> Unifie
                             case: CaseSensitivity::Insensitive,
                             word_boundary: false,
                         },
-                        filter: FileFilter::default(),
-                        options: SearchOptions::default(),
+                        filter,
+                        options,
                     });
 
                     let mut summary = UnifiedSummary {
@@ -376,6 +394,8 @@ hello atlas
                 scope: Some(dir.path().to_path_buf()),
                 max_results_per_source: 50,
                 candidates: Vec::new(),
+                exclude_globs: Vec::new(),
+                content_search_threads: None,
             },
             None,
         ));
@@ -408,6 +428,8 @@ hello atlas
                 scope: Some(dir.path().to_path_buf()),
                 max_results_per_source: 50,
                 candidates: Vec::new(),
+                exclude_globs: Vec::new(),
+                content_search_threads: None,
             },
             None,
         ));

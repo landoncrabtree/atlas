@@ -93,6 +93,10 @@ export component AtlasWindow inherits Window {
     /// Slint-side array access such as `panes[focus-index].path`).
     in property <int> focus-index: 0;
 
+    // ── Chrome visibility toggles (wired from config `ui.show_*`) ─────────────
+    in property <bool> show-status-bar: true;
+    in property <bool> show-breadcrumbs: true;
+
     /// Resize handles for every internal split node; pushed alongside `panes`.
     in property <[SplitHandle]> split-handles;
 
@@ -672,6 +676,7 @@ export component AtlasWindow inherits Window {
                     focused: pane.id == focused-pane-id;
                     path: pane.path;
                     view-mode: pane.view-mode;
+                    show-breadcrumbs: root.show-breadcrumbs;
 
                     // Per-slot data — routed by DFS position i.
                     // Phase 4.1: replace with panes-*[i] once controllers support N slots.
@@ -806,7 +811,7 @@ export component AtlasWindow inherits Window {
                 }
             }
 
-            StatusBar {
+            if root.show-status-bar : StatusBar {
                 total-entries: root.total-entries;
                 folder-count: root.folder-count;
                 file-count: root.file-count;

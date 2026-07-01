@@ -145,6 +145,10 @@ fn main() -> Result<()> {
 
     // config: reads config.search.fuzzy_max_results
     search_ctrl.set_max_results(config.search.fuzzy_max_results);
+    // config: reads config.search.default_globs_exclude
+    search_ctrl.set_exclude_globs(config.search.default_globs_exclude.clone());
+    // config: reads config.search.content_search_threads
+    search_ctrl.set_content_search_threads(config.search.content_search_threads);
 
     // config: reads config.indexer.enabled — skip daemon launch when disabled.
     let index_client = if config.indexer.enabled {
@@ -168,6 +172,12 @@ fn main() -> Result<()> {
         0
     };
 
+    let bookmark_pairs: Vec<(String, PathBuf)> = config
+        .bookmarks
+        .iter()
+        .map(|b| (b.name.clone(), b.path.clone()))
+        .collect();
+
     let shell: Arc<AppShell> = AppShell::new(
         &window,
         AtlasActionSink::new(Arc::clone(&nav)),
@@ -177,6 +187,7 @@ fn main() -> Result<()> {
         thumb_max_cache_bytes,
         thumbs_enabled,
         thumb_max_file_bytes,
+        bookmark_pairs,
     );
 
     let loader = ThemeLoader::new();
@@ -195,6 +206,9 @@ fn main() -> Result<()> {
         apply_font_overrides(&mut overlaid, &config.ui);
         shell.apply_theme(&overlaid);
     }
+    // Wire chrome visibility from config.ui.
+    shell.set_status_bar_visible(config.ui.show_status_bar);
+    shell.set_breadcrumbs_visible(config.ui.show_breadcrumbs);
     spawn_theme_event_thread(Arc::clone(&shell), Arc::clone(&themes_arc), theme_events);
 
     // Start the config hot-reload watcher so users can edit config.toml and
@@ -254,9 +268,6 @@ fn main() -> Result<()> {
     // TODO(config-sweep): ui.density — row-height multiplier via Theme token;
     //   tracked in gap-ui-density.
     //
-    // TODO(config-sweep): ui.show_status_bar / ui.show_breadcrumbs — Slint bool
-    //   props on AtlasWindow; tracked in gap-ui-chrome-visibility.
-    //
     // TODO(config-sweep): ui.animations — gate animate{} blocks on a Theme bool;
     //   tracked in gap-ui-animations.
     //
@@ -271,15 +282,6 @@ fn main() -> Result<()> {
     //
     // TODO(config-sweep): indexer.respect_gitignore — needs to be threaded into
     //   the IPC AddRoot request; tracked in gap-indexer-gitignore.
-    //
-    // TODO(config-sweep): search.content_search_threads — needs a setter on the
-    //   content-search request builder; tracked in gap-search-threads.
-    //
-    // TODO(config-sweep): search.default_globs_exclude — needs to be threaded into
-    //   the UnifiedRequest FileFilter; tracked in gap-search-globs-exclude.
-    //
-    // TODO(config-sweep): bookmarks palette source — add a BookmarksSource
-    //   alongside the existing action/goto sources; tracked in gap-bookmarks-palette.
 
     // Open in dual-pane layout when the config asks for it (default: true).
     // The new pane inherits pane 0's location via AppShell::split_focused.
@@ -544,6 +546,15 @@ fn spawn_config_event_thread(
                                 }
                             }
                         }
+
+                        // ── Chrome visibility ─────────────────────────────
+                        shell.set_status_bar_visible(cfg.ui.show_status_bar);
+                        shell.set_breadcrumbs_visible(cfg.ui.show_breadcrumbs);
+
+                        // ── Search knobs ──────────────────────────────────
+                        search_ctrl.set_max_results(cfg.search.fuzzy_max_results);
+                        search_ctrl.set_exclude_globs(cfg.search.default_globs_exclude.clone());
+                        search_ctrl.set_content_search_threads(cfg.search.content_search_threads);
                     }
                     atlas_config::ConfigEvent::LoadError(msg) => {
                         tracing::warn!(msg, "config file has errors; keeping previous values");

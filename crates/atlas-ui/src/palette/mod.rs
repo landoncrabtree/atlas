@@ -13,6 +13,6 @@ pub mod source;
 
 pub use controller::PaletteController;
 pub use source::{
-    ActionsSource, GotoPathsSource, ItemSink, PaletteItem, PaletteItemKind, PaletteSource,
-    PathIndex, WalkerPathIndex,
+    ActionsSource, BookmarksSource, GotoPathsSource, ItemSink, PaletteItem, PaletteItemKind,
+    PaletteSource, PathIndex, WalkerPathIndex,
 };

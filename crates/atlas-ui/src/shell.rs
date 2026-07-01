@@ -32,7 +32,7 @@ use crate::{
     },
     navigation::NavigationController,
     ops::OpsController,
-    palette::{ActionsSource, GotoPathsSource, PaletteController, WalkerPathIndex},
+    palette::{ActionsSource, BookmarksSource, GotoPathsSource, PaletteController, WalkerPathIndex},
     rename::BulkRenameController,
     search::SearchController,
     theme::{ThemeMode, ThemeTokens},
@@ -217,6 +217,7 @@ fn dirs_home() -> PathBuf {
 fn build_palette_controller(
     window: &AtlasWindow,
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
+    bookmarks: Vec<(String, PathBuf)>,
 ) -> Arc<PaletteController> {
     let mut registry = ActionRegistry::new();
     for action in default_actions() {
@@ -247,11 +248,13 @@ fn build_palette_controller(
     let actions_source = Arc::new(ActionsSource::new(Arc::new(registry), Arc::clone(&keymap)));
     let path_index = Arc::new(WalkerPathIndex::new(palette_root()));
     let goto_source = Arc::new(GotoPathsSource::new(path_index));
+    let bookmarks_source = Arc::new(BookmarksSource::new(bookmarks));
 
     let controller = PaletteController::new(actions);
     controller.attach_window(window.as_weak());
     controller.register_source(actions_source);
     controller.register_source(goto_source);
+    controller.register_source(bookmarks_source);
     controller.set_on_dispatch(|action_id| {
         tracing::info!(%action_id, "palette action dispatched");
     });
@@ -423,6 +426,7 @@ impl AppShell {
         thumb_max_cache_bytes: u64,
         thumbs_enabled: bool,
         thumb_max_file_bytes: u64,
+        bookmarks: Vec<(String, PathBuf)>,
     ) -> Arc<Self> {
         let actions: Arc<Mutex<Box<dyn ActionSink>>> = Arc::new(Mutex::new(Box::new(actions)));
         let thumb_cache = Arc::new(
@@ -452,7 +456,7 @@ impl AppShell {
         let mut pane_slint_index = AHashMap::default();
         pane_slint_index.insert(initial_pane_id, 0usize);
 
-        let palette_ctrl = build_palette_controller(window, Arc::clone(&actions));
+        let palette_ctrl = build_palette_controller(window, Arc::clone(&actions), bookmarks);
         search.set_action_sink(Arc::clone(&actions));
         let ops = OpsController::new();
         ops.attach_window(window.as_weak());
@@ -587,6 +591,21 @@ impl AppShell {
             self.workspace.write().set_focused(id);
         }
         self.project_workspace_to_slint();
+    }
+
+    /// Show or hide the bottom status bar. Bound to `ui.show_status_bar`.
+    pub fn set_status_bar_visible(&self, visible: bool) {
+        if let Some(window) = self.window.upgrade() {
+            window.set_show_status_bar(visible);
+        }
+    }
+
+    /// Show or hide the breadcrumb strip in every pane. Bound to
+    /// `ui.show_breadcrumbs`.
+    pub fn set_breadcrumbs_visible(&self, visible: bool) {
+        if let Some(window) = self.window.upgrade() {
+            window.set_show_breadcrumbs(visible);
+        }
     }
 
     /// Resolve a Slint pane index (0 or 1) to a [`PaneId`] via DFS leaf order.

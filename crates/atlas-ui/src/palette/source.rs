@@ -298,6 +298,42 @@ impl PaletteSource for GotoPathsSource {
     }
 }
 
+/// Palette source that emits the user's configured sidebar bookmarks.
+///
+/// Bookmarks live in `~/.config/atlas/config.toml` under `[[bookmarks]]` and
+/// are surfaced in the command palette alongside actions and go-to paths so
+/// the user can jump to a favourite location by name.
+pub struct BookmarksSource {
+    bookmarks: Vec<(String, PathBuf)>,
+}
+
+impl BookmarksSource {
+    /// Build a source from a slice of `(name, path)` pairs.
+    #[must_use]
+    pub fn new(bookmarks: Vec<(String, PathBuf)>) -> Self {
+        Self { bookmarks }
+    }
+}
+
+impl PaletteSource for BookmarksSource {
+    fn placeholder(&self) -> &'static str {
+        "Bookmarks"
+    }
+
+    fn populate(&self, sink: &mut dyn ItemSink) {
+        for (name, path) in &self.bookmarks {
+            let subtitle = path.to_string_lossy().into_owned();
+            let id = subtitle.clone();
+            sink.push(PaletteItem {
+                id,
+                title: name.clone(),
+                subtitle,
+                kind: PaletteItemKind::Path,
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +390,22 @@ mod tests {
 
         let item = sink.0.first().expect("should have one item");
         assert_eq!(item.subtitle, "shift-cmd-p");
+    }
+
+    #[test]
+    fn bookmarks_source_populates_from_config() {
+        let source = BookmarksSource::new(vec![
+            (String::from("Home"), PathBuf::from("/home/user")),
+            (String::from("Docs"), PathBuf::from("/home/user/Documents")),
+        ]);
+        let mut sink = VecSink(Vec::new());
+        source.populate(&mut sink);
+
+        assert_eq!(sink.0.len(), 2);
+        assert_eq!(sink.0[0].title, "Home");
+        assert_eq!(sink.0[0].subtitle, "/home/user");
+        assert_eq!(sink.0[0].kind, PaletteItemKind::Path);
+        assert_eq!(sink.0[1].title, "Docs");
     }
 
     #[test]

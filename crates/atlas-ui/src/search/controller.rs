@@ -31,6 +31,12 @@ struct SearchState {
     window: RwLock<Option<slint::Weak<crate::AtlasWindow>>>,
     /// Maximum results per source, derived from `config.search.fuzzy_max_results`.
     max_results_per_source: parking_lot::Mutex<usize>,
+    /// Glob patterns skipped by the content-search walker. Wired from
+    /// `config.search.default_globs_exclude`.
+    exclude_globs: RwLock<Vec<String>>,
+    /// Worker-thread count for the content-search walker. `None` = auto.
+    /// Wired from `config.search.content_search_threads`.
+    content_search_threads: RwLock<Option<usize>>,
 }
 
 /// Controller for the right-side search panel.
@@ -61,6 +67,8 @@ impl SearchController {
                 status: RwLock::new(String::new()),
                 window: RwLock::new(None),
                 max_results_per_source: parking_lot::Mutex::new(50),
+                exclude_globs: RwLock::new(Vec::new()),
+                content_search_threads: RwLock::new(None),
             }),
             index_client: RwLock::new(None),
             active_cancel: Mutex::new(None),
@@ -130,6 +138,21 @@ impl SearchController {
         *self.state.max_results_per_source.lock() = n.max(1);
     }
 
+    /// Configure the file-filter exclude globs used for content search.
+    ///
+    /// Wired from `config.search.default_globs_exclude`.
+    pub fn set_exclude_globs(&self, globs: Vec<String>) {
+        *self.state.exclude_globs.write() = globs;
+    }
+
+    /// Configure the worker-thread count for content search.
+    ///
+    /// Wired from `config.search.content_search_threads`. `None` uses
+    /// `available_parallelism`.
+    pub fn set_content_search_threads(&self, threads: Option<usize>) {
+        *self.state.content_search_threads.write() = threads;
+    }
+
     /// Update the current query and start a fresh unified search.
     pub fn set_query(self: &Arc<Self>, query: String) {
         if let Some(cancel) = self.active_cancel.lock().take() {
@@ -169,6 +192,8 @@ impl SearchController {
             // config: reads config.search.fuzzy_max_results
             max_results_per_source: *self.state.max_results_per_source.lock(),
             candidates: Vec::new(),
+            exclude_globs: self.state.exclude_globs.read().clone(),
+            content_search_threads: *self.state.content_search_threads.read(),
         };
         let cancel_flag = Arc::new(AtomicBool::new(false));
         *self.active_cancel.lock() = Some(Arc::clone(&cancel_flag));

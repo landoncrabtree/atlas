@@ -22,6 +22,9 @@ export component Pane {
     in property <int> pane-id: -1;
     in property <bool> focused: false;
     in property <string> path: "";
+    /// When true, the breadcrumb strip below the address bar is rendered. When
+    /// false, it is hidden entirely (wired from `ui.show_breadcrumbs`).
+    in property <bool> show-breadcrumbs: true;
     /// When true, a 2-px accent inset border is rendered to indicate this pane
     /// is a valid drop destination for the current drag operation.
     in property <bool> drag-target: false;
@@ -132,7 +135,7 @@ export component Pane {
                     }
                 }
 
-                Breadcrumbs {
+                if root.show-breadcrumbs : Breadcrumbs {
                     segments: root.path-segments;
                     clicked(i) => { root.breadcrumb-clicked(i); }
                 }
