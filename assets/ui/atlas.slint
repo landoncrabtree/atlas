@@ -479,7 +479,11 @@ export component AtlasWindow inherits Window {
         property <int> refocus-tick: root.refocus-tick;
         changed refocus-tick => { self.focus(); }
 
-        key-pressed(event) => {
+        // Use capture-key-pressed so global shortcuts run BEFORE children (like
+        // the AddressBar's TextInput) can consume them. TextInputs still get
+        // their key events for anything we `reject` at the bottom, so plain
+        // typing keeps working.
+        capture-key-pressed(event) => {
             if event.text == Key.Escape && palette-visible {
                 root.palette-dismiss();
                 return accept;
@@ -517,8 +521,11 @@ export component AtlasWindow inherits Window {
                 root.open-search-panel();
                 return accept;
             }
-            // Toggle ops panel with Ctrl/Cmd+J.
-            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "j" || event.text == "J") {
+            // Toggle ops panel with Cmd+J on macOS / Ctrl+J on Linux/Windows.
+            // Uses only `modifiers.control` (which is physical Cmd on macOS)
+            // so that Ctrl+J (macOS physical Ctrl → modifiers.meta) stays
+            // available for vim pane-down navigation below.
+            if event.modifiers.control && !event.modifiers.meta && !event.modifiers.shift && (event.text == "j" || event.text == "J") {
                 root.toggle-ops-panel();
                 return accept;
             }
@@ -619,33 +626,89 @@ export component AtlasWindow inherits Window {
                 return accept;
             }
             // Ctrl+H/J/K/L — vim-style pane focus.
-            if event.modifiers.control && !event.modifiers.meta && !event.modifiers.shift && !palette-visible && !bulk-rename-visible {
-                if event.text == "h" || event.text == "H" { root.pane-focus-direction("left");  return accept; }
-                if event.text == "j" || event.text == "J" { root.pane-focus-direction("down");  return accept; }
-                if event.text == "k" || event.text == "K" { root.pane-focus-direction("up");    return accept; }
-                if event.text == "l" || event.text == "L" { root.pane-focus-direction("right"); return accept; }
+            //
+            // Modifier semantics differ by platform in Slint 1.17:
+            //   - macOS: modifiers.meta    = physical Ctrl (⌃)
+            //            modifiers.control = physical Cmd  (⌘)
+            //   - Linux/Windows: modifiers.control = physical Ctrl
+            // We want the PHYSICAL Ctrl key here (Cmd+H is macOS "minimize"),
+            // so we accept EITHER modifiers.meta (macOS physical Ctrl) OR
+            // modifiers.control-only (Linux/Windows physical Ctrl). The
+            // exclusive-of-shift and exclusive-of-alt checks prevent
+            // collisions with other chords.
+            //
+            // Some macOS text bindings also deliver Ctrl+letter as the
+            // corresponding C0 control code (BS=0x08 for H, LF=0x0a for J,
+            // VT=0x0b for K, FF=0x0c for L) with no visible text, so we
+            // match those too.
+            if (event.modifiers.meta || (event.modifiers.control && !event.modifiers.meta)) && !event.modifiers.shift && !event.modifiers.alt && !palette-visible && !bulk-rename-visible {
+                if event.text == "h" || event.text == "H" || event.text == "\u{0008}" { root.pane-focus-direction("left");  return accept; }
+                if event.text == "j" || event.text == "J" || event.text == "\u{000a}" { root.pane-focus-direction("down");  return accept; }
+                if event.text == "k" || event.text == "K" || event.text == "\u{000b}" { root.pane-focus-direction("up");    return accept; }
+                if event.text == "l" || event.text == "L" || event.text == "\u{000c}" { root.pane-focus-direction("right"); return accept; }
             }
 
             // ── View navigation ───────────────────────────────────────────
+            //
+            // These fall through to the child's key-pressed via `reject` when
+            // a TextInput has focus (so plain typing still works in the
+            // address bar / palette / bulk-rename inputs). When no TextInput
+            // is focused, capture-key-pressed short-circuits them here.
             if !palette-visible && !search-panel-visible && !bulk-rename-visible {
-                if event.text == Key.DownArrow || (vim-mode && event.text == "j") {
+                // Only consume plain nav keys if no text-input child has
+                // focus — we approximate that by checking modifiers: if a
+                // modifier is held, treat as command; otherwise the reject
+                // path lets TextInputs claim character keys.
+                if event.text == Key.DownArrow {
                     root.pane-move-focus(1);
                     return accept;
                 }
-                if event.text == Key.UpArrow || (vim-mode && event.text == "k") {
+                if event.text == Key.UpArrow {
                     root.pane-move-focus(-1);
                     return accept;
                 }
-                if event.text == Key.Return || event.text == "\n" || (vim-mode && event.text == "l") || event.text == Key.RightArrow {
-                    root.pane-activate-focused();
-                    return accept;
+                if event.text == Key.Return || event.text == "\n" {
+                    // Reject so TextInputs (address bar / palette / bulk-rename)
+                    // can still fire their `accepted` callback for Enter.
+                    // Non-textinput panes will handle Enter via their own
+                    // key-pressed handlers, if any.
+                    return reject;
                 }
-                if event.text == Key.Backspace || (vim-mode && event.text == "h") || event.text == Key.LeftArrow {
-                    root.pane-go-up();
-                    return accept;
-                }
+                // Vim h/j/k/l — only when vim_mode is on. Reject so plain
+                // typing in text inputs still works: capture-key-pressed
+                // fires FIRST, so we only intercept when the character is
+                // not meant for a text field. Approximation: only fire the
+                // vim binding when no text is being edited, i.e. when the
+                // event has no shift modifier — but that doesn't help.
+                // Instead, we DON'T bind vim hjkl in capture; leave to the
+                // per-pane key handler.
             }
 
+            reject;
+        }
+
+        // Fallback for keys not consumed by any child (e.g. arrow keys with
+        // no TextInput focused). Also where vim-mode hjkl navigation lives —
+        // TextInputs get letter keys first (bubble phase), so vim keys only
+        // fire when no text field is focused.
+        key-pressed(event) => {
+            if palette-visible || search-panel-visible || bulk-rename-visible {
+                return reject;
+            }
+            if vim-mode {
+                if event.text == "j" { root.pane-move-focus(1);  return accept; }
+                if event.text == "k" { root.pane-move-focus(-1); return accept; }
+                if event.text == "l" { root.pane-activate-focused(); return accept; }
+                if event.text == "h" { root.pane-go-up();        return accept; }
+            }
+            if event.text == Key.Return || event.text == "\n" || event.text == Key.RightArrow {
+                root.pane-activate-focused();
+                return accept;
+            }
+            if event.text == Key.Backspace || event.text == Key.LeftArrow {
+                root.pane-go-up();
+                return accept;
+            }
             reject;
         }
 

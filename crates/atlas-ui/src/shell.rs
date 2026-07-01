@@ -1667,6 +1667,7 @@ impl AppShell {
         {
             let palette_ctrl = Arc::clone(&self.palette_ctrl);
             window.on_toggle_palette(move || {
+                tracing::info!("keybind: toggle-palette");
                 if palette_ctrl.is_visible() {
                     palette_ctrl.close();
                 } else {
@@ -1710,26 +1711,35 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_pane_split_right(move || {
+                tracing::info!("keybind: pane-split-right (cmd+d)");
                 shell.split_focused(SplitDirection::Horizontal);
             });
         }
         {
             let shell = self.clone();
             window.on_pane_split_down(move || {
+                tracing::info!("keybind: pane-split-down (cmd+shift+d)");
                 shell.split_focused(SplitDirection::Vertical);
             });
         }
         {
             let shell = self.clone();
-            window.on_pane_close(move || shell.close_focused_pane());
+            window.on_pane_close(move || {
+                tracing::info!("keybind: pane-close (cmd+shift+w)");
+                shell.close_focused_pane();
+            });
         }
         {
             let shell = self.clone();
-            window.on_pane_cycle_view_mode(move || shell.cycle_view_mode());
+            window.on_pane_cycle_view_mode(move || {
+                tracing::info!("keybind: pane-cycle-view-mode (cmd+shift+e)");
+                shell.cycle_view_mode();
+            });
         }
         {
             let shell = self.clone();
             window.on_pane_focus_direction(move |dir| {
+                tracing::info!(direction = %dir, "keybind: pane-focus-direction (ctrl+hjkl)");
                 let cardinal = match dir.as_str() {
                     "left" => Cardinal::Left,
                     "right" => Cardinal::Right,
@@ -1851,10 +1861,14 @@ impl AppShell {
             let actions = Arc::clone(&self.actions);
             let shell = Arc::clone(self);
             window.on_pane_focused(move |pane_id| {
+                tracing::info!(pane_id, "pane-focused (click)");
                 let id = PaneId(pane_id as u32);
                 let slot = shell.pane_slint_index.read().get(&id).copied().unwrap_or(0);
                 actions.lock().dispatch(UiAction::PaneFocusChanged(slot));
                 shell.set_focused_pane_id(id);
+                // Ensure the root FocusScope regains keyboard focus so
+                // shortcuts continue working after a click.
+                shell.bump_refocus_tick();
             });
         }
         {
@@ -1930,10 +1944,15 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_details_row_clicked(move |pane_id, index, ctrl, shift| {
+                tracing::info!(pane_id, index, ctrl, shift, "details-row-clicked");
                 let id = PaneId(pane_id as u32);
                 if let Some(c) = shell.pane_by_id(id) {
                     c.details.select_index(index as usize, ctrl, shift);
                 }
+                // Re-grab keyboard focus so global shortcuts still work
+                // after clicking a row (which steals focus into the row's
+                // TouchArea).
+                shell.bump_refocus_tick();
             });
         }
         {
