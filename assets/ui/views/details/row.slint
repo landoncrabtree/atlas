@@ -116,6 +116,9 @@ export component EntryRow {
                     self.mod-shift = pe.modifiers.shift;
                     self.drag-initiated = false;
                 }
+                if pe.kind == PointerEventKind.up && pe.button == PointerEventButton.right {
+                    root.context-menu(self.mouse-x, self.mouse-y);
+                }
             }
 
             moved => {

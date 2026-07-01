@@ -75,18 +75,24 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         // `general.vim_mode = true`; otherwise the letter keys pass
         // through to text inputs. Arrow keys / Enter / Backspace are
         // always active regardless of vim mode.
+        //
+        // `fs::View` handles BOTH cd-into-folder and open-file-with-OS —
+        // there's no separate "activate" action anymore. `pane::Activate`
+        // is kept as an alias in the dispatcher for backward compat.
         b("j", "Pane", "pane::MoveDown"),
         b("k", "Pane", "pane::MoveUp"),
         b("h", "Pane", "pane::GoUp"),
-        b("l", "Pane", "pane::Activate"),
+        b("l", "Pane", "fs::View"),
+        b(",", "Pane", "pane::GoUp"),
+        b(".", "Pane", "fs::View"),
         b("down", "Pane", "pane::MoveDown"),
         b("up", "Pane", "pane::MoveUp"),
-        b("right", "Pane", "pane::Activate"),
+        b("right", "Pane", "fs::View"),
         b("left", "Pane", "pane::GoUp"),
         b("g g", "Pane", "pane::MoveToTop"),
         b("shift-g", "Pane", "pane::MoveToBottom"),
         b("/", "Pane", "pane::SearchInPlace"),
-        b("enter", "Pane", "pane::Activate"),
+        b("enter", "Pane", "fs::View"),
         b("backspace", "Pane", "pane::GoUp"),
         b("alt-left", "Pane", "pane::Back"),
         b("alt-right", "Pane", "pane::Forward"),
@@ -214,6 +220,12 @@ pub fn default_actions() -> Vec<ActionMeta> {
         action!("view::Gallery", "View: Gallery", None, &["Global"]),
         action!("view::Miller", "View: Miller Columns", None, &["Global"]),
         action!("view::Tree", "View: Tree", None, &["Global"]),
+        action!(
+            "fs::View",
+            "Open",
+            Some("Open the focused entry: cd into folders, hand files off to the OS default handler.".into()),
+            &["Pane"]
+        ),
         action!("fs::Rename", "Rename", None, &["Pane"]),
         action!("fs::Mkdir", "New Folder", None, &["Pane"]),
         action!(

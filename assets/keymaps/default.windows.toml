@@ -49,11 +49,23 @@ context = "Pane"
 key = "h"
 action = "pane::GoUp"
 
-# [Pane] Activate
+# [Pane] Open
 [[bindings]]
 context = "Pane"
 key = "l"
-action = "pane::Activate"
+action = "fs::View"
+
+# [Pane] Go Up (Parent Directory)
+[[bindings]]
+context = "Pane"
+key = ","
+action = "pane::GoUp"
+
+# [Pane] Open
+[[bindings]]
+context = "Pane"
+key = "."
+action = "fs::View"
 
 # [Pane] Move Down
 [[bindings]]
@@ -67,11 +79,11 @@ context = "Pane"
 key = "up"
 action = "pane::MoveUp"
 
-# [Pane] Activate
+# [Pane] Open
 [[bindings]]
 context = "Pane"
 key = "right"
-action = "pane::Activate"
+action = "fs::View"
 
 # [Pane] Go Up (Parent Directory)
 [[bindings]]
@@ -97,11 +109,11 @@ context = "Pane"
 key = "/"
 action = "pane::SearchInPlace"
 
-# [Pane] Activate
+# [Pane] Open
 [[bindings]]
 context = "Pane"
 key = "enter"
-action = "pane::Activate"
+action = "fs::View"
 
 # [Pane] Go Up (Parent Directory)
 [[bindings]]

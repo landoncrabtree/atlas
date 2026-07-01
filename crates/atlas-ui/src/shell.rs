@@ -495,6 +495,12 @@ pub struct AppShell {
     drag_armed: RwLock<Option<DragArmedState>>,
     /// Active drag state (past the 4-px threshold; `is_dragging` returns `true`).
     dragging: RwLock<Option<DragState>>,
+    /// Path the currently-open right-click context menu is targeting, if any.
+    /// Set by `on_*_row_context_menu` right before showing the menu; consumed
+    /// by every `ctx-*` handler so context-menu actions operate on the
+    /// specific entry the user right-clicked (not the focused entry, which
+    /// may differ if the user right-clicked without first selecting).
+    context_menu_target: RwLock<Option<(PaneId, PathBuf)>>,
 }
 
 impl AppShell {
@@ -581,6 +587,7 @@ impl AppShell {
                 closed_tabs: RwLock::new(AHashMap::default()),
                 drag_armed: RwLock::new(None),
                 dragging: RwLock::new(None),
+                context_menu_target: RwLock::new(None),
             }
         });
 
@@ -707,6 +714,31 @@ impl AppShell {
         }
     }
 
+    /// Record `path` as the context-menu target and show the menu at
+    /// `(x, y)`. The `ctx-*` handlers all read
+    /// [`Self::context_menu_target`] so context-menu actions operate on
+    /// the entry the user right-clicked rather than the pane's focused
+    /// entry (which may differ if the user right-clicked without first
+    /// selecting).
+    pub fn open_context_menu(&self, pane: PaneId, path: Option<PathBuf>, x: f32, y: f32) {
+        if let Some(p) = path {
+            *self.context_menu_target.write() = Some((pane, p));
+        }
+        if let Some(window) = self.window.upgrade() {
+            window.set_context_menu_x(x);
+            window.set_context_menu_y(y);
+            let next = window.get_context_menu_tick().wrapping_add(1);
+            window.set_context_menu_tick(next);
+        }
+    }
+
+    /// Look up the current context-menu target. Called by every `ctx-*`
+    /// callback handler in main.rs.
+    #[must_use]
+    pub fn context_menu_target(&self) -> Option<(PaneId, PathBuf)> {
+        self.context_menu_target.read().clone()
+    }
+
     /// Set the active-pane border thickness (in logical pixels). Bound to
     /// `config.ui.active_pane_border_px`.
     pub fn set_active_pane_border_px(&self, px: f32) {
@@ -798,6 +830,17 @@ impl AppShell {
     #[must_use]
     pub fn active_tab_index(&self, id: PaneId) -> Option<usize> {
         self.workspace.read().pane(id).map(|p| p.active_tab)
+    }
+
+    /// Return the view mode of pane `id`, or the default when the pane
+    /// doesn't exist (defensive — every real pane always has a mode).
+    #[must_use]
+    pub fn pane_view_mode(&self, id: PaneId) -> ViewMode {
+        self.workspace
+            .read()
+            .pane(id)
+            .map(|p| p.view_mode)
+            .unwrap_or_default()
     }
 
     /// Split the focused pane in `direction`. Returns the new [`PaneId`].
@@ -1261,6 +1304,37 @@ impl AppShell {
                 }
             }
             self.navigation.navigate_pane(id, parent);
+        }
+    }
+
+    /// Open the focused entry in pane `id`: `cd` into directories, hand
+    /// files off to the OS default handler (`open` on macOS,
+    /// `xdg-open` on Linux, `ShellExecute` on Windows via the `open`
+    /// crate). Called by the `fs::View` action handler and by every
+    /// view's double-click callback so folder-vs-file dispatch is
+    /// centralised.
+    ///
+    /// Symlinks are followed for the dir check via `std::path::Path::is_dir`,
+    /// which resolves the target (broken symlinks fall through to
+    /// `open::that`, which handles the error).
+    pub fn view_focused_entry(self: &Arc<Self>, id: PaneId) {
+        let Some(path) = self.focused_entry(id) else {
+            tracing::debug!(?id, "fs::View: no focused entry");
+            return;
+        };
+        if path.is_dir() {
+            {
+                let mut ws = self.workspace.write();
+                if let Some(p) = ws.pane_mut(id) {
+                    p.active_mut().navigate_to(path.clone());
+                }
+            }
+            self.navigation.navigate_pane(id, path);
+        } else {
+            tracing::info!(?path, "fs::View: opening file with OS default handler");
+            if let Err(err) = open::that(&path) {
+                tracing::warn!(?path, %err, "fs::View: OS open failed");
+            }
         }
     }
 
@@ -1807,23 +1881,12 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_pane_activate_focused(move || {
-                let id = shell.focused_pane_id();
-                let mode = shell
-                    .workspace
-                    .read()
-                    .pane(id)
-                    .map(|p| p.view_mode)
-                    .unwrap_or_default();
-                let Some(ctrl) = shell.pane_by_id(id) else {
-                    return;
-                };
-                match mode {
-                    ViewMode::Details => ctrl.details.activate_focused(),
-                    ViewMode::Grid => ctrl.grid.activate_focused(),
-                    ViewMode::Gallery => ctrl.gallery.activate_focused(),
-                    ViewMode::Miller => ctrl.miller.activate_focused(),
-                    ViewMode::Tree => ctrl.tree.activate_focused(),
-                }
+                // Delegate to view_focused_entry so folders navigate and
+                // files open with the OS default handler. Per-view
+                // activate_focused impls are still called from double-click
+                // handlers because those know which entry the pointer hit,
+                // but the keyboard "activate" path uses shell-level logic.
+                shell.view_focused_entry(shell.focused_pane_id());
             });
         }
         {
@@ -1969,14 +2032,14 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_details_row_clicked(move |pane_id, index, ctrl, shift| {
-                tracing::info!(pane_id, index, ctrl, shift, "details-row-clicked");
                 let id = PaneId(pane_id as u32);
+                // Any click inside a pane focuses that pane, so the
+                // dropdown badge / border / dispatched shortcuts all
+                // target the pane the user just interacted with.
+                shell.set_focused_pane_id(id);
                 if let Some(c) = shell.pane_by_id(id) {
                     c.details.select_index(index as usize, ctrl, shift);
                 }
-                // Re-grab keyboard focus so global shortcuts still work
-                // after clicking a row (which steals focus into the row's
-                // TouchArea).
                 shell.bump_refocus_tick();
             });
         }
@@ -1984,19 +2047,42 @@ impl AppShell {
             let shell = self.clone();
             window.on_details_row_double_clicked(move |pane_id, index| {
                 let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
                 if let Some(c) = shell.pane_by_id(id) {
                     c.details.select_index(index as usize, false, false);
-                    c.details.activate_focused();
                 }
+                // Route through view_focused_entry so files open with the
+                // OS default handler and folders navigate — same code path
+                // as Enter / vim-l.
+                shell.view_focused_entry(id);
+                shell.bump_refocus_tick();
             });
         }
         {
             let shell = self.clone();
             window.on_details_header_clicked(move |pane_id, column_index| {
                 let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
                 if let Some(c) = shell.pane_by_id(id) {
                     c.details.header_clicked(column_index as usize);
                 }
+                shell.bump_refocus_tick();
+            });
+        }
+        // Right-click on a details row → record the target entry and open
+        // the context menu at the pointer position. Same pattern for grid.
+        {
+            let shell = self.clone();
+            window.on_details_row_context_menu(move |pane_id, index, x, y| {
+                let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
+                if let Some(c) = shell.pane_by_id(id) {
+                    // Selection follows the right-click so the menu operates
+                    // on the item under the pointer (Finder / Explorer behaviour).
+                    c.details.select_index(index as usize, false, false);
+                }
+                let path = shell.focused_entry(id);
+                shell.open_context_menu(id, path, x, y);
             });
         }
 
@@ -2005,19 +2091,35 @@ impl AppShell {
             let shell = self.clone();
             window.on_grid_entry_clicked(move |pane_id, index, ctrl, shift| {
                 let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
                 if let Some(c) = shell.pane_by_id(id) {
                     c.grid.select_index(index as usize, ctrl, shift);
                 }
+                shell.bump_refocus_tick();
             });
         }
         {
             let shell = self.clone();
             window.on_grid_entry_double_clicked(move |pane_id, index| {
                 let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
                 if let Some(c) = shell.pane_by_id(id) {
                     c.grid.select_index(index as usize, false, false);
-                    c.grid.activate_focused();
                 }
+                shell.view_focused_entry(id);
+                shell.bump_refocus_tick();
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_grid_entry_context_menu(move |pane_id, index, x, y| {
+                let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
+                if let Some(c) = shell.pane_by_id(id) {
+                    c.grid.select_index(index as usize, false, false);
+                }
+                let path = shell.focused_entry(id);
+                shell.open_context_menu(id, path, x, y);
             });
         }
         {
@@ -2044,9 +2146,11 @@ impl AppShell {
             let shell = self.clone();
             window.on_gallery_entry_clicked(move |pane_id, index| {
                 let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
                 if let Some(c) = shell.pane_by_id(id) {
                     c.gallery.entry_clicked(index as usize);
                 }
+                shell.bump_refocus_tick();
             });
         }
         {
@@ -2091,25 +2195,30 @@ impl AppShell {
             let shell = self.clone();
             window.on_tree_row_clicked(move |pane_id, index, ctrl, shift| {
                 let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
                 if let Some(c) = shell.pane_by_id(id) {
                     c.tree.select_index(index as usize, ctrl, shift);
                 }
+                shell.bump_refocus_tick();
             });
         }
         {
             let shell = self.clone();
             window.on_tree_row_double_clicked(move |pane_id, index| {
                 let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
                 if let Some(c) = shell.pane_by_id(id) {
                     c.tree.select_index(index as usize, false, false);
-                    c.tree.activate_focused();
                 }
+                shell.view_focused_entry(id);
+                shell.bump_refocus_tick();
             });
         }
         {
             let shell = self.clone();
             window.on_tree_chevron_clicked(move |pane_id, index| {
                 let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
                 if let Some(c) = shell.pane_by_id(id) {
                     let visible = c.tree.build_visible_nodes();
                     if let Some(row) = visible.get(index as usize) {
@@ -2117,6 +2226,7 @@ impl AppShell {
                         c.tree.toggle(&path);
                     }
                 }
+                shell.bump_refocus_tick();
             });
         }
 
@@ -2125,19 +2235,104 @@ impl AppShell {
             let shell = self.clone();
             window.on_miller_row_clicked(move |pane_id, col, row| {
                 let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
                 if let Some(c) = shell.pane_by_id(id) {
                     c.miller.select_row(col as usize, row as usize);
                 }
+                shell.bump_refocus_tick();
             });
         }
         {
             let shell = self.clone();
             window.on_miller_row_double_clicked(move |pane_id, col, row| {
                 let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
                 if let Some(c) = shell.pane_by_id(id) {
                     c.miller.select_row(col as usize, row as usize);
-                    c.miller.activate_focused();
                 }
+                shell.view_focused_entry(id);
+                shell.bump_refocus_tick();
+            });
+        }
+
+        // ── Context menu handlers ─────────────────────────────────────────
+        //
+        // Each `ctx-*` reads the context-menu target (recorded when the
+        // menu opened via right-click) and dispatches the same shell
+        // action the corresponding keybind uses, so context-menu items
+        // and keyboard shortcuts share code paths.
+        {
+            let shell = self.clone();
+            window.on_ctx_open(move || {
+                let Some((id, _)) = shell.context_menu_target() else { return };
+                shell.view_focused_entry(id);
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_ctx_open_with(move || {
+                let Some((_, path)) = shell.context_menu_target() else { return };
+                // MVP: no picker UI yet. Fall through to the OS "open" so
+                // the user at least sees the default handler; the "Open
+                // With…" picker is a v0.3 follow-up.
+                tracing::info!(?path, "ctx: Open With — no picker yet (v0.3); using OS default");
+                if let Err(err) = open::that(&path) {
+                    tracing::warn!(?path, %err, "ctx: open::that failed");
+                }
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_ctx_copy(move || {
+                let Some((id, _)) = shell.context_menu_target() else { return };
+                shell.clipboard.copy(shell.selected_paths(id));
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_ctx_cut(move || {
+                let Some((id, _)) = shell.context_menu_target() else { return };
+                shell.clipboard.cut(shell.selected_paths(id));
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_ctx_paste(move || {
+                let Some((id, _)) = shell.context_menu_target() else { return };
+                let Some(dest) = shell.pane_location(id) else { return };
+                shell.clipboard.paste(dest);
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_ctx_rename(move || {
+                if let Some(window) = shell.window.upgrade() {
+                    window.invoke_fs_rename();
+                }
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_ctx_trash(move || {
+                if let Some(window) = shell.window.upgrade() {
+                    window.invoke_fs_delete();
+                }
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_ctx_reveal(move || {
+                let Some((_, path)) = shell.context_menu_target() else { return };
+                reveal_in_os_file_manager(&path);
+                let _ = shell;
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_ctx_get_info(move || {
+                let Some((_, path)) = shell.context_menu_target() else { return };
+                tracing::info!(?path, "ctx: Get Info — v0.3 (implement a size-preview drawer)");
+                let _ = shell;
             });
         }
         {
@@ -3513,5 +3708,35 @@ mod dnd_tests {
         assert_eq!(rects.len(), 2);
         let total_w: f32 = rects.iter().map(|(_, r)| r.width).sum();
         assert!((total_w - 1000.0).abs() < 1.0, "widths should sum to total");
+    }
+}
+
+/// Reveal `path` in the platform-native file manager. Non-blocking: spawns
+/// the reveal command and returns immediately; logs on failure. Behaviour:
+/// - macOS: `open -R <path>` — highlights the file in Finder.
+/// - Windows: `explorer /select,<path>` — same semantics.
+/// - Linux (best-effort): `xdg-open` on the parent directory. XDG has no
+///   portable "select this entry" verb, so we open the folder and let the
+///   user find the row. A per-DE registry (`nautilus --select`, etc.) is a
+///   v0.3 follow-up.
+pub(crate) fn reveal_in_os_file_manager(path: &Path) {
+    use std::process::Command;
+
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg("-R").arg(path).spawn();
+
+    #[cfg(target_os = "windows")]
+    let result = Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .spawn();
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = {
+        let target = path.parent().unwrap_or(path);
+        Command::new("xdg-open").arg(target).spawn()
+    };
+
+    if let Err(err) = result {
+        tracing::warn!(?path, %err, "reveal_in_os_file_manager failed to spawn");
     }
 }

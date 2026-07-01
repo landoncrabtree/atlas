@@ -237,6 +237,28 @@ export component AtlasWindow inherits Window {
     /// Cancel the pending quit. Rust dismisses the modal.
     callback confirm-quit-cancel();
 
+    // ── Context menu ─────────────────────────────────────────────────────
+    //
+    // Right-click / Menu-key on any entry fires
+    // `open-entry-context-menu(pane-id, index, x, y)` which Rust translates
+    // into an action-menu shown at (x, y). The menu itself lives in the
+    // Slint tree as a ContextMenuArea + Menu so Slint's native popup
+    // machinery handles placement, escape-to-dismiss, arrow-key nav, etc.
+    //
+    // Each MenuItem's `activated` callback dispatches the corresponding
+    // action id via `handle-key-chord` — same dispatcher every keyboard
+    // chord uses — so context-menu items automatically show the currently
+    // bound shortcut alongside their labels.
+    callback ctx-open();
+    callback ctx-open-with();
+    callback ctx-copy();
+    callback ctx-cut();
+    callback ctx-paste();
+    callback ctx-rename();
+    callback ctx-trash();
+    callback ctx-reveal();
+    callback ctx-get-info();
+
     /// Cancel the operation at `index` in `ops-rows`.
     callback ops-cancel(int);
     /// Remove a terminal row at `index` from the ops panel.
@@ -466,6 +488,77 @@ export component AtlasWindow inherits Window {
     changed theme-row-h-compact => { Theme.row-h-compact = theme-row-h-compact; }
     changed theme-row-h-spacious => { Theme.row-h-spacious = theme-row-h-spacious; }
     changed theme-animations => { Theme.animations = theme-animations; }
+
+    // ── Context menu ─────────────────────────────────────────────────────
+    //
+    // Empty by default; `context-menu-visible` and (x,y) are managed
+    // by Rust which calls `context-menu.show({ x, y })`. Menu items
+    // dispatch through the atlas-keymap dispatcher so shortcut labels
+    // stay in sync with the live keymap.
+    //
+    // Bumped whenever Rust wants the context menu to open. The `changed`
+    // handler on the ContextMenuArea reads context-menu-x/y and calls
+    // `.show()` at that position. This detour is necessary because
+    // ContextMenuArea::show is a Slint function, not a settable property.
+    in property <int> context-menu-tick: 0;
+    in property <length> context-menu-x: 0px;
+    in property <length> context-menu-y: 0px;
+    /// Set by Rust before bumping `context-menu-tick` — controls whether
+    /// clipboard "paste" appears (only when the clipboard is non-empty)
+    /// and reveal-in-OS (only on desktop platforms). MVP: always shown.
+    in property <bool> context-menu-has-clipboard: true;
+
+    context-menu := ContextMenuArea {
+        // Mirror the root tick into a local property so `changed` can
+        // observe it — Slint's `changed` handlers only fire for
+        // properties declared on the current element.
+        property <int> tick: root.context-menu-tick;
+        changed tick => {
+            self.show({ x: root.context-menu-x, y: root.context-menu-y });
+        }
+        Menu {
+            MenuItem {
+                title: "Open";
+                activated => { root.ctx-open(); }
+            }
+            MenuItem {
+                title: "Open With…";
+                activated => { root.ctx-open-with(); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Copy";
+                activated => { root.ctx-copy(); }
+            }
+            MenuItem {
+                title: "Cut";
+                activated => { root.ctx-cut(); }
+            }
+            MenuItem {
+                title: "Paste";
+                enabled: root.context-menu-has-clipboard;
+                activated => { root.ctx-paste(); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Rename";
+                activated => { root.ctx-rename(); }
+            }
+            MenuItem {
+                title: "Move to Trash";
+                activated => { root.ctx-trash(); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Show in Finder";
+                activated => { root.ctx-reveal(); }
+            }
+            MenuItem {
+                title: "Get Info";
+                activated => { root.ctx-get-info(); }
+            }
+        }
+    }
 
     FocusScope {
         root-focus := Rectangle {

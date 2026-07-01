@@ -722,12 +722,22 @@ fn build_dispatcher(
     }
 
     // ── Pane cursor movement ──────────────────────────────────────────────
+    //
+    // Route by view mode so hjkl / arrows work in every view (details,
+    // grid, gallery, miller, tree). The details controller was previously
+    // the only recipient — a bug for panes in grid mode etc.
     {
         let s = Arc::clone(shell);
         d.register("pane::MoveDown", move || {
             let id = s.focused_pane_id();
-            if let Some(ctrl) = s.pane_by_id(id) {
-                ctrl.details.move_focus(1);
+            let mode = s.pane_view_mode(id);
+            let Some(ctrl) = s.pane_by_id(id) else { return };
+            match mode {
+                atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(1_i64),
+                atlas_ui::models::ViewMode::Grid => { ctrl.grid.move_focus(1_isize, 0); }
+                atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(1_isize),
+                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(1_isize),
+                atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(1_isize),
             }
         });
     }
@@ -735,8 +745,14 @@ fn build_dispatcher(
         let s = Arc::clone(shell);
         d.register("pane::MoveUp", move || {
             let id = s.focused_pane_id();
-            if let Some(ctrl) = s.pane_by_id(id) {
-                ctrl.details.move_focus(-1);
+            let mode = s.pane_view_mode(id);
+            let Some(ctrl) = s.pane_by_id(id) else { return };
+            match mode {
+                atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(-1_i64),
+                atlas_ui::models::ViewMode::Grid => { ctrl.grid.move_focus(-1_isize, 0); }
+                atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(-1_isize),
+                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(-1_isize),
+                atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(-1_isize),
             }
         });
     }
@@ -868,15 +884,21 @@ fn build_dispatcher(
     }
 
     // ── File-list navigation (arrow keys + vim hjkl) ──────────────────────
-    // Only pane::Activate and pane::GoUp exist as actions; hjkl / arrows
-    // are wired to those in the default keymap.
+    //
+    // fs::View unifies "open" for folders and files: cd into folders,
+    // hand files off to the OS default application (Preview.app for
+    // images, VS Code for source files, …). pane::Activate is kept as
+    // an alias so existing user keymaps that bind to it keep working.
+    {
+        let s = Arc::clone(shell);
+        d.register("fs::View", move || {
+            s.view_focused_entry(s.focused_pane_id());
+        });
+    }
     {
         let s = Arc::clone(shell);
         d.register("pane::Activate", move || {
-            let id = s.focused_pane_id();
-            if let Some(ctrl) = s.pane_by_id(id) {
-                ctrl.details.activate_focused();
-            }
+            s.view_focused_entry(s.focused_pane_id());
         });
     }
 
