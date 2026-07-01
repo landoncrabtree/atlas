@@ -169,7 +169,7 @@ impl TreeController {
 
     /// Toggle expand/collapse for the node at `path`.
     pub fn toggle(self: &Arc<Self>, path: &Path) {
-        let expanded = self.nodes.read().get(path).map_or(false, |n| n.expanded);
+        let expanded = self.nodes.read().get(path).is_some_and(|n| n.expanded);
         if expanded {
             self.collapse(path);
         } else {
@@ -210,7 +210,7 @@ impl TreeController {
             return;
         };
         let path = PathBuf::from(row.node_id.as_str());
-        if self.nodes.read().get(&path).map_or(false, |n| n.is_dir) {
+        if self.nodes.read().get(&path).is_some_and(|n| n.is_dir) {
             self.actions.lock().dispatch(UiAction::Navigate {
                 pane: self.pane,
                 path,
@@ -521,11 +521,7 @@ mod tests {
         ctrl.expand(&sub_a);
 
         let loaded = wait_for(
-            || {
-                ctrl.nodes_snapshot()
-                    .get(&sub_a)
-                    .map_or(false, |n| n.loaded)
-            },
+            || ctrl.nodes_snapshot().get(&sub_a).is_some_and(|n| n.loaded),
             Duration::from_secs(5),
         );
         assert!(loaded, "sub_a must be loaded after expand");
@@ -551,11 +547,7 @@ mod tests {
         let sub_a = dir.path().join("sub_a");
         ctrl.expand(&sub_a);
         wait_for(
-            || {
-                ctrl.nodes_snapshot()
-                    .get(&sub_a)
-                    .map_or(false, |n| n.loaded)
-            },
+            || ctrl.nodes_snapshot().get(&sub_a).is_some_and(|n| n.loaded),
             Duration::from_secs(5),
         );
 
@@ -616,7 +608,9 @@ mod tests {
         );
 
         let visible = ctrl.build_visible_nodes();
-        let has_hidden = visible.iter().any(|n| n.name.starts_with('.'));
+        // Use the `is_hidden` flag, not the name string — the temp root itself
+        // may have a dot-prefixed name on some platforms.
+        let has_hidden = visible.iter().any(|n| n.entry.is_hidden);
         assert!(
             !has_hidden,
             ".hidden must not appear when show_hidden = false"
@@ -636,7 +630,7 @@ mod tests {
         );
 
         let visible = ctrl.build_visible_nodes();
-        let has_hidden = visible.iter().any(|n| n.name.starts_with('.'));
+        let has_hidden = visible.iter().any(|n| n.entry.is_hidden);
         assert!(has_hidden, ".hidden must appear when show_hidden = true");
     }
 
