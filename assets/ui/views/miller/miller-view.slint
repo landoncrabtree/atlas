@@ -1,0 +1,126 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { MillerColData } from "miller-state.slint";
+import { MillerColumnView } from "miller-column.slint";
+
+// Finder/NeXT-style Miller columns view.
+//
+// Columns are supplied by `MillerController` via `AtlasWindow.pane0-miller-columns`.
+// Up to 8 side-by-side columns are rendered in a horizontally scrollable
+// viewport.  Selecting a directory in column N opens column N+1 automatically.
+export component MillerView inherits Rectangle {
+    background: Theme.bg;
+
+    // Columns to display (built by MillerController on the Rust side).
+    in property <[MillerColData]> columns: [];
+    // Index of the column that holds keyboard focus.
+    in property <int> focused-col: 0;
+
+    // Uniform column width in logical pixels.
+    private property <length> col-width: 240px;
+
+    // Fired when the user single-clicks a row (column-index, row-index).
+    callback row-clicked(int, int);
+    // Fired when the user double-clicks a row (column-index, row-index).
+    callback row-double-clicked(int, int);
+
+    ScrollView {
+        viewport-width: max(
+            self.width,
+            columns.length * (root.col-width + 1px)
+        );
+        viewport-height: self.height;
+
+        HorizontalLayout {
+            spacing: 1px;
+
+            // ── Column 0 ──────────────────────────────────────────────────────
+            if columns.length > 0 : MillerColumnView {
+                width: root.col-width;
+                title: columns[0].title;
+                entries: columns[0].entries;
+                focused-index: columns[0].focused;
+                column-focused: root.focused-col == 0;
+                row-clicked(r)        => { root.row-clicked(0, r); }
+                row-double-clicked(r) => { root.row-double-clicked(0, r); }
+            }
+
+            // ── Column 1 ──────────────────────────────────────────────────────
+            if columns.length > 1 : MillerColumnView {
+                width: root.col-width;
+                title: columns[1].title;
+                entries: columns[1].entries;
+                focused-index: columns[1].focused;
+                column-focused: root.focused-col == 1;
+                row-clicked(r)        => { root.row-clicked(1, r); }
+                row-double-clicked(r) => { root.row-double-clicked(1, r); }
+            }
+
+            // ── Column 2 ──────────────────────────────────────────────────────
+            if columns.length > 2 : MillerColumnView {
+                width: root.col-width;
+                title: columns[2].title;
+                entries: columns[2].entries;
+                focused-index: columns[2].focused;
+                column-focused: root.focused-col == 2;
+                row-clicked(r)        => { root.row-clicked(2, r); }
+                row-double-clicked(r) => { root.row-double-clicked(2, r); }
+            }
+
+            // ── Column 3 ──────────────────────────────────────────────────────
+            if columns.length > 3 : MillerColumnView {
+                width: root.col-width;
+                title: columns[3].title;
+                entries: columns[3].entries;
+                focused-index: columns[3].focused;
+                column-focused: root.focused-col == 3;
+                row-clicked(r)        => { root.row-clicked(3, r); }
+                row-double-clicked(r) => { root.row-double-clicked(3, r); }
+            }
+
+            // ── Column 4 ──────────────────────────────────────────────────────
+            if columns.length > 4 : MillerColumnView {
+                width: root.col-width;
+                title: columns[4].title;
+                entries: columns[4].entries;
+                focused-index: columns[4].focused;
+                column-focused: root.focused-col == 4;
+                row-clicked(r)        => { root.row-clicked(4, r); }
+                row-double-clicked(r) => { root.row-double-clicked(4, r); }
+            }
+
+            // ── Column 5 ──────────────────────────────────────────────────────
+            if columns.length > 5 : MillerColumnView {
+                width: root.col-width;
+                title: columns[5].title;
+                entries: columns[5].entries;
+                focused-index: columns[5].focused;
+                column-focused: root.focused-col == 5;
+                row-clicked(r)        => { root.row-clicked(5, r); }
+                row-double-clicked(r) => { root.row-double-clicked(5, r); }
+            }
+
+            // ── Column 6 ──────────────────────────────────────────────────────
+            if columns.length > 6 : MillerColumnView {
+                width: root.col-width;
+                title: columns[6].title;
+                entries: columns[6].entries;
+                focused-index: columns[6].focused;
+                column-focused: root.focused-col == 6;
+                row-clicked(r)        => { root.row-clicked(6, r); }
+                row-double-clicked(r) => { root.row-double-clicked(6, r); }
+            }
+
+            // ── Column 7 ──────────────────────────────────────────────────────
+            if columns.length > 7 : MillerColumnView {
+                width: root.col-width;
+                title: columns[7].title;
+                entries: columns[7].entries;
+                focused-index: columns[7].focused;
+                column-focused: root.focused-col == 7;
+                row-clicked(r)        => { root.row-clicked(7, r); }
+                row-double-clicked(r) => { root.row-double-clicked(7, r); }
+            }
+        }
+    }
+}

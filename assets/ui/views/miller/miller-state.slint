@@ -1,0 +1,20 @@
+// Data struct for a single Miller column.
+//
+// The Rust `MillerController` builds a `Vec<MillerColData>` and pushes it to
+// `AtlasWindow.pane0-miller-columns` via `window.set_pane0_miller_columns(…)`
+// inside `slint::invoke_from_event_loop`.  No Slint global is used because
+// Slint 1.17 does not export global wrapper types to Rust.
+
+import { EntryRowItem } from "../details/column.slint";
+
+/// One column's display state for the Miller columns view.
+export struct MillerColData {
+    /// Directory name shown in the column header.
+    title: string,
+    /// Entries rendered in the column's list.
+    entries: [EntryRowItem],
+    /// Row index that should be highlighted (-1 = none).
+    focused: int,
+    /// True while the backing `InMemoryLocationViewModel` is still loading.
+    loading: bool,
+}

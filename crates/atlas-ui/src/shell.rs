@@ -305,9 +305,7 @@ impl AppShell {
     /// are a TODO.
     #[must_use]
     pub fn focused_entry(&self, pane: usize) -> Option<PathBuf> {
-        let Some(window) = self.window.upgrade() else {
-            return None;
-        };
+        let window = self.window.upgrade()?;
 
         let focused_idx = if pane == 0 {
             window.get_pane0_details_focused_index()
@@ -324,9 +322,7 @@ impl AppShell {
         } else {
             self.pane1_vm.read()
         };
-        let Some(ref vm) = *vm_guard else {
-            return None;
-        };
+        let vm = vm_guard.as_ref()?;
         vm.entries()
             .get(focused_idx as usize)
             .map(|e| e.path.clone())

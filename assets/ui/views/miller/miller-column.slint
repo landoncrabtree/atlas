@@ -1,0 +1,108 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EntryRowItem } from "../details/column.slint";
+
+// One column in the Miller columns view.
+//
+// Renders a compact title bar (directory name) above a virtualised ListView
+// of entries.  The focused column is highlighted with an accent border;
+// non-focused columns are drawn at reduced opacity.
+export component MillerColumnView inherits Rectangle {
+    in property <string>         title: "";
+    in property <[EntryRowItem]> entries: [];
+    // Row index that should be highlighted (-1 = none).
+    in property <int>            focused-index: -1;
+    // Whether this column is the one with keyboard focus.
+    in property <bool>           column-focused: false;
+
+    callback row-clicked(int);
+    callback row-double-clicked(int);
+
+    border-width: column-focused ? 1px : 0px;
+    border-color: Theme.accent;
+    background: Theme.bg;
+    opacity: column-focused ? 1.0 : 0.85;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // ── Column header ─────────────────────────────────────────────────────
+        Rectangle {
+            height: 24px;
+            background: Theme.panel-bg;
+
+            // Bottom separator
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.border;
+            }
+
+            Text {
+                x: Theme.spacing-sm;
+                width: parent.width - Theme.spacing-sm * 2;
+                text: root.title;
+                color: Theme.fg;
+                font-size: Theme.font-size - 1px;
+                font-weight: 600;
+                overflow: elide;
+                vertical-alignment: center;
+                height: parent.height;
+            }
+        }
+
+        // ── Entry list ────────────────────────────────────────────────────────
+        ListView {
+            vertical-stretch: 1;
+
+            for entry[i] in root.entries : Rectangle {
+                height: 22px;
+                background: (i == root.focused-index) ? Theme.selection-bg : transparent;
+
+                HorizontalLayout {
+                    padding-left: Theme.spacing-sm;
+                    padding-right: Theme.spacing-xs;
+                    spacing: Theme.spacing-xs;
+                    alignment: start;
+
+                    // Kind glyph
+                    Text {
+                        text: entry.kind-icon;
+                        color: (i == root.focused-index) ? Theme.selection-fg
+                             : entry.is-broken-symlink    ? Theme.error
+                             : Theme.fg-muted;
+                        font-size: 12px;
+                        width: 18px;
+                        vertical-alignment: center;
+                    }
+
+                    // Entry name
+                    Text {
+                        text: entry.name;
+                        font-size: Theme.font-size - 1px;
+                        color: (i == root.focused-index) ? Theme.selection-fg
+                             : entry.is-hidden            ? Theme.fg-muted
+                             : Theme.fg;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    // Drill-down chevron for directories
+                    if entry.is-dir : Text {
+                        text: "›";
+                        color: (i == root.focused-index) ? Theme.selection-fg : Theme.fg-muted;
+                        font-size: Theme.font-size - 1px;
+                        vertical-alignment: center;
+                        width: 10px;
+                    }
+                }
+
+                TouchArea {
+                    clicked        => { root.row-clicked(i); }
+                    double-clicked => { root.row-double-clicked(i); }
+                }
+            }
+        }
+    }
+}
