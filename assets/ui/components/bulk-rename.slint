@@ -86,6 +86,11 @@ export component BulkRenameModal inherits Rectangle {
                             alignment: center;
 
                             TextInput {
+                                // Auto-focus the Find field every time the
+                                // modal opens (the `if visible-modal`
+                                // subtree is recreated per-open, so `init`
+                                // fires per-open).
+                                init => { self.focus(); }
                                 text <=> root.pattern;
                                 color: Theme.fg;
                                 font-size: Theme.font-size;
