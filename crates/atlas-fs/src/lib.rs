@@ -22,6 +22,7 @@ mod lister;
 mod sort;
 mod view_model;
 mod walker;
+pub(crate) mod watched;
 
 pub use entry::{Entry, EntryKind, Metadata};
 pub use filter::{CompiledFilter, Filter};

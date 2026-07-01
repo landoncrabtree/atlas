@@ -12,10 +12,10 @@ use atlas_core::Result;
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::{Mutex, RwLock};
 
-use crate::entry::Entry;
+use crate::entry::{build_entry, Entry};
 use crate::filter::{CompiledFilter, Filter};
 use crate::lister::{list_directory, ListEvent, ListRequest};
-use crate::sort::{sort_in_place, SortSpec};
+use crate::sort::{compare, sort_in_place, SortSpec};
 
 /// An observable view over a single filesystem location.
 ///
@@ -72,6 +72,12 @@ pub struct OpenOptions {
     pub sort: SortSpec,
     /// Initial filter.
     pub filter: Filter,
+    /// If `true`, spawn a directory watcher that keeps the view model
+    /// live-updated after the initial listing completes.
+    ///
+    /// When `false` (the default), the view model loads once and never
+    /// reflects subsequent filesystem changes.
+    pub watch: bool,
 }
 
 struct Inner {
@@ -100,10 +106,23 @@ impl Inner {
 ///
 /// Spawns the streaming lister, accumulates entries, applies sort/filter, and
 /// notifies subscribers as data arrives or when sort/filter changes.
+///
+/// When [`OpenOptions::watch`] is `true`, a [`atlas_watch::DirectoryWatcher`]
+/// is attached after the initial listing completes so that subsequent
+/// filesystem changes (creates, removes, modifications, renames) are reflected
+/// without re-listing the directory.
 pub struct InMemoryLocationViewModel {
-    path: PathBuf,
+    pub(crate) path: PathBuf,
     state: RwLock<Inner>,
     subscribers: Mutex<Vec<Sender<ViewModelEvent>>>,
+    /// Whether symlink metadata follows link targets; used when re-stating
+    /// entries on watcher events.
+    follow_symlinks: bool,
+    /// Whether hidden entries are included; used when filtering watcher events.
+    include_hidden: bool,
+    /// Holds the live watcher so it is not dropped until the view model drops.
+    /// `None` when `OpenOptions::watch` was `false`.
+    pub(crate) _watcher: Mutex<Option<atlas_watch::DirectoryWatcher>>,
 }
 
 impl InMemoryLocationViewModel {
@@ -113,6 +132,10 @@ impl InMemoryLocationViewModel {
     /// thread. If the initial filter fails to compile it is replaced with an
     /// empty (match-all) filter and an [`ViewModelEvent::Error`] is emitted
     /// once a subscriber attaches.
+    ///
+    /// When [`OpenOptions::watch`] is `true` a directory watcher is started
+    /// after the initial listing completes; see [`Self::open_live`] for a
+    /// convenience constructor.
     pub fn open(path: impl Into<PathBuf>, opts: OpenOptions) -> Arc<Self> {
         let path = path.into();
 
@@ -144,6 +167,9 @@ impl InMemoryLocationViewModel {
             path: path.clone(),
             state: RwLock::new(inner),
             subscribers: Mutex::new(Vec::new()),
+            follow_symlinks: opts.follow_symlinks,
+            include_hidden: opts.include_hidden,
+            _watcher: Mutex::new(None),
         });
 
         if let Some(msg) = filter_err {
@@ -158,14 +184,48 @@ impl InMemoryLocationViewModel {
         let rx = list_directory(req);
 
         let worker = Arc::clone(&this);
+        let watch = opts.watch;
         std::thread::spawn(move || {
-            worker.run_loader(&rx);
+            // When watching, defer the `Loaded` notification until after the
+            // watcher is set up; that way any subscriber that creates files
+            // after receiving `Loaded` is guaranteed to have the OS watch active.
+            worker.run_loader(&rx, /* defer_loaded */ watch);
+            if watch {
+                crate::watched::attach_watcher(Arc::clone(&worker));
+                // Watcher is now set up — emit the deferred `Loaded`.
+                worker.notify(ViewModelEvent::Loaded);
+            }
         });
 
         this
     }
 
-    fn run_loader(&self, rx: &Receiver<ListEvent>) {
+    /// Convenience constructor that opens `path` with live filesystem watching
+    /// enabled (`OpenOptions::watch = true`).
+    ///
+    /// All other option fields are taken from `opts`; the `watch` field is
+    /// overridden to `true` regardless of what is set in `opts`.
+    pub fn open_live(path: impl Into<PathBuf>, mut opts: OpenOptions) -> Arc<Self> {
+        opts.watch = true;
+        Self::open(path, opts)
+    }
+
+    /// Returns `true` when a live directory watcher is currently attached to
+    /// this view model (i.e., [`OpenOptions::watch`] was `true` when it was
+    /// opened and the watcher started successfully).
+    pub fn is_watching(&self) -> bool {
+        self._watcher.lock().is_some()
+    }
+
+    /// Drive the listing channel until `Done`, accumulating entries.
+    ///
+    /// When `defer_loaded` is `true` the [`ViewModelEvent::Loaded`]
+    /// notification is **not** emitted here; the caller is responsible for
+    /// emitting it once any post-load setup (e.g., watcher attachment) is
+    /// complete.  The internal `loaded` flag is still set to `true` so that
+    /// [`InMemoryLocationViewModel::is_loaded`] returns `true` once entries
+    /// have arrived.
+    fn run_loader(&self, rx: &Receiver<ListEvent>, defer_loaded: bool) {
         for event in rx.iter() {
             match event {
                 ListEvent::Batch(entries) => {
@@ -177,7 +237,7 @@ impl InMemoryLocationViewModel {
                         state.loaded = true;
                         state.recompute();
                     }
-                    if first_load {
+                    if first_load && !defer_loaded {
                         self.notify(ViewModelEvent::Loaded);
                     }
                     self.notify(ViewModelEvent::EntriesChanged);
@@ -186,14 +246,226 @@ impl InMemoryLocationViewModel {
                     tracing::warn!(?path, %error, "list error");
                     self.notify(ViewModelEvent::Error(error.to_string()));
                 }
-                ListEvent::Done => break,
+                ListEvent::Done => {
+                    // Emit `Loaded` even when the directory was empty (no
+                    // `Batch` events were delivered), unless we are deferring.
+                    let emit;
+                    {
+                        let mut state = self.state.write();
+                        emit = !state.loaded && !defer_loaded;
+                        state.loaded = true;
+                    }
+                    if emit {
+                        self.notify(ViewModelEvent::Loaded);
+                    }
+                    break;
+                }
             }
         }
     }
 
-    fn notify(&self, event: ViewModelEvent) {
+    pub(crate) fn notify(&self, event: ViewModelEvent) {
         let mut subs = self.subscribers.lock();
         subs.retain(|tx| tx.send(event.clone()).is_ok());
+    }
+
+    // ── Watcher event handlers ────────────────────────────────────────────────
+
+    /// Handle a `Created` event from the directory watcher.
+    ///
+    /// Stats the new path, builds an [`Entry`], inserts it into the snapshot
+    /// respecting the current sort and filter, and emits [`ViewModelEvent::EntriesChanged`].
+    pub(crate) fn handle_created(&self, path: PathBuf) {
+        // Extract the file name and rebuild the path relative to our (possibly
+        // non-canonical) base so it stays consistent with the existing entries.
+        let name_os = match path.file_name() {
+            Some(n) => n.to_owned(),
+            None => return,
+        };
+        let local_path = self.path.join(&name_os);
+
+        let entry = match build_entry(local_path, self.follow_symlinks) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("atlas-fs watcher: failed to stat created entry: {e}");
+                return;
+            }
+        };
+
+        if !self.include_hidden && entry.metadata.is_hidden {
+            return;
+        }
+
+        let view_changed = {
+            let mut state = self.state.write();
+            let name = entry.name.clone();
+
+            // Upsert in raw (handles the rare case where the entry was already
+            // streamed by the lister before the watcher attached).
+            if let Some(existing) = state.raw.iter_mut().find(|e| e.name == name) {
+                *existing = entry.clone();
+            } else {
+                state.raw.push(entry.clone());
+            }
+
+            let matches = state.compiled.matches(&entry);
+
+            // Update view.
+            let in_view = state.view.iter().any(|e| e.name == name);
+            if in_view {
+                // Replace in-place: remove old, insert updated at correct position.
+                state.view.retain(|e| e.name != name);
+                if matches {
+                    let pos = state
+                        .view
+                        .partition_point(|e| compare(e, &entry, &state.sort).is_lt());
+                    state.view.insert(pos, entry);
+                }
+                true
+            } else if matches {
+                let pos = state
+                    .view
+                    .partition_point(|e| compare(e, &entry, &state.sort).is_lt());
+                state.view.insert(pos, entry);
+                true
+            } else {
+                false
+            }
+        };
+
+        if view_changed {
+            self.notify(ViewModelEvent::EntriesChanged);
+        }
+    }
+
+    /// Handle a `Removed` event from the directory watcher.
+    ///
+    /// Removes the entry matching `path` from both the raw snapshot and the
+    /// filtered view, then emits [`ViewModelEvent::EntriesChanged`] if the
+    /// view changed.
+    pub(crate) fn handle_removed(&self, path: &Path) {
+        let name = match path.file_name() {
+            Some(n) => n.to_string_lossy().into_owned(),
+            None => return,
+        };
+
+        let view_changed = {
+            let mut state = self.state.write();
+            let raw_before = state.raw.len();
+            state.raw.retain(|e| e.name != name);
+            let view_before = state.view.len();
+            state.view.retain(|e| e.name != name);
+            state.view.len() != view_before || state.raw.len() != raw_before
+        };
+
+        if view_changed {
+            self.notify(ViewModelEvent::EntriesChanged);
+        }
+    }
+
+    /// Handle a `Modified` event from the directory watcher.
+    ///
+    /// Re-stats the affected path, updates it in the snapshot, adjusts filter
+    /// visibility (an out-of-filter entry after modification is treated as a
+    /// removal from the view), and emits [`ViewModelEvent::EntriesChanged`] if
+    /// the view changed.
+    pub(crate) fn handle_modified(&self, path: PathBuf) {
+        let name_os = match path.file_name() {
+            Some(n) => n.to_owned(),
+            None => return,
+        };
+        let local_path = self.path.join(&name_os);
+        let name = name_os.to_string_lossy().into_owned();
+
+        let entry = match build_entry(local_path.clone(), self.follow_symlinks) {
+            Ok(e) => e,
+            Err(_) => {
+                // File may have been removed; propagate as removal.
+                self.handle_removed(&local_path);
+                return;
+            }
+        };
+
+        if !self.include_hidden && entry.metadata.is_hidden {
+            // Hidden; treat as removal from the visible snapshot.
+            self.handle_removed(&local_path);
+            return;
+        }
+
+        let view_changed = {
+            let mut state = self.state.write();
+
+            // Update in raw.
+            if let Some(existing) = state.raw.iter_mut().find(|e| e.name == name) {
+                *existing = entry.clone();
+            } else {
+                state.raw.push(entry.clone());
+            }
+
+            let in_view = state.view.iter().any(|e| e.name == name);
+            let matches = state.compiled.matches(&entry);
+
+            match (in_view, matches) {
+                (true, true) => {
+                    // Update in view: remove then re-insert at the correct sort position.
+                    state.view.retain(|e| e.name != name);
+                    let pos = state
+                        .view
+                        .partition_point(|e| compare(e, &entry, &state.sort).is_lt());
+                    state.view.insert(pos, entry);
+                    true
+                }
+                (true, false) => {
+                    // No longer passes filter; remove from view.
+                    state.view.retain(|e| e.name != name);
+                    true
+                }
+                (false, true) => {
+                    // Now passes filter; insert at correct sort position.
+                    let pos = state
+                        .view
+                        .partition_point(|e| compare(e, &entry, &state.sort).is_lt());
+                    state.view.insert(pos, entry);
+                    true
+                }
+                (false, false) => false,
+            }
+        };
+
+        if view_changed {
+            self.notify(ViewModelEvent::EntriesChanged);
+        }
+    }
+
+    /// Handle a `Rescan` event from the directory watcher.
+    ///
+    /// Re-lists the directory from scratch, atomically swaps the snapshot, and
+    /// emits [`ViewModelEvent::EntriesChanged`].
+    pub(crate) fn handle_rescan(&self) {
+        let req = ListRequest {
+            path: self.path.clone(),
+            follow_symlinks: self.follow_symlinks,
+            include_hidden: self.include_hidden,
+        };
+        let rx = list_directory(req);
+
+        let mut new_raw: Vec<Entry> = Vec::new();
+        for event in rx.iter() {
+            match event {
+                ListEvent::Batch(entries) => new_raw.extend(entries),
+                ListEvent::Error { path, error } => {
+                    tracing::warn!(?path, %error, "rescan list error");
+                }
+                ListEvent::Done => break,
+            }
+        }
+
+        {
+            let mut state = self.state.write();
+            state.raw = new_raw;
+            state.recompute();
+        }
+        self.notify(ViewModelEvent::EntriesChanged);
     }
 }
 

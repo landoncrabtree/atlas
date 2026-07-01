@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 atlas-core.workspace = true
+atlas-watch.workspace = true
 
 anyhow.workspace = true
 thiserror.workspace = true
