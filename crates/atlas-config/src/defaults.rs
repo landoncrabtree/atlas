@@ -79,6 +79,9 @@ impl Default for Search {
                 "node_modules/".to_string(),
                 "target/".to_string(),
             ],
+            min_query_length: 2,
+            max_visible_results: 100,
+            debounce_ms: 150,
         }
     }
 }

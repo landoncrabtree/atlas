@@ -129,6 +129,20 @@ fuzzy_max_results = 200
 # platforms and may end with "/" to match directories only.
 default_globs_exclude = [".git/", "node_modules/", "target/"]
 
+# Minimum query length before a search dispatches. Below this the panel
+# shows a hint ("Type ≥ N characters") and no CPU work is scheduled.
+min_query_length = 2
+
+# Maximum number of ranked results shown in the search list. The full hit
+# count is still reported in the status line (e.g. "Showing 100 of 35293").
+# Capped at 200 internally to keep rendering responsive.
+max_visible_results = 100
+
+# Milliseconds to wait after the last keystroke before running a query.
+# Coalesces bursts of typing into a single dispatched search. Clamped to
+# [0, 1000] at load time.
+debounce_ms = 150
+
 [thumbnails]
 # Generate image thumbnails in grid and gallery views.
 enabled = true

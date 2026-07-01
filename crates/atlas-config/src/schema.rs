@@ -286,13 +286,28 @@ pub struct Indexer {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Search {
-    /// Maximum number of fuzzy-search results to return.
+    /// Maximum number of fuzzy-search results to return per source (upstream cap).
     pub fuzzy_max_results: usize,
     /// Number of threads for content search.  `None` uses all available CPU cores.
     pub content_search_threads: Option<usize>,
     /// Glob patterns to exclude from search results.
     pub default_globs_exclude: Vec<String>,
+    /// Minimum query length before the search dispatcher fires. Below this,
+    /// the panel shows a hint and no work is scheduled. Clamped to `>= 1`.
+    pub min_query_length: usize,
+    /// Maximum number of ranked results actually pushed to the UI list.
+    /// Bounded above by [`MAX_VISIBLE_RESULTS_CAP`] to protect the renderer
+    /// from pathological result sets.
+    pub max_visible_results: usize,
+    /// Debounce delay in milliseconds between the last keystroke and the
+    /// dispatched query. Coalesces bursts of typing into a single search.
+    /// Clamped to the range `[0, 1000]` at wire-in time.
+    pub debounce_ms: u32,
 }
+
+/// Hard cap on `search.max_visible_results`. Even if the user sets a larger
+/// value, the UI truncates to this many rows to keep rendering responsive.
+pub const MAX_VISIBLE_RESULTS_CAP: usize = 200;
 
 // ── Thumbnails ─────────────────────────────────────────────────────────────
 
