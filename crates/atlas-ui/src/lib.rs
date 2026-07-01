@@ -33,3 +33,5 @@ pub use views::miller::MillerController;
 pub use views::tree::TreeController;
 
 pub use navigation::NavigationController;
+
+pub use models::split::{Cardinal, PaneId, SplitDirection};

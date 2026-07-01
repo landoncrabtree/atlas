@@ -1,52 +1,26 @@
-//! Workspace models for the legacy two-pane shell and the new split-tree workspace.
+//! Workspace model for the N-pane split-tree workspace.
+//!
+//! A [`WorkspaceModel`] owns a binary [`SplitLayout`] of panes, the full
+//! [`PaneState`] for each pane keyed by [`PaneId`], and the id of the pane
+//! that currently holds keyboard focus. Every mutation (split, close, focus
+//! move) operates on stable [`PaneId`]s so operations survive layout
+//! reshuffles.
 
 use std::path::PathBuf;
 
 use ahash::AHashMap;
 use directories::BaseDirs;
-use smallvec::SmallVec;
 
 use crate::models::{
-    pane::{PaneModel, ViewMode},
+    pane::ViewMode,
     pane_state::PaneState,
     split::{Cardinal, CloseOutcome, PaneId, Rect, SplitDirection, SplitLayout},
     tab::TabModel,
 };
 
-/// Top-level workspace state.
-#[derive(Debug, Clone)]
-pub struct WorkspaceModel {
-    /// Pane list (one or two elements).
-    pub panes: SmallVec<[PaneModel; 2]>,
-    /// Index of the pane that currently has keyboard focus.
-    pub focused_pane: usize,
-    /// When `true`, both panes are shown side by side.
-    pub dual_pane: bool,
-}
-
-impl WorkspaceModel {
-    /// Construct a sensible default workspace rooted at `$HOME`.
-    pub fn new_default() -> Self {
-        let home = BaseDirs::new()
-            .map(|dirs| dirs.home_dir().to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("/"));
-        let mut pane = PaneModel::new(home);
-        pane.focused = true;
-
-        let mut panes = SmallVec::new();
-        panes.push(pane);
-
-        Self {
-            panes,
-            focused_pane: 0,
-            dual_pane: false,
-        }
-    }
-}
-
-/// New N-pane workspace model. Phase 3 will migrate AppShell to use this.
+/// Top-level workspace state: a split tree of independent panes.
 #[derive(Debug)]
-pub struct WorkspaceModelV2 {
+pub struct WorkspaceModel {
     /// Binary split tree describing pane geometry.
     pub layout: SplitLayout,
     /// All pane state keyed by stable pane id.
@@ -56,7 +30,7 @@ pub struct WorkspaceModelV2 {
     next_id: u32,
 }
 
-impl WorkspaceModelV2 {
+impl WorkspaceModel {
     /// Fresh workspace with a single pane.
     #[must_use]
     pub fn new(initial: PaneState) -> Self {
@@ -69,6 +43,17 @@ impl WorkspaceModelV2 {
             focused: id,
             next_id: id.0 + 1,
         }
+    }
+
+    /// Construct a sensible default workspace rooted at `$HOME`.
+    #[must_use]
+    pub fn new_default() -> Self {
+        let home = BaseDirs::new()
+            .map(|dirs| dirs.home_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let id = PaneId(1);
+        let initial = PaneState::new(id, TabModel::at(home), ViewMode::default());
+        Self::new(initial)
     }
 
     /// Return the currently focused pane.
@@ -159,42 +144,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn workspace_default_has_one_focused_pane() {
-        let workspace = WorkspaceModel::new_default();
-        assert_eq!(workspace.focused_pane, 0);
-        assert!(!workspace.dual_pane);
-        assert_eq!(workspace.panes.len(), 1);
-        assert!(workspace.panes[0].focused);
-    }
-
-    #[test]
-    fn workspace_default_points_to_home() {
-        let workspace = WorkspaceModel::new_default();
-        let home = BaseDirs::new()
-            .map(|dirs| dirs.home_dir().to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("/"));
-        assert_eq!(workspace.panes[0].location, home);
-    }
-
-    #[test]
-    fn set_focused_pane_updates_model() {
-        let mut ws = WorkspaceModel::new_default();
-        assert_eq!(ws.focused_pane, 0);
-        ws.focused_pane = 1;
-        assert_eq!(ws.focused_pane, 1);
-    }
-
-    #[test]
-    fn dual_pane_can_have_two_panes() {
-        let home = PathBuf::from("/tmp");
-        let mut ws = WorkspaceModel::new_default();
-        ws.dual_pane = true;
-        ws.panes.push(PaneModel::new(home.clone()));
-        assert_eq!(ws.panes.len(), 2);
-        assert!(ws.dual_pane);
-    }
-
     fn initial_pane(id: PaneId, path: &str, view_mode: ViewMode) -> PaneState {
         PaneState::new(
             id,
@@ -204,16 +153,26 @@ mod tests {
     }
 
     #[test]
-    fn workspace_v2_new_creates_single_focused_pane() {
-        let workspace = WorkspaceModelV2::new(initial_pane(PaneId(1), "/a", ViewMode::Details));
+    fn new_creates_single_focused_pane() {
+        let workspace = WorkspaceModel::new(initial_pane(PaneId(1), "/a", ViewMode::Details));
         assert_eq!(workspace.focused, PaneId(1));
         assert_eq!(workspace.leaves_in_order(), vec![PaneId(1)]);
         assert_eq!(workspace.panes.len(), 1);
     }
 
     #[test]
-    fn workspace_v2_split_focused_grows_layout_and_inherits_location() {
-        let mut workspace = WorkspaceModelV2::new(initial_pane(PaneId(1), "/a", ViewMode::Gallery));
+    fn new_default_points_to_home() {
+        let workspace = WorkspaceModel::new_default();
+        let home = BaseDirs::new()
+            .map(|dirs| dirs.home_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/"));
+        assert_eq!(workspace.focused, PaneId(1));
+        assert_eq!(workspace.focused_pane().active_location(), home.as_path());
+    }
+
+    #[test]
+    fn split_focused_grows_layout_and_inherits_location() {
+        let mut workspace = WorkspaceModel::new(initial_pane(PaneId(1), "/a", ViewMode::Gallery));
         let new_id = workspace.split_focused(SplitDirection::Horizontal, None);
 
         assert_eq!(workspace.leaves_in_order(), vec![PaneId(1), new_id]);
@@ -230,8 +189,8 @@ mod tests {
     }
 
     #[test]
-    fn workspace_v2_close_focused_collapses_and_refuses_single_pane() {
-        let mut workspace = WorkspaceModelV2::new(initial_pane(PaneId(1), "/a", ViewMode::Details));
+    fn close_focused_collapses_and_refuses_single_pane() {
+        let mut workspace = WorkspaceModel::new(initial_pane(PaneId(1), "/a", ViewMode::Details));
         assert_eq!(workspace.close_focused(), None);
 
         let new_id = workspace.split_focused(SplitDirection::Horizontal, None);
@@ -249,8 +208,8 @@ mod tests {
     }
 
     #[test]
-    fn workspace_v2_focus_direction_moves_across_two_by_two_grid() {
-        let mut workspace = WorkspaceModelV2::new(initial_pane(PaneId(1), "/a", ViewMode::Details));
+    fn focus_direction_moves_across_two_by_two_grid() {
+        let mut workspace = WorkspaceModel::new(initial_pane(PaneId(1), "/a", ViewMode::Details));
         let right = workspace.split_focused(SplitDirection::Horizontal, None);
         assert!(workspace.set_focused(PaneId(1)));
         let down = workspace.split_focused(SplitDirection::Vertical, None);

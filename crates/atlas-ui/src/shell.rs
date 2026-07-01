@@ -15,6 +15,7 @@ use std::{
     sync::Arc,
 };
 
+use ahash::AHashMap;
 use atlas_core::path::expand_tilde;
 use atlas_fs::LocationViewModel;
 use atlas_keymap::{defaults::default_actions, ActionRegistry, Keymap};
@@ -24,7 +25,10 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
 use crate::{
     actions::{ActionSink, UiAction},
-    models::{PaletteModel, PaletteResult, PaneModel, StatusModel, WorkspaceModel},
+    models::{
+        split::{Cardinal, PaneId, Rect, SplitDirection},
+        PaletteModel, PaletteResult, StatusModel, TabModel, ViewMode, WorkspaceModel,
+    },
     navigation::NavigationController,
     ops::OpsController,
     palette::{ActionsSource, GotoPathsSource, PaletteController, WalkerPathIndex},
@@ -69,6 +73,21 @@ fn to_segments_model(segments: &[String]) -> ModelRc<SharedString> {
         .map(|segment| SharedString::from(segment.as_str()))
         .collect();
     ModelRc::new(VecModel::from(entries))
+}
+
+/// Split a path into breadcrumb segments (equivalent to the legacy
+/// `PaneModel::path_segments`). Always yields at least one segment.
+fn path_segments_for(path: &Path) -> Vec<String> {
+    let mut segments: Vec<String> = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+
+    if segments.is_empty() {
+        segments.push("/".to_owned());
+    }
+
+    segments
 }
 
 fn dispatch_navigation(
@@ -143,7 +162,13 @@ fn build_palette_controller(
 }
 
 /// Per-pane view controllers.
+///
+/// Cloning is cheap: every field is an [`Arc`], so a clone shares the
+/// underlying controllers.
+#[derive(Clone)]
 pub struct PaneControllers {
+    /// Stable id of the pane these controllers drive.
+    pub pane_id: PaneId,
     /// Details view controller for the pane.
     pub details: Arc<crate::views::details::DetailsController>,
     /// Grid view controller for the pane.
@@ -157,30 +182,32 @@ pub struct PaneControllers {
 }
 
 fn build_pane_controllers(
-    pane: usize,
+    pane_id: PaneId,
+    slint_index: usize,
     window: &AtlasWindow,
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
     thumb_cache: Arc<atlas_thumbs::SqliteCache>,
 ) -> PaneControllers {
-    let details = DetailsController::new(pane, window.as_weak(), Arc::clone(&actions));
+    let details = DetailsController::new(slint_index, window.as_weak(), Arc::clone(&actions));
     let grid = GridController::new(
-        pane,
+        slint_index,
         window.as_weak(),
         Arc::clone(&actions),
         Arc::clone(&thumb_cache),
     );
     let gallery = GalleryController::new(
-        pane,
+        slint_index,
         window.as_weak(),
         Arc::clone(&actions),
         Arc::clone(&thumb_cache),
     );
-    let tree = TreeController::new(pane, Arc::clone(&actions));
+    let tree = TreeController::new(slint_index, Arc::clone(&actions));
     tree.attach_window(window.as_weak());
     let miller = MillerController::new(actions);
     miller.attach_window(window.as_weak());
 
     PaneControllers {
+        pane_id,
         details,
         grid,
         miller,
@@ -191,32 +218,35 @@ fn build_pane_controllers(
 
 /// Owns Rust-side model state and bridges it to the Slint window.
 ///
-/// Construct with [`AppShell::new`], then call [`AppShell::set_workspace`],
-/// [`AppShell::set_status`], and [`AppShell::set_theme`] to push initial state.
-/// The real atlas-keymap and atlas-fs wiring happens in a follow-up todo;
-/// for now `atlas-app` installs a `LoggingActionSink` stub.
+/// Construct with [`AppShell::new`], then call
+/// [`AppShell::project_workspace_to_slint`], [`AppShell::set_status`], and
+/// [`AppShell::set_theme`] to push initial state.
+///
+/// The workspace is an N-pane [`WorkspaceModel`]; per-pane controllers and
+/// view models are keyed by [`PaneId`]. The Slint UI is still 2-pane-capable
+/// (Phase 4 rewrites it), so the shell keeps a `pane_slint_index` map from
+/// [`PaneId`] to the Slint slot (0 or 1) used by the compat callback layer.
 pub struct AppShell {
     window: slint::Weak<AtlasWindow>,
     workspace: RwLock<WorkspaceModel>,
+    /// Per-pane view controllers keyed by pane id.
+    panes_ctrl: RwLock<AHashMap<PaneId, PaneControllers>>,
+    /// Current location view model per pane id.
+    vms: RwLock<AHashMap<PaneId, Arc<dyn LocationViewModel>>>,
+    /// Maps `PaneId` → Slint slot index (0 or 1) for the compat layer.
+    pane_slint_index: RwLock<AHashMap<PaneId, usize>>,
     palette: RwLock<PaletteModel>,
     status: RwLock<StatusModel>,
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
     navigation: Arc<NavigationController>,
     palette_ctrl: Arc<PaletteController>,
-    panes_ctrl: Box<[PaneControllers; 2]>,
     search: Arc<SearchController>,
     /// File-operations queue controller.
     ops: Arc<OpsController>,
     /// Bulk rename modal controller.
     bulk_rename: Arc<BulkRenameController>,
-    /// Current location view model for pane 0 (updated on navigation).
-    ///
-    /// Stored so that [`AppShell::selected_paths`] and
-    /// [`AppShell::focused_entry`] can read entry paths on the UI thread
-    /// without reaching into the view controllers.
-    pane0_vm: RwLock<Option<Arc<dyn LocationViewModel>>>,
-    /// Current location view model for pane 1.
-    pane1_vm: RwLock<Option<Arc<dyn LocationViewModel>>>,
+    /// Shared thumbnail cache used when building new pane controllers on split.
+    thumb_cache: Arc<atlas_thumbs::SqliteCache>,
 }
 
 impl AppShell {
@@ -232,10 +262,25 @@ impl AppShell {
             atlas_thumbs::SqliteCache::open_default()
                 .unwrap_or_else(|error| panic!("failed to open thumbnail cache: {error}")),
         );
-        let panes_ctrl = Box::new([
-            build_pane_controllers(0, window, Arc::clone(&actions), Arc::clone(&thumb_cache)),
-            build_pane_controllers(1, window, Arc::clone(&actions), thumb_cache),
-        ]);
+
+        let workspace = WorkspaceModel::new_default();
+        let initial_pane_id = workspace.focused;
+
+        let mut panes_ctrl = AHashMap::default();
+        panes_ctrl.insert(
+            initial_pane_id,
+            build_pane_controllers(
+                initial_pane_id,
+                0,
+                window,
+                Arc::clone(&actions),
+                Arc::clone(&thumb_cache),
+            ),
+        );
+
+        let mut pane_slint_index = AHashMap::default();
+        pane_slint_index.insert(initial_pane_id, 0usize);
+
         let palette_ctrl = build_palette_controller(window, Arc::clone(&actions));
         search.set_action_sink(Arc::clone(&actions));
         let ops = OpsController::new();
@@ -244,18 +289,19 @@ impl AppShell {
         bulk_rename.attach_window(window.as_weak());
         let shell = Arc::new(Self {
             window: window.as_weak(),
-            workspace: RwLock::new(WorkspaceModel::new_default()),
+            workspace: RwLock::new(workspace),
+            panes_ctrl: RwLock::new(panes_ctrl),
+            vms: RwLock::new(AHashMap::default()),
+            pane_slint_index: RwLock::new(pane_slint_index),
             palette: RwLock::new(PaletteModel::default()),
             status: RwLock::new(StatusModel::default()),
             actions,
             navigation: nav,
             palette_ctrl,
-            panes_ctrl,
             search,
             ops,
             bulk_rename,
-            pane0_vm: RwLock::new(None),
-            pane1_vm: RwLock::new(None),
+            thumb_cache,
         });
 
         shell.wire_callbacks(window);
@@ -263,40 +309,60 @@ impl AppShell {
         shell
     }
 
-    /// Return the pane-0 details controller.
+    /// Return the focused pane's details controller.
     #[must_use]
     pub fn details_controller(&self) -> Arc<DetailsController> {
-        Arc::clone(&self.panes_ctrl[0].details)
+        Arc::clone(&self.focused_controllers().details)
     }
 
-    /// Return the pane-0 grid controller.
+    /// Return the focused pane's grid controller.
     #[must_use]
     pub fn grid_controller(&self) -> Arc<GridController> {
-        Arc::clone(&self.panes_ctrl[0].grid)
+        Arc::clone(&self.focused_controllers().grid)
     }
 
-    /// Return the pane-0 gallery controller.
+    /// Return the focused pane's gallery controller.
     #[must_use]
     pub fn gallery_controller(&self) -> Arc<GalleryController> {
-        Arc::clone(&self.panes_ctrl[0].gallery)
+        Arc::clone(&self.focused_controllers().gallery)
     }
 
-    /// Return the pane-0 tree controller.
+    /// Return the focused pane's tree controller.
     #[must_use]
     pub fn tree_controller(&self) -> Arc<TreeController> {
-        Arc::clone(&self.panes_ctrl[0].tree)
+        Arc::clone(&self.focused_controllers().tree)
     }
 
-    /// Return the pane-0 miller columns controller.
+    /// Return the focused pane's miller columns controller.
     #[must_use]
     pub fn miller_controller(&self) -> Arc<MillerController> {
-        Arc::clone(&self.panes_ctrl[0].miller)
+        Arc::clone(&self.focused_controllers().miller)
     }
 
-    /// Return the per-pane view controllers for `index`.
+    /// Return a clone of the controllers for the currently focused pane,
+    /// falling back to any pane if the focused pane has no controllers yet.
+    fn focused_controllers(&self) -> PaneControllers {
+        let id = self.focused_pane_id();
+        let panes = self.panes_ctrl.read();
+        panes
+            .get(&id)
+            .or_else(|| panes.values().next())
+            .cloned()
+            .expect("at least one pane's controllers must exist")
+    }
+
+    /// Get the per-pane view controllers by pane id.
+    ///
+    /// Returns a clone; controllers live behind [`Arc`], so this is cheap.
     #[must_use]
-    pub fn pane(&self, index: usize) -> &PaneControllers {
-        &self.panes_ctrl[index.min(1)]
+    pub fn pane_by_id(&self, id: PaneId) -> Option<PaneControllers> {
+        self.panes_ctrl.read().get(&id).cloned()
+    }
+
+    /// Resolve the controllers currently occupying Slint slot `index`.
+    fn ctrl_for_index(&self, index: usize) -> Option<PaneControllers> {
+        self.pane_id_for_index(index)
+            .and_then(|id| self.pane_by_id(id))
     }
 
     /// Return the shared navigation controller.
@@ -329,82 +395,153 @@ impl AppShell {
         Arc::clone(&self.bulk_rename)
     }
 
-    /// Return the index of the pane that currently has keyboard focus.
+    /// Return the focused pane's [`PaneId`].
     #[must_use]
-    pub fn focused_pane(&self) -> usize {
-        self.workspace.read().focused_pane
+    pub fn focused_pane_id(&self) -> PaneId {
+        self.workspace.read().focused
     }
 
-    /// Return whether dual-pane mode is active.
-    #[must_use]
-    pub fn is_dual_pane(&self) -> bool {
-        self.workspace.read().dual_pane
-    }
-
-    /// Set focused pane, updating the workspace model and pushing to Slint.
-    pub fn set_focused_pane(self: &Arc<Self>, index: usize) {
+    /// Set focus to the given pane.
+    pub fn set_focused_pane_id(self: &Arc<Self>, id: PaneId) {
         {
-            let mut ws = self.workspace.write();
-            if ws.focused_pane == index {
-                return;
-            }
-            ws.focused_pane = index;
-            for (i, pane) in ws.panes.iter_mut().enumerate() {
-                pane.focused = i == index;
-            }
+            self.workspace.write().set_focused(id);
         }
-        let snapshot = self.workspace.read().clone();
-        self.set_workspace(snapshot);
+        self.project_workspace_to_slint();
     }
 
-    /// Enable or disable dual-pane mode.
+    /// Resolve a Slint pane index (0 or 1) to a [`PaneId`] via DFS leaf order.
+    fn pane_id_for_index(&self, index: usize) -> Option<PaneId> {
+        let leaves = self.workspace.read().layout.all_leaves();
+        leaves.get(index).copied()
+    }
+
+    /// Split the focused pane in `direction`. Returns the new [`PaneId`].
     ///
-    /// When enabling and pane 1 has no loaded location, navigates pane 1 to
-    /// pane 0's current path (falling back to `$HOME`).
-    pub fn set_dual_pane(self: &Arc<Self>, on: bool) {
-        let needs_navigate = if on {
-            let mut ws = self.workspace.write();
-            ws.dual_pane = true;
-            if ws.panes.len() < 2 {
-                let home = dirs_home();
-                ws.panes.push(PaneModel::new(home));
-            }
-            self.navigation.location(1).is_none()
-        } else {
-            let mut ws = self.workspace.write();
-            ws.dual_pane = false;
-            ws.focused_pane = 0;
-            for (i, pane) in ws.panes.iter_mut().enumerate() {
-                pane.focused = i == 0;
-            }
-            false
-        };
-        if needs_navigate {
-            let start = self.pane_location(0).unwrap_or_else(dirs_home);
-            self.navigation.navigate(1, start);
+    /// Compat gate: refuses to produce a 3rd leaf until Phase 4 lands (logs a
+    /// warning and returns `None`) because the Slint UI is still 2-pane-only.
+    pub fn split_focused(self: &Arc<Self>, direction: SplitDirection) -> Option<PaneId> {
+        let leaf_count = self.workspace.read().layout.leaf_count();
+        if leaf_count >= 2 {
+            tracing::warn!("split_focused: 3rd pane not supported until Phase 4; ignoring");
+            return None;
         }
-        let snapshot = self.workspace.read().clone();
-        self.set_workspace(snapshot);
+
+        let (new_id, new_location) = {
+            let mut ws = self.workspace.write();
+            let new_id = ws.split_focused(direction, None);
+            let loc = ws
+                .pane(new_id)
+                .expect("just created")
+                .active_location()
+                .to_path_buf();
+            (new_id, loc)
+        };
+
+        // Assign the new pane to Slint slot 1.
+        self.pane_slint_index.write().insert(new_id, 1);
+
+        // Build controllers for the new pane on slot 1.
+        let window = self.window.upgrade().expect("window must be alive");
+        let new_ctrl = build_pane_controllers(
+            new_id,
+            1,
+            &window,
+            Arc::clone(&self.actions),
+            Arc::clone(&self.thumb_cache),
+        );
+        self.panes_ctrl.write().insert(new_id, new_ctrl);
+
+        // Navigate the new pane to the inherited location.
+        self.navigation.navigate_pane(new_id, new_location);
+        self.project_workspace_to_slint();
+        Some(new_id)
     }
 
-    /// Return the current directory path for `pane`, if available.
+    /// Close the focused pane. Refuses to close the last remaining pane.
+    pub fn close_focused_pane(self: &Arc<Self>) {
+        let outcome = {
+            let mut ws = self.workspace.write();
+            ws.close_focused()
+        };
+        let Some(outcome) = outcome else {
+            tracing::debug!("close_focused_pane: only one pane; refusing");
+            return;
+        };
+
+        self.panes_ctrl.write().remove(&outcome.removed);
+        self.vms.write().remove(&outcome.removed);
+
+        // Reassign Slint slot indices for the remaining panes in DFS order.
+        let leaves = self.workspace.read().layout.all_leaves();
+        {
+            let mut idx_map = self.pane_slint_index.write();
+            idx_map.clear();
+            for (i, &leaf) in leaves.iter().enumerate().take(2) {
+                idx_map.insert(leaf, i);
+            }
+        }
+
+        self.project_workspace_to_slint();
+    }
+
+    /// Move focus in cardinal direction `dir` using the layout geometry.
+    pub fn focus_direction(self: &Arc<Self>, dir: Cardinal) {
+        let bounds = self.window_bounds();
+        {
+            self.workspace.write().focus_direction(dir, bounds);
+        }
+        self.project_workspace_to_slint();
+    }
+
+    /// Cycle the focused pane's view mode Details→Grid→Gallery→Miller→Tree→…
+    pub fn cycle_view_mode(self: &Arc<Self>) {
+        let id = self.focused_pane_id();
+        let cur = self
+            .workspace
+            .read()
+            .pane(id)
+            .map(|p| p.view_mode)
+            .unwrap_or_default();
+        let next = match cur {
+            ViewMode::Details => ViewMode::Grid,
+            ViewMode::Grid => ViewMode::Gallery,
+            ViewMode::Gallery => ViewMode::Miller,
+            ViewMode::Miller => ViewMode::Tree,
+            ViewMode::Tree => ViewMode::Details,
+        };
+        self.set_view_mode(id, next);
+    }
+
+    fn window_bounds(&self) -> Rect {
+        self.window
+            .upgrade()
+            .map(|w| {
+                let size = w.window().size();
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: size.width as f32,
+                    height: size.height as f32,
+                }
+            })
+            .unwrap_or(Rect::from_size(1440.0, 900.0))
+    }
+
+    /// Return the current directory path for `id`, if available.
     #[must_use]
-    pub fn pane_location(&self, pane: usize) -> Option<PathBuf> {
+    pub fn pane_location(&self, id: PaneId) -> Option<PathBuf> {
         self.workspace
             .read()
-            .panes
-            .get(pane)
-            .map(|p| p.location.clone())
+            .pane(id)
+            .map(|p| p.active_location().to_path_buf())
     }
 
-    /// Set the view mode for `pane` and push the change to the UI.
-    ///
-    /// If `pane` is out of range this is a no-op (with a debug log).
-    pub fn set_view_mode(self: &Arc<Self>, pane: usize, mode: crate::models::ViewMode) {
+    /// Set the view mode for pane `id` and push the change to the UI.
+    pub fn set_view_mode(self: &Arc<Self>, id: PaneId, mode: ViewMode) {
         {
             let mut ws = self.workspace.write();
-            let Some(p) = ws.panes.get_mut(pane) else {
-                tracing::debug!(pane, "set_view_mode: pane out of range");
+            let Some(p) = ws.pane_mut(id) else {
+                tracing::debug!(?id, "set_view_mode: pane not found");
                 return;
             };
             if p.view_mode == mode {
@@ -412,8 +549,7 @@ impl AppShell {
             }
             p.view_mode = mode;
         }
-        let snapshot = self.workspace.read().clone();
-        self.set_workspace(snapshot);
+        self.project_workspace_to_slint();
     }
 
     /// Enable / disable vim-mode navigation on the Slint FocusScope.
@@ -428,31 +564,32 @@ impl AppShell {
         });
     }
 
-    /// Set which tab is active in `pane` and reload its location. No-op if
-    /// `pane` or `tab` is out of range.
-    pub fn select_tab(self: &Arc<Self>, pane: usize, tab: usize) {
-        let target_location = {
+    /// Set which tab is active in pane `id` and reload its location. No-op if
+    /// `id` or `tab` is out of range.
+    pub fn select_tab(self: &Arc<Self>, id: PaneId, tab: usize) {
+        let target = {
             let mut ws = self.workspace.write();
-            let Some(p) = ws.panes.get_mut(pane) else {
+            let Some(p) = ws.pane_mut(id) else {
                 return;
             };
             if tab >= p.tabs.len() {
                 return;
             }
-            p.active_tab = tab;
-            p.tabs[tab].location.clone().unwrap_or_else(|| p.location.clone())
+            p.set_active(tab);
+            Some(p.active_location().to_path_buf())
         };
-        let snapshot = self.workspace.read().clone();
-        self.set_workspace(snapshot);
-        self.navigation.navigate(pane, target_location);
+        self.project_workspace_to_slint();
+        if let Some(loc) = target {
+            self.navigation.navigate_pane(id, loc);
+        }
     }
 
     /// Cycle to the next (`delta = 1`) or previous (`delta = -1`) tab in
-    /// `pane`, wrapping around at the ends.
-    pub fn cycle_tab(self: &Arc<Self>, pane: usize, delta: isize) {
+    /// pane `id`, wrapping around at the ends.
+    pub fn cycle_tab(self: &Arc<Self>, id: PaneId, delta: isize) {
         let target = {
             let ws = self.workspace.read();
-            let Some(p) = ws.panes.get(pane) else {
+            let Some(p) = ws.pane(id) else {
                 return;
             };
             let len = p.tabs.len() as isize;
@@ -461,91 +598,189 @@ impl AppShell {
             }
             let cur = p.active_tab as isize;
             let next = ((cur + delta) % len + len) % len;
-            next as usize
+            Some(next as usize)
         };
-        self.select_tab(pane, target);
+        if let Some(t) = target {
+            self.select_tab(id, t);
+        }
     }
 
-    /// Phase-0 stub: split the focused pane. In the current 2-pane model,
-    /// enabling dual-pane counts as "splitting" pane 0 rightward; requests
-    /// for a 3rd pane are a no-op logged as a warning. Full N-pane support
-    /// lands in Phase 4 (see `.github/instructions/multi-pane-refactor`).
+    /// Split the focused pane rightward (horizontal split).
+    #[deprecated(since = "0.0.1", note = "Phase 3: use split_focused")]
     pub fn split_focused_or_toggle_dual(self: &Arc<Self>) {
-        if self.is_dual_pane() {
-            tracing::warn!(
-                "split_focused: 3rd pane not supported until Phase 4 (multi-pane refactor); ignoring"
-            );
-            return;
-        }
-        self.set_dual_pane(true);
+        self.split_focused(SplitDirection::Horizontal);
     }
 
-    /// Phase-0 stub: close the focused pane. In the 2-pane model this
-    /// disables dual-pane mode when pane 1 is focused; refuses to close
-    /// pane 0 (which would leave zero panes).
-    pub fn close_focused_pane(self: &Arc<Self>) {
-        if !self.is_dual_pane() {
-            tracing::debug!("close_focused: only one pane open; refusing");
-            return;
-        }
-        // Regardless of which pane is focused, disabling dual-pane collapses
-        // to the pane-0 view. That preserves the current active-tab / view
-        // mode on pane 0 — which is what users want when they close the
-        // pane they were viewing (they're back to a single-pane workflow).
-        self.set_dual_pane(false);
-    }
-
-    /// Append a new tab to `pane` pointing at the pane's current location.
-    /// The new tab becomes active. No-op if `pane` is out of range.
-    pub fn new_tab(self: &Arc<Self>, pane: usize) {
+    /// Append a new tab to pane `id` pointing at the pane's current location.
+    /// The new tab becomes active. No-op if `id` is out of range.
+    pub fn new_tab(self: &Arc<Self>, id: PaneId) {
+        let loc = self.pane_location(id).unwrap_or_else(dirs_home);
         {
             let mut ws = self.workspace.write();
-            let Some(p) = ws.panes.get_mut(pane) else {
-                tracing::debug!(pane, "new_tab: pane out of range");
+            let Some(p) = ws.pane_mut(id) else {
+                tracing::debug!(?id, "new_tab: pane not found");
                 return;
             };
-            p.tabs.push(crate::models::TabModel::at(p.location.clone()));
-            p.active_tab = p.tabs.len() - 1;
+            p.add_tab(TabModel::at(loc.clone()));
         }
-        let snapshot = self.workspace.read().clone();
-        self.set_workspace(snapshot);
+        self.project_workspace_to_slint();
+        self.navigation.navigate_pane(id, loc);
     }
 
-    /// Remove tab `tab` from `pane`. Refuses to close the last tab
-    /// (the pane must always have at least one). Adjusts active_tab
-    /// so that a still-valid tab remains selected, and if that means
-    /// switching to a different tab, navigates to its location.
-    pub fn close_tab(self: &Arc<Self>, pane: usize, tab: usize) {
+    /// Remove tab `tab` from pane `id`. Refuses to close the last tab
+    /// (the pane must always have at least one). Adjusts the active tab so
+    /// that a still-valid tab remains selected, navigating to its location
+    /// when the active tab changed.
+    pub fn close_tab(self: &Arc<Self>, id: PaneId, tab: usize) {
         let switch_to: Option<PathBuf> = {
             let mut ws = self.workspace.write();
-            let Some(p) = ws.panes.get_mut(pane) else {
-                tracing::debug!(pane, tab, "close_tab: pane out of range");
+            let Some(p) = ws.pane_mut(id) else {
+                tracing::debug!(?id, tab, "close_tab: pane not found");
                 return;
             };
-            if p.tabs.len() <= 1 || tab >= p.tabs.len() {
-                return;
-            }
             let was_active = tab == p.active_tab;
-            p.tabs.remove(tab);
-            if p.active_tab >= p.tabs.len() {
-                p.active_tab = p.tabs.len() - 1;
-            } else if tab < p.active_tab {
-                p.active_tab -= 1;
-            }
-            if was_active {
-                p.tabs[p.active_tab].location.clone()
+            if p.close_tab(tab).is_some() && was_active {
+                Some(p.active_location().to_path_buf())
             } else {
                 None
             }
         };
-        let snapshot = self.workspace.read().clone();
-        self.set_workspace(snapshot);
+        self.project_workspace_to_slint();
         if let Some(dest) = switch_to {
-            self.navigation.navigate(pane, dest);
+            self.navigation.navigate_pane(id, dest);
         }
     }
 
-    /// Return the filesystem paths of all selected entries in `pane`.
+    /// Navigate pane `id` to the parent of its current location.
+    pub fn go_up(self: &Arc<Self>, id: PaneId) {
+        if let Some(parent) = self
+            .pane_location(id)
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+        {
+            {
+                let mut ws = self.workspace.write();
+                if let Some(p) = ws.pane_mut(id) {
+                    p.active_mut().navigate_to(parent.clone());
+                }
+            }
+            self.navigation.navigate_pane(id, parent);
+        }
+    }
+
+    /// Navigate pane `id` to the user's home directory.
+    pub fn go_home(self: &Arc<Self>, id: PaneId) {
+        let home = expand_tilde(Path::new("~"));
+        {
+            let mut ws = self.workspace.write();
+            if let Some(p) = ws.pane_mut(id) {
+                p.active_mut().navigate_to(home.clone());
+            }
+        }
+        self.navigation.navigate_pane(id, home);
+    }
+
+    /// Navigate pane `id` to the ancestor at breadcrumb `segment_index`.
+    pub fn breadcrumb_clicked(self: &Arc<Self>, id: PaneId, segment_index: usize) {
+        let Some(current) = self.pane_location(id) else {
+            return;
+        };
+        let components: Vec<_> = current.components().collect();
+        if segment_index >= components.len() {
+            return;
+        }
+        let mut target = PathBuf::new();
+        for component in &components[..=segment_index] {
+            target.push(component);
+        }
+        {
+            let mut ws = self.workspace.write();
+            if let Some(p) = ws.pane_mut(id) {
+                p.active_mut().navigate_to(target.clone());
+            }
+        }
+        self.navigation.navigate_pane(id, target);
+    }
+
+    /// Navigate the focused pane backward in its active tab's history.
+    pub fn back_focused(self: &Arc<Self>) {
+        let id = self.focused_pane_id();
+        let dest = {
+            self.workspace
+                .write()
+                .pane_mut(id)
+                .and_then(|p| p.active_mut().back())
+        };
+        if let Some(path) = dest {
+            self.navigation.navigate_pane_no_push(id, path);
+        }
+    }
+
+    /// Navigate the focused pane forward in its active tab's history.
+    pub fn forward_focused(self: &Arc<Self>) {
+        let id = self.focused_pane_id();
+        let dest = {
+            self.workspace
+                .write()
+                .pane_mut(id)
+                .and_then(|p| p.active_mut().forward())
+        };
+        if let Some(path) = dest {
+            self.navigation.navigate_pane_no_push(id, path);
+        }
+    }
+
+    // ── Deprecated usize-indexed compat shims ────────────────────────────
+    // These resolve the Slint slot index to a PaneId via the layout's
+    // DFS-ordered leaves. New code should use the PaneId-based methods.
+
+    /// Return the Slint slot index (0 or 1) of the focused pane.
+    #[deprecated(since = "0.0.1", note = "Phase 3: use focused_pane_id()")]
+    #[must_use]
+    pub fn focused_pane(&self) -> usize {
+        let focused = self.focused_pane_id();
+        let leaves = self.workspace.read().layout.all_leaves();
+        leaves.iter().position(|&id| id == focused).unwrap_or(0)
+    }
+
+    /// Return whether more than one pane is open.
+    #[deprecated(
+        since = "0.0.1",
+        note = "Phase 3: use split_focused/close_focused_pane"
+    )]
+    #[must_use]
+    pub fn is_dual_pane(&self) -> bool {
+        self.workspace.read().layout.leaf_count() > 1
+    }
+
+    /// Enable (split) or disable (close) the second pane.
+    #[deprecated(
+        since = "0.0.1",
+        note = "Phase 3: use split_focused/close_focused_pane"
+    )]
+    pub fn set_dual_pane(self: &Arc<Self>, on: bool) {
+        if on {
+            if self.workspace.read().layout.leaf_count() < 2 {
+                self.split_focused(SplitDirection::Horizontal);
+            }
+        } else if self.workspace.read().layout.leaf_count() > 1 {
+            if let Some(id1) = self.pane_id_for_index(1) {
+                self.set_focused_pane_id(id1);
+                self.close_focused_pane();
+            }
+        }
+    }
+
+    /// Set the focused pane by Slint slot index (0 or 1).
+    #[deprecated(since = "0.0.1", note = "Phase 3: use set_focused_pane_id")]
+    pub fn set_focused_pane(self: &Arc<Self>, index: usize) {
+        if let Some(id) = self.pane_id_for_index(index) {
+            self.set_focused_pane_id(id);
+        }
+    }
+
+    /// Return the filesystem paths of all selected entries in pane `id`.
     ///
     /// Reads the selection mask from the Slint window and the entry list from
     /// the stored location view model. **Must be called on the Slint
@@ -553,27 +788,25 @@ impl AppShell {
     ///
     /// # Caveats
     ///
-    /// For pane 0, only the Details view selection is read. Grid/Miller/Tree
-    /// selection reading is a TODO once those views expose a unified
-    /// selection API.
+    /// Only the Details view selection is read. Grid/Miller/Tree selection
+    /// reading is a TODO once those views expose a unified selection API.
     #[must_use]
-    pub fn selected_paths(&self, pane: usize) -> Vec<PathBuf> {
+    pub fn selected_paths(&self, id: PaneId) -> Vec<PathBuf> {
+        let Some(slint_idx) = self.pane_slint_index.read().get(&id).copied() else {
+            return Vec::new();
+        };
         let Some(window) = self.window.upgrade() else {
             return Vec::new();
         };
 
-        let mask_model = if pane == 0 {
+        let mask_model = if slint_idx == 0 {
             window.get_pane0_details_selected_mask()
         } else {
             window.get_pane1_details_selected_mask()
         };
 
-        let vm_guard = if pane == 0 {
-            self.pane0_vm.read()
-        } else {
-            self.pane1_vm.read()
-        };
-        let Some(ref vm) = *vm_guard else {
+        let vm_guard = self.vms.read();
+        let Some(vm) = vm_guard.get(&id) else {
             return Vec::new();
         };
         let entries = vm.entries();
@@ -585,7 +818,7 @@ impl AppShell {
             .collect()
     }
 
-    /// Return the path of the focused (cursor) entry in `pane`, if any.
+    /// Return the path of the focused (cursor) entry in pane `id`, if any.
     ///
     /// **Must be called on the Slint event-loop thread.**
     ///
@@ -594,10 +827,11 @@ impl AppShell {
     /// Currently reads from the Details view focused index only. Grid/Miller/Tree
     /// are a TODO.
     #[must_use]
-    pub fn focused_entry(&self, pane: usize) -> Option<PathBuf> {
+    pub fn focused_entry(&self, id: PaneId) -> Option<PathBuf> {
+        let slint_idx = self.pane_slint_index.read().get(&id).copied()?;
         let window = self.window.upgrade()?;
 
-        let focused_idx = if pane == 0 {
+        let focused_idx = if slint_idx == 0 {
             window.get_pane0_details_focused_index()
         } else {
             window.get_pane1_details_focused_index()
@@ -607,99 +841,97 @@ impl AppShell {
             return None;
         }
 
-        let vm_guard = if pane == 0 {
-            self.pane0_vm.read()
-        } else {
-            self.pane1_vm.read()
-        };
-        let vm = vm_guard.as_ref()?;
+        let vm_guard = self.vms.read();
+        let vm = vm_guard.get(&id)?;
         vm.entries()
             .get(focused_idx as usize)
             .map(|e| e.path.clone())
     }
 
     fn register_nav_callbacks(self: &Arc<Self>) {
+        // Legacy usize-indexed bridge: map the Slint slot index to a PaneId
+        // via DFS leaf order, then forward to the shared handler.
         let shell_weak = Arc::downgrade(self);
-        self.navigation.on_location_changed(move |pane, vm| {
+        self.navigation.on_location_changed(move |pane_usize, vm| {
             let Some(shell) = shell_weak.upgrade() else {
                 return;
             };
-            let path = vm.location().to_path_buf();
-            // Coerce to trait object so selected_paths / focused_entry can use it.
-            let vm_dyn: Arc<dyn LocationViewModel> = vm.clone();
-            // Clone once more for the status subscription thread below.
-            let vm_for_status: Arc<dyn LocationViewModel> = vm.clone();
-            if pane == 0 {
-                *shell.pane0_vm.write() = Some(vm_dyn);
-                let vm_typed: Arc<dyn LocationViewModel> = vm;
-                shell.panes_ctrl[0]
-                    .details
-                    .set_location(Arc::clone(&vm_typed));
-                shell.panes_ctrl[0].grid.set_location(Arc::clone(&vm_typed));
-                shell.panes_ctrl[0].gallery.set_location(vm_typed);
-                shell.panes_ctrl[0].tree.set_root(path.clone());
-                shell.panes_ctrl[0].miller.set_root(path.clone());
-                shell.search.set_scope(Some(path.clone()));
-            } else if pane == 1 {
-                *shell.pane1_vm.write() = Some(vm_dyn);
-                let vm_typed: Arc<dyn LocationViewModel> = vm;
-                shell.panes_ctrl[1]
-                    .details
-                    .set_location(Arc::clone(&vm_typed));
-                shell.panes_ctrl[1].grid.set_location(Arc::clone(&vm_typed));
-                shell.panes_ctrl[1].gallery.set_location(vm_typed);
-                shell.panes_ctrl[1].tree.set_root(path.clone());
-                shell.panes_ctrl[1].miller.set_root(path.clone());
-            }
-            let new_pane_snapshot: PaneModel = {
-                let mut workspace = shell.workspace.write();
-                let cur = workspace.panes.get(pane).cloned();
-                // Preserve existing tab state (tabs + active_tab + view_mode)
-                // when we already had a pane; only refresh the location on
-                // that pane and on its active tab. First-time creation
-                // (pane push) initializes a fresh PaneModel.
-                if let Some(mut existing) = cur {
-                    existing.location = path.clone();
-                    if let Some(active) = existing.tabs.get_mut(existing.active_tab) {
-                        active.location = Some(path.clone());
-                        active.title = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| path.to_string_lossy().into_owned());
-                    }
-                    workspace.panes[pane] = existing.clone();
-                    existing
-                } else {
-                    let fresh = PaneModel::new(path.clone());
-                    if pane == workspace.panes.len() {
-                        workspace.panes.push(fresh.clone());
-                    }
-                    fresh
-                }
+            let pane_id = {
+                let ws = shell.workspace.read();
+                ws.layout
+                    .all_leaves()
+                    .get(pane_usize)
+                    .copied()
+                    .unwrap_or(ws.focused)
             };
-            let _ = new_pane_snapshot; // held for clarity; workspace already updated in-place.
-            let snapshot = shell.workspace.read().clone();
-            shell.set_workspace(snapshot);
-
-            // Push updated stats to the status bar. The initial vm may still
-            // be loading — subscribers below will re-push once entries stream
-            // in. For now this reflects zero and shows the pane focus change.
-            shell.refresh_status();
-
-            // Spawn a lightweight watcher that re-computes status whenever
-            // the vm emits an event, then exits when the vm subscription
-            // channel closes (i.e., when the vm is replaced).
-            let shell_bg = Arc::clone(&shell);
-            let events = vm_for_status.subscribe();
-            std::thread::Builder::new()
-                .name(format!("atlas-status-pane{pane}"))
-                .spawn(move || {
-                    while let Ok(_ev) = events.recv() {
-                        shell_bg.refresh_status();
-                    }
-                })
-                .ok();
+            shell.on_location_changed_impl(pane_id, vm);
         });
+
+        // New PaneId-based callback.
+        let shell_weak2 = Arc::downgrade(self);
+        self.navigation
+            .on_pane_location_changed(move |pane_id, vm| {
+                let Some(shell) = shell_weak2.upgrade() else {
+                    return;
+                };
+                shell.on_location_changed_impl(pane_id, vm);
+            });
+    }
+
+    /// Shared handler for both the legacy and PaneId navigation callbacks.
+    fn on_location_changed_impl(
+        self: &Arc<Self>,
+        pane_id: PaneId,
+        vm: Arc<atlas_fs::InMemoryLocationViewModel>,
+    ) {
+        let path = vm.location().to_path_buf();
+        let vm_dyn: Arc<dyn LocationViewModel> = Arc::clone(&vm) as Arc<dyn LocationViewModel>;
+        let vm_for_status = Arc::clone(&vm);
+
+        self.vms.write().insert(pane_id, Arc::clone(&vm_dyn));
+
+        {
+            let panes = self.panes_ctrl.read();
+            if let Some(ctrl) = panes.get(&pane_id) {
+                ctrl.details.set_location(Arc::clone(&vm_dyn));
+                ctrl.grid.set_location(Arc::clone(&vm_dyn));
+                ctrl.gallery.set_location(Arc::clone(&vm_dyn));
+                ctrl.tree.set_root(path.clone());
+                ctrl.miller.set_root(path.clone());
+            }
+        }
+
+        {
+            let mut workspace = self.workspace.write();
+            if let Some(pane_state) = workspace.pane_mut(pane_id) {
+                let tab = pane_state.active_mut();
+                tab.location = Some(path.clone());
+                tab.title = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            }
+        }
+
+        if pane_id == self.focused_pane_id() {
+            self.search.set_scope(Some(path.clone()));
+        }
+
+        self.project_workspace_to_slint();
+        self.refresh_status();
+
+        // Spawn a lightweight watcher that re-computes status whenever the vm
+        // emits an event, then exits when the vm subscription channel closes.
+        let shell_bg = Arc::clone(self);
+        let events = vm_for_status.subscribe();
+        std::thread::Builder::new()
+            .name(format!("atlas-status-{pane_id:?}"))
+            .spawn(move || {
+                while let Ok(_ev) = events.recv() {
+                    shell_bg.refresh_status();
+                }
+            })
+            .ok();
     }
 
     fn wire_callbacks(self: &Arc<Self>, window: &AtlasWindow) {
@@ -754,7 +986,9 @@ impl AppShell {
             let shell = self.clone();
             window.on_select_tab(move |pane, tab| {
                 if pane >= 0 && tab >= 0 {
-                    shell.select_tab(pane as usize, tab as usize);
+                    if let Some(id) = shell.pane_id_for_index(pane as usize) {
+                        shell.select_tab(id, tab as usize);
+                    }
                 }
             });
         }
@@ -762,24 +996,28 @@ impl AppShell {
             let shell = self.clone();
             window.on_cycle_tab(move |pane, delta| {
                 if pane >= 0 {
-                    shell.cycle_tab(pane as usize, delta as isize);
+                    if let Some(id) = shell.pane_id_for_index(pane as usize) {
+                        shell.cycle_tab(id, delta as isize);
+                    }
                 }
             });
         }
 
-        // ── Multi-pane workspace commands (Phase 0) ──
+        // ── Multi-pane workspace commands ──
         //
-        // These operate on the current 2-pane model: split-right / split-down
-        // both open the second pane if it's not already open; requests for a
-        // third pane are logged as a warning until the full N-pane refactor
-        // lands (see .github/instructions/multi-pane-refactor).
+        // split-right / split-down split the focused pane; the compat gate in
+        // `split_focused` refuses a 3rd leaf until Phase 4 rewrites the Slint UI.
         {
             let shell = self.clone();
-            window.on_pane_split_right(move || shell.split_focused_or_toggle_dual());
+            window.on_pane_split_right(move || {
+                shell.split_focused(SplitDirection::Horizontal);
+            });
         }
         {
             let shell = self.clone();
-            window.on_pane_split_down(move || shell.split_focused_or_toggle_dual());
+            window.on_pane_split_down(move || {
+                shell.split_focused(SplitDirection::Vertical);
+            });
         }
         {
             let shell = self.clone();
@@ -787,37 +1025,19 @@ impl AppShell {
         }
         {
             let shell = self.clone();
-            window.on_pane_cycle_view_mode(move || {
-                let pane = shell.focused_pane();
-                let cur = shell
-                    .workspace
-                    .read()
-                    .panes
-                    .get(pane)
-                    .map(|p| p.view_mode)
-                    .unwrap_or(crate::models::ViewMode::Details);
-                let next = match cur {
-                    crate::models::ViewMode::Details => crate::models::ViewMode::Grid,
-                    crate::models::ViewMode::Grid => crate::models::ViewMode::Gallery,
-                    crate::models::ViewMode::Gallery => crate::models::ViewMode::Miller,
-                    crate::models::ViewMode::Miller => crate::models::ViewMode::Tree,
-                    crate::models::ViewMode::Tree => crate::models::ViewMode::Details,
-                };
-                shell.set_view_mode(pane, next);
-            });
+            window.on_pane_cycle_view_mode(move || shell.cycle_view_mode());
         }
         {
             let shell = self.clone();
             window.on_pane_focus_direction(move |dir| {
-                // In the 2-pane model, only left/right are meaningful.
-                // Up/Down are placeholders for the tiled N-pane layout.
-                let cur = shell.focused_pane();
-                let target = match dir.as_str() {
-                    "left" if cur == 1 => 0,
-                    "right" if cur == 0 && shell.is_dual_pane() => 1,
+                let cardinal = match dir.as_str() {
+                    "left" => Cardinal::Left,
+                    "right" => Cardinal::Right,
+                    "up" => Cardinal::Up,
+                    "down" => Cardinal::Down,
                     _ => return,
                 };
-                shell.set_focused_pane(target);
+                shell.focus_direction(cardinal);
             });
         }
 
@@ -828,52 +1048,53 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_pane_move_focus(move |delta| {
-                let pane = shell.focused_pane();
+                let id = shell.focused_pane_id();
                 let mode = shell
                     .workspace
                     .read()
-                    .panes
-                    .get(pane)
+                    .pane(id)
                     .map(|p| p.view_mode)
-                    .unwrap_or(crate::models::ViewMode::Details);
-                let ctrl = &shell.panes_ctrl[pane];
+                    .unwrap_or_default();
+                let Some(ctrl) = shell.pane_by_id(id) else {
+                    return;
+                };
                 match mode {
-                    crate::models::ViewMode::Details => ctrl.details.move_focus(delta as i64),
-                    crate::models::ViewMode::Grid => {
+                    ViewMode::Details => ctrl.details.move_focus(delta as i64),
+                    ViewMode::Grid => {
                         ctrl.grid.move_focus(delta as isize, 0);
                     }
-                    crate::models::ViewMode::Gallery => ctrl.gallery.move_focus(delta as isize),
-                    crate::models::ViewMode::Miller => ctrl.miller.move_focus(delta as isize),
-                    crate::models::ViewMode::Tree => ctrl.tree.move_focus(delta as isize),
+                    ViewMode::Gallery => ctrl.gallery.move_focus(delta as isize),
+                    ViewMode::Miller => ctrl.miller.move_focus(delta as isize),
+                    ViewMode::Tree => ctrl.tree.move_focus(delta as isize),
                 }
             });
         }
         {
             let shell = self.clone();
             window.on_pane_activate_focused(move || {
-                let pane = shell.focused_pane();
+                let id = shell.focused_pane_id();
                 let mode = shell
                     .workspace
                     .read()
-                    .panes
-                    .get(pane)
+                    .pane(id)
                     .map(|p| p.view_mode)
-                    .unwrap_or(crate::models::ViewMode::Details);
-                let ctrl = &shell.panes_ctrl[pane];
+                    .unwrap_or_default();
+                let Some(ctrl) = shell.pane_by_id(id) else {
+                    return;
+                };
                 match mode {
-                    crate::models::ViewMode::Details => ctrl.details.activate_focused(),
-                    crate::models::ViewMode::Grid => ctrl.grid.activate_focused(),
-                    crate::models::ViewMode::Gallery => ctrl.gallery.activate_focused(),
-                    crate::models::ViewMode::Miller => ctrl.miller.activate_focused(),
-                    crate::models::ViewMode::Tree => ctrl.tree.activate_focused(),
+                    ViewMode::Details => ctrl.details.activate_focused(),
+                    ViewMode::Grid => ctrl.grid.activate_focused(),
+                    ViewMode::Gallery => ctrl.gallery.activate_focused(),
+                    ViewMode::Miller => ctrl.miller.activate_focused(),
+                    ViewMode::Tree => ctrl.tree.activate_focused(),
                 }
             });
         }
         {
-            let nav = Arc::clone(&self.navigation);
             let shell = self.clone();
             window.on_pane_go_up(move || {
-                nav.go_up(shell.focused_pane());
+                shell.go_up(shell.focused_pane_id());
             });
         }
 
@@ -930,360 +1151,462 @@ impl AppShell {
             let actions = Arc::clone(&self.actions);
             let shell = Arc::clone(self);
             window.on_pane0_focused(move || {
-                actions.lock().dispatch(UiAction::PaneFocusChanged(0));
-                shell.set_focused_pane(0);
+                if let Some(id) = shell.pane_id_for_index(0) {
+                    actions.lock().dispatch(UiAction::PaneFocusChanged(0));
+                    shell.set_focused_pane_id(id);
+                }
             });
         }
         {
             let actions = Arc::clone(&self.actions);
             let shell = Arc::clone(self);
             window.on_pane1_focused(move || {
-                actions.lock().dispatch(UiAction::PaneFocusChanged(1));
-                shell.set_focused_pane(1);
+                if let Some(id) = shell.pane_id_for_index(1) {
+                    actions.lock().dispatch(UiAction::PaneFocusChanged(1));
+                    shell.set_focused_pane_id(id);
+                }
             });
         }
         {
             let actions = Arc::clone(&self.actions);
             let shell = Arc::clone(self);
             window.on_cycle_pane_focus(move || {
-                let pane_count = if shell.workspace.read().dual_pane {
-                    2
-                } else {
-                    1
-                };
-                let next = (shell.workspace.read().focused_pane + 1) % pane_count;
+                let leaves = shell.workspace.read().layout.all_leaves();
+                if leaves.is_empty() {
+                    return;
+                }
+                let focused = shell.focused_pane_id();
+                let cur = leaves.iter().position(|&id| id == focused).unwrap_or(0);
+                let next = (cur + 1) % leaves.len();
                 actions.lock().dispatch(UiAction::PaneFocusChanged(next));
-                shell.set_focused_pane(next);
+                shell.set_focused_pane_id(leaves[next]);
             });
         }
 
         {
             let actions = Arc::clone(&self.actions);
             let nav = Arc::clone(&self.navigation);
+            let shell = Arc::clone(self);
             window.on_pane0_address_submitted(move |path| {
                 dispatch_navigation(&actions, 0, path.clone());
-                let expanded = expand_tilde(Path::new(path.as_str()));
-                nav.navigate(0, expanded);
+                if let Some(id) = shell.pane_id_for_index(0) {
+                    let expanded = expand_tilde(Path::new(path.as_str()));
+                    nav.navigate_pane(id, expanded);
+                }
             });
         }
         window.on_pane0_address_cancelled(dispatch!(self.actions, UiAction::DismissPalette));
         {
             let actions = Arc::clone(&self.actions);
-            let nav = Arc::clone(&self.navigation);
+            let shell = Arc::clone(self);
             window.on_pane0_breadcrumb_clicked(move |segment| {
                 let seg = segment as usize;
                 actions.lock().dispatch(UiAction::BreadcrumbClicked {
                     pane: 0,
                     segment: seg,
                 });
-                nav.breadcrumb_clicked(0, seg);
+                if let Some(id) = shell.pane_id_for_index(0) {
+                    shell.breadcrumb_clicked(id, seg);
+                }
             });
         }
         {
             let shell = self.clone();
             window.on_pane0_tab_selected(move |tab| {
-                shell.select_tab(0, tab as usize);
+                if let Some(id) = shell.pane_id_for_index(0) {
+                    shell.select_tab(id, tab as usize);
+                }
             });
         }
         {
             let shell = self.clone();
             window.on_pane0_tab_closed(move |tab| {
-                shell.close_tab(0, tab as usize);
+                if let Some(id) = shell.pane_id_for_index(0) {
+                    shell.close_tab(id, tab as usize);
+                }
             });
         }
         {
             let shell = self.clone();
             window.on_pane0_new_tab(move || {
-                shell.new_tab(0);
+                if let Some(id) = shell.pane_id_for_index(0) {
+                    shell.new_tab(id);
+                }
             });
         }
 
         {
-            let details = Arc::clone(&self.panes_ctrl[0].details);
+            let shell = self.clone();
             window.on_pane0_details_row_clicked(move |index, ctrl, shift| {
-                details.select_index(index as usize, ctrl, shift);
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.details.select_index(index as usize, ctrl, shift);
+                }
             });
         }
         {
-            let details = Arc::clone(&self.panes_ctrl[0].details);
+            let shell = self.clone();
             window.on_pane0_details_row_double_clicked(move |index| {
-                details.select_index(index as usize, false, false);
-                details.activate_focused();
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.details.select_index(index as usize, false, false);
+                    c.details.activate_focused();
+                }
             });
         }
         {
-            let details = Arc::clone(&self.panes_ctrl[0].details);
+            let shell = self.clone();
             window.on_pane0_details_header_clicked(move |column_index| {
-                details.header_clicked(column_index as usize);
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.details.header_clicked(column_index as usize);
+                }
             });
         }
 
         // Grid callbacks — pane 0
         {
-            let grid = Arc::clone(&self.panes_ctrl[0].grid);
+            let shell = self.clone();
             window.on_pane0_grid_entry_clicked(move |index, ctrl, shift| {
-                grid.select_index(index as usize, ctrl, shift);
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.grid.select_index(index as usize, ctrl, shift);
+                }
             });
         }
         {
-            let grid = Arc::clone(&self.panes_ctrl[0].grid);
+            let shell = self.clone();
             window.on_pane0_grid_entry_double_clicked(move |index| {
-                grid.select_index(index as usize, false, false);
-                grid.activate_focused();
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.grid.select_index(index as usize, false, false);
+                    c.grid.activate_focused();
+                }
             });
         }
         {
-            let grid = Arc::clone(&self.panes_ctrl[0].grid);
+            let shell = self.clone();
             window.on_pane0_grid_thumbnail_visible(move |index| {
-                grid.thumbnail_visible(index as usize);
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.grid.thumbnail_visible(index as usize);
+                }
             });
         }
         {
-            let grid = Arc::clone(&self.panes_ctrl[0].grid);
+            let shell = self.clone();
             window.on_pane0_grid_columns_changed(move |cols| {
-                grid.set_columns(cols as usize);
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.grid.set_columns(cols as usize);
+                }
             });
         }
 
         // Gallery callbacks — pane 0
         {
-            let gallery = Arc::clone(&self.panes_ctrl[0].gallery);
+            let shell = self.clone();
             window.on_pane0_gallery_entry_clicked(move |index| {
-                gallery.entry_clicked(index as usize);
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.gallery.entry_clicked(index as usize);
+                }
             });
         }
         {
-            let gallery = Arc::clone(&self.panes_ctrl[0].gallery);
+            let shell = self.clone();
             window.on_pane0_gallery_strip_visible(move |index| {
-                gallery.strip_visible(index as usize);
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.gallery.strip_visible(index as usize);
+                }
             });
         }
         {
-            let gallery = Arc::clone(&self.panes_ctrl[0].gallery);
+            let shell = self.clone();
             window.on_pane0_gallery_preview_visible(move |index| {
-                gallery.preview_visible(index as usize);
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.gallery.preview_visible(index as usize);
+                }
             });
         }
         {
-            let gallery = Arc::clone(&self.panes_ctrl[0].gallery);
+            let shell = self.clone();
             window.on_pane0_gallery_prev_image(move || {
-                gallery.prev_image();
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.gallery.prev_image();
+                }
             });
         }
         {
-            let gallery = Arc::clone(&self.panes_ctrl[0].gallery);
+            let shell = self.clone();
             window.on_pane0_gallery_next_image(move || {
-                gallery.next_image();
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.gallery.next_image();
+                }
             });
         }
 
         // Tree callbacks — pane 0
         {
-            let tree = Arc::clone(&self.panes_ctrl[0].tree);
+            let shell = self.clone();
             window.on_pane0_tree_row_clicked(move |index, ctrl, shift| {
-                tree.select_index(index as usize, ctrl, shift);
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.tree.select_index(index as usize, ctrl, shift);
+                }
             });
         }
         {
-            let tree = Arc::clone(&self.panes_ctrl[0].tree);
+            let shell = self.clone();
             window.on_pane0_tree_row_double_clicked(move |index| {
-                tree.select_index(index as usize, false, false);
-                tree.activate_focused();
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.tree.select_index(index as usize, false, false);
+                    c.tree.activate_focused();
+                }
             });
         }
         {
-            let tree = Arc::clone(&self.panes_ctrl[0].tree);
+            let shell = self.clone();
             window.on_pane0_tree_chevron_clicked(move |index| {
-                let visible = tree.build_visible_nodes();
-                if let Some(row) = visible.get(index as usize) {
-                    let path = std::path::PathBuf::from(row.node_id.as_str());
-                    tree.toggle(&path);
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    let visible = c.tree.build_visible_nodes();
+                    if let Some(row) = visible.get(index as usize) {
+                        let path = std::path::PathBuf::from(row.node_id.as_str());
+                        c.tree.toggle(&path);
+                    }
                 }
             });
         }
 
         // Miller callbacks — pane 0
         {
-            let miller = Arc::clone(&self.panes_ctrl[0].miller);
+            let shell = self.clone();
             window.on_pane0_miller_row_clicked(move |col, row| {
-                miller.select_row(col as usize, row as usize);
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.miller.select_row(col as usize, row as usize);
+                }
             });
         }
         {
-            let miller = Arc::clone(&self.panes_ctrl[0].miller);
+            let shell = self.clone();
             window.on_pane0_miller_row_double_clicked(move |col, row| {
-                miller.select_row(col as usize, row as usize);
-                miller.activate_focused();
+                if let Some(c) = shell.ctrl_for_index(0) {
+                    c.miller.select_row(col as usize, row as usize);
+                    c.miller.activate_focused();
+                }
             });
         }
 
         {
             let actions = Arc::clone(&self.actions);
             let nav = Arc::clone(&self.navigation);
+            let shell = Arc::clone(self);
             window.on_pane1_address_submitted(move |path| {
                 dispatch_navigation(&actions, 1, path.clone());
-                let expanded = expand_tilde(Path::new(path.as_str()));
-                nav.navigate(1, expanded);
+                if let Some(id) = shell.pane_id_for_index(1) {
+                    let expanded = expand_tilde(Path::new(path.as_str()));
+                    nav.navigate_pane(id, expanded);
+                }
             });
         }
         window.on_pane1_address_cancelled(dispatch!(self.actions, UiAction::DismissPalette));
         {
             let actions = Arc::clone(&self.actions);
-            let nav = Arc::clone(&self.navigation);
+            let shell = Arc::clone(self);
             window.on_pane1_breadcrumb_clicked(move |segment| {
                 let seg = segment as usize;
                 actions.lock().dispatch(UiAction::BreadcrumbClicked {
                     pane: 1,
                     segment: seg,
                 });
-                nav.breadcrumb_clicked(1, seg);
+                if let Some(id) = shell.pane_id_for_index(1) {
+                    shell.breadcrumb_clicked(id, seg);
+                }
             });
         }
         {
             let shell = self.clone();
             window.on_pane1_tab_selected(move |tab| {
-                shell.select_tab(1, tab as usize);
+                if let Some(id) = shell.pane_id_for_index(1) {
+                    shell.select_tab(id, tab as usize);
+                }
             });
         }
         {
             let shell = self.clone();
             window.on_pane1_tab_closed(move |tab| {
-                shell.close_tab(1, tab as usize);
+                if let Some(id) = shell.pane_id_for_index(1) {
+                    shell.close_tab(id, tab as usize);
+                }
             });
         }
         {
             let shell = self.clone();
             window.on_pane1_new_tab(move || {
-                shell.new_tab(1);
+                if let Some(id) = shell.pane_id_for_index(1) {
+                    shell.new_tab(id);
+                }
             });
         }
 
         // Details callbacks — pane 1
         {
-            let details = Arc::clone(&self.panes_ctrl[1].details);
+            let shell = self.clone();
             window.on_pane1_details_row_clicked(move |index, ctrl, shift| {
-                details.select_index(index as usize, ctrl, shift);
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.details.select_index(index as usize, ctrl, shift);
+                }
             });
         }
         {
-            let details = Arc::clone(&self.panes_ctrl[1].details);
+            let shell = self.clone();
             window.on_pane1_details_row_double_clicked(move |index| {
-                details.select_index(index as usize, false, false);
-                details.activate_focused();
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.details.select_index(index as usize, false, false);
+                    c.details.activate_focused();
+                }
             });
         }
         {
-            let details = Arc::clone(&self.panes_ctrl[1].details);
+            let shell = self.clone();
             window.on_pane1_details_header_clicked(move |column_index| {
-                details.header_clicked(column_index as usize);
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.details.header_clicked(column_index as usize);
+                }
             });
         }
 
         // Grid callbacks — pane 1
         {
-            let grid = Arc::clone(&self.panes_ctrl[1].grid);
+            let shell = self.clone();
             window.on_pane1_grid_entry_clicked(move |index, ctrl, shift| {
-                grid.select_index(index as usize, ctrl, shift);
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.grid.select_index(index as usize, ctrl, shift);
+                }
             });
         }
         {
-            let grid = Arc::clone(&self.panes_ctrl[1].grid);
+            let shell = self.clone();
             window.on_pane1_grid_entry_double_clicked(move |index| {
-                grid.select_index(index as usize, false, false);
-                grid.activate_focused();
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.grid.select_index(index as usize, false, false);
+                    c.grid.activate_focused();
+                }
             });
         }
         {
-            let grid = Arc::clone(&self.panes_ctrl[1].grid);
+            let shell = self.clone();
             window.on_pane1_grid_thumbnail_visible(move |index| {
-                grid.thumbnail_visible(index as usize);
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.grid.thumbnail_visible(index as usize);
+                }
             });
         }
         {
-            let grid = Arc::clone(&self.panes_ctrl[1].grid);
+            let shell = self.clone();
             window.on_pane1_grid_columns_changed(move |cols| {
-                grid.set_columns(cols as usize);
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.grid.set_columns(cols as usize);
+                }
             });
         }
 
         // Gallery callbacks — pane 1
         {
-            let gallery = Arc::clone(&self.panes_ctrl[1].gallery);
+            let shell = self.clone();
             window.on_pane1_gallery_entry_clicked(move |index| {
-                gallery.entry_clicked(index as usize);
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.gallery.entry_clicked(index as usize);
+                }
             });
         }
         {
-            let gallery = Arc::clone(&self.panes_ctrl[1].gallery);
+            let shell = self.clone();
             window.on_pane1_gallery_strip_visible(move |index| {
-                gallery.strip_visible(index as usize);
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.gallery.strip_visible(index as usize);
+                }
             });
         }
         {
-            let gallery = Arc::clone(&self.panes_ctrl[1].gallery);
+            let shell = self.clone();
             window.on_pane1_gallery_preview_visible(move |index| {
-                gallery.preview_visible(index as usize);
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.gallery.preview_visible(index as usize);
+                }
             });
         }
         {
-            let gallery = Arc::clone(&self.panes_ctrl[1].gallery);
+            let shell = self.clone();
             window.on_pane1_gallery_prev_image(move || {
-                gallery.prev_image();
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.gallery.prev_image();
+                }
             });
         }
         {
-            let gallery = Arc::clone(&self.panes_ctrl[1].gallery);
+            let shell = self.clone();
             window.on_pane1_gallery_next_image(move || {
-                gallery.next_image();
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.gallery.next_image();
+                }
             });
         }
 
         // Tree callbacks — pane 1
         {
-            let tree = Arc::clone(&self.panes_ctrl[1].tree);
+            let shell = self.clone();
             window.on_pane1_tree_row_clicked(move |index, ctrl, shift| {
-                tree.select_index(index as usize, ctrl, shift);
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.tree.select_index(index as usize, ctrl, shift);
+                }
             });
         }
         {
-            let tree = Arc::clone(&self.panes_ctrl[1].tree);
+            let shell = self.clone();
             window.on_pane1_tree_row_double_clicked(move |index| {
-                tree.select_index(index as usize, false, false);
-                tree.activate_focused();
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.tree.select_index(index as usize, false, false);
+                    c.tree.activate_focused();
+                }
             });
         }
         {
-            let tree = Arc::clone(&self.panes_ctrl[1].tree);
+            let shell = self.clone();
             window.on_pane1_tree_chevron_clicked(move |index| {
-                let visible = tree.build_visible_nodes();
-                if let Some(row) = visible.get(index as usize) {
-                    let path = std::path::PathBuf::from(row.node_id.as_str());
-                    tree.toggle(&path);
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    let visible = c.tree.build_visible_nodes();
+                    if let Some(row) = visible.get(index as usize) {
+                        let path = std::path::PathBuf::from(row.node_id.as_str());
+                        c.tree.toggle(&path);
+                    }
                 }
             });
         }
 
         // Miller callbacks — pane 1
         {
-            let miller = Arc::clone(&self.panes_ctrl[1].miller);
+            let shell = self.clone();
             window.on_pane1_miller_row_clicked(move |col, row| {
-                miller.select_row(col as usize, row as usize);
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.miller.select_row(col as usize, row as usize);
+                }
             });
         }
         {
-            let miller = Arc::clone(&self.panes_ctrl[1].miller);
+            let shell = self.clone();
             window.on_pane1_miller_row_double_clicked(move |col, row| {
-                miller.select_row(col as usize, row as usize);
-                miller.activate_focused();
+                if let Some(c) = shell.ctrl_for_index(1) {
+                    c.miller.select_row(col as usize, row as usize);
+                    c.miller.activate_focused();
+                }
             });
         }
         {
             let actions = Arc::clone(&self.actions);
             let shell = Arc::clone(self);
             window.on_toggle_dual_pane(move || {
-                let on = !shell.is_dual_pane();
-                actions.lock().dispatch(UiAction::SetDualPane(on));
-                shell.set_dual_pane(on);
+                let dual = shell.workspace.read().layout.leaf_count() > 1;
+                actions.lock().dispatch(UiAction::SetDualPane(!dual));
+                if dual {
+                    if let Some(id1) = shell.pane_id_for_index(1) {
+                        shell.set_focused_pane_id(id1);
+                        shell.close_focused_pane();
+                    }
+                } else {
+                    shell.split_focused(SplitDirection::Horizontal);
+                }
             });
         }
 
@@ -1325,17 +1648,17 @@ impl AppShell {
         {
             let shell = Arc::clone(self);
             window.on_fs_copy(move || {
-                let focused = shell.focused_pane();
+                let focused = shell.focused_pane_id();
                 let sources = shell.selected_paths(focused);
                 if sources.is_empty() {
-                    tracing::warn!(pane = focused, "fs::Copy (F5): no selection");
+                    tracing::warn!(?focused, "fs::Copy (F5): no selection");
                     return;
                 }
-                // In dual-pane mode the other pane is the destination.
+                // The other pane (second DFS leaf) is the destination.
                 // Single-pane: destination dialog is a post-MVP follow-up.
-                let dual = shell.workspace.read().dual_pane;
-                let other = if dual { Some(1 - focused) } else { None };
-                let dest = other.and_then(|p| shell.pane_location(p));
+                let leaves = shell.workspace.read().layout.all_leaves();
+                let other = leaves.iter().find(|&&id| id != focused).copied();
+                let dest = other.and_then(|id| shell.pane_location(id));
                 match dest {
                     Some(dest_dir) => {
                         tracing::info!(
@@ -1357,15 +1680,15 @@ impl AppShell {
         {
             let shell = Arc::clone(self);
             window.on_fs_move(move || {
-                let focused = shell.focused_pane();
+                let focused = shell.focused_pane_id();
                 let sources = shell.selected_paths(focused);
                 if sources.is_empty() {
-                    tracing::warn!(pane = focused, "fs::Move (F6): no selection");
+                    tracing::warn!(?focused, "fs::Move (F6): no selection");
                     return;
                 }
-                let dual = shell.workspace.read().dual_pane;
-                let other = if dual { Some(1 - focused) } else { None };
-                let dest = other.and_then(|p| shell.pane_location(p));
+                let leaves = shell.workspace.read().layout.all_leaves();
+                let other = leaves.iter().find(|&&id| id != focused).copied();
+                let dest = other.and_then(|id| shell.pane_location(id));
                 match dest {
                     Some(dest_dir) => {
                         tracing::info!(
@@ -1387,10 +1710,10 @@ impl AppShell {
         {
             let shell = Arc::clone(self);
             window.on_fs_delete(move || {
-                let focused = shell.focused_pane();
+                let focused = shell.focused_pane_id();
                 let paths = shell.selected_paths(focused);
                 if paths.is_empty() {
-                    tracing::warn!(pane = focused, "fs::Delete (F8): no selection");
+                    tracing::warn!(?focused, "fs::Delete (F8): no selection");
                     return;
                 }
                 tracing::info!(count = paths.len(), "fs::Delete (F8) → trash");
@@ -1402,7 +1725,7 @@ impl AppShell {
         {
             let shell = Arc::clone(self);
             window.on_fs_rename(move || {
-                let focused = shell.focused_pane();
+                let focused = shell.focused_pane_id();
                 // TODO(post-MVP): show an inline rename text-input or modal dialog.
                 // For now we log the focused entry and skip the operation.
                 match shell.focused_entry(focused) {
@@ -1413,7 +1736,7 @@ impl AppShell {
                         );
                     }
                     None => {
-                        tracing::warn!(pane = focused, "fs::Rename (F2): no focused entry");
+                        tracing::warn!(?focused, "fs::Rename (F2): no focused entry");
                     }
                 }
             });
@@ -1421,9 +1744,9 @@ impl AppShell {
         {
             let shell = Arc::clone(self);
             window.on_fs_mkdir(move || {
-                let focused = shell.focused_pane();
+                let focused = shell.focused_pane_id();
                 let Some(location) = shell.pane_location(focused) else {
-                    tracing::warn!(pane = focused, "fs::Mkdir (F7): no pane location");
+                    tracing::warn!(?focused, "fs::Mkdir (F7): no pane location");
                     return;
                 };
                 // Choose a unique "New Folder" name within the current location.
@@ -1439,10 +1762,10 @@ impl AppShell {
         {
             let shell = Arc::clone(self);
             window.on_open_bulk_rename(move || {
-                let focused = shell.focused_pane();
+                let focused = shell.focused_pane_id();
                 let paths = shell.selected_paths(focused);
                 tracing::info!(
-                    pane = focused,
+                    ?focused,
                     count = paths.len(),
                     "bulk rename: opening modal (Cmd/Ctrl+Shift+F2)"
                 );
@@ -1487,36 +1810,74 @@ impl AppShell {
         }
     }
 
-    /// Update the workspace state and schedule a property push on the event loop.
-    pub fn set_workspace(self: &Arc<Self>, model: WorkspaceModel) {
-        *self.workspace.write() = model.clone();
+    /// Project the workspace's first ≤2 layout leaves (in DFS order) onto the
+    /// existing `pane0-*` / `pane1-*` Slint properties.
+    ///
+    /// The Slint UI is still 2-pane-capable (Phase 4 rewrites it), so any
+    /// leaves beyond the first two are dropped with a warning.
+    pub fn project_workspace_to_slint(self: &Arc<Self>) {
+        struct PaneSnapshot {
+            path: String,
+            segments: Vec<String>,
+            view_mode: String,
+            tabs: Vec<TabModel>,
+            active_tab: i32,
+        }
+
+        let (focus_idx, leaf_count, pane0, pane1) = {
+            let ws = self.workspace.read();
+            let leaves = ws.layout.all_leaves();
+            let leaf_count = leaves.len();
+            let focus_idx = leaves.iter().position(|&id| id == ws.focused).unwrap_or(0);
+
+            let snapshot_for = |id: PaneId| -> PaneSnapshot {
+                let pane = ws.pane(id).expect("leaf must have pane state");
+                let location = pane.active_location();
+                PaneSnapshot {
+                    path: location.to_string_lossy().into_owned(),
+                    segments: path_segments_for(location),
+                    view_mode: pane.view_mode.to_string(),
+                    tabs: pane.tabs.clone(),
+                    active_tab: pane.active_tab as i32,
+                }
+            };
+
+            let pane0 = leaves.first().map(|&id| snapshot_for(id));
+            let pane1 = leaves.get(1).map(|&id| snapshot_for(id));
+            (focus_idx, leaf_count, pane0, pane1)
+        };
+
+        if leaf_count > 2 {
+            tracing::warn!(
+                leaf_count,
+                "project_workspace_to_slint: only first 2 panes projected to Slint (Phase 4 pending)"
+            );
+        }
+
+        let is_dual = leaf_count > 1;
         let weak = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(window) = weak.upgrade() else {
                 return;
             };
 
-            window.set_dual_pane(model.dual_pane);
-            window.set_focus_index(model.focused_pane as i32);
+            window.set_dual_pane(is_dual);
+            window.set_focus_index(focus_idx as i32);
 
-            if let Some(pane0) = model.panes.first() {
-                let pane0_path = pane0.location.to_string_lossy().into_owned();
-                let pane0_view_mode = pane0.view_mode.to_string();
-                window.set_pane0_path(pane0_path.into());
-                window.set_pane0_segments(to_segments_model(&pane0.path_segments()));
-                window.set_pane0_view_mode(pane0_view_mode.into());
+            if let Some(pane0) = pane0 {
+                window.set_pane0_path(pane0.path.into());
+                window.set_pane0_segments(to_segments_model(&pane0.segments));
+                window.set_pane0_view_mode(pane0.view_mode.into());
                 window.set_pane0_tabs(to_tab_model(&pane0.tabs));
-                window.set_pane0_active_tab(pane0.active_tab as i32);
+                window.set_pane0_active_tab(pane0.active_tab);
             }
 
-            if let Some(pane1) = model.panes.get(1) {
-                let pane1_path = pane1.location.to_string_lossy().into_owned();
-                let pane1_view_mode = pane1.view_mode.to_string();
-                window.set_pane1_path(pane1_path.into());
-                window.set_pane1_segments(to_segments_model(&pane1.path_segments()));
-                window.set_pane1_view_mode(pane1_view_mode.into());
+            if let Some(pane1) = pane1 {
+                window.set_pane1_path(pane1.path.into());
+                window.set_pane1_segments(to_segments_model(&pane1.segments));
+                window.set_pane1_view_mode(pane1.view_mode.into());
                 window.set_pane1_tabs(to_tab_model(&pane1.tabs));
-                window.set_pane1_active_tab(pane1.active_tab as i32);
+                window.set_pane1_active_tab(pane1.active_tab);
             } else {
                 window.set_pane1_path(SharedString::default());
                 window.set_pane1_segments(ModelRc::new(VecModel::from(Vec::<SharedString>::new())));
@@ -1566,9 +1927,11 @@ impl AppShell {
     /// Cheap to call — walks the in-memory entry snapshot. Invoked whenever
     /// the location changes or the entry list updates.
     pub fn refresh_status(self: &Arc<Self>) {
-        let pane = self.focused_pane();
-        let vm = if pane == 0 { self.pane0_vm.read().clone() } else { self.pane1_vm.read().clone() };
-        let Some(vm) = vm else { return; };
+        let id = self.focused_pane_id();
+        let vm = self.vms.read().get(&id).cloned();
+        let Some(vm) = vm else {
+            return;
+        };
         let entries = vm.entries();
         let mut folders = 0usize;
         let mut files = 0usize;
@@ -1695,4 +2058,82 @@ fn unique_new_folder_name(parent_dir: &Path) -> String {
     }
     // Fallback: very unlikely in practice.
     base.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the pane-index ↔ `PaneId` DFS mapping and split-tree
+    //! mutations that back [`AppShell`]'s Slint-slot compatibility layer.
+    //!
+    //! These operate on [`WorkspaceModel`] directly (no Slint window), since
+    //! `AppShell` construction requires a live event loop.
+
+    use crate::models::{
+        pane_state::PaneState,
+        split::{Cardinal, PaneId, Rect, SplitDirection},
+        tab::TabModel,
+        ViewMode, WorkspaceModel,
+    };
+
+    fn workspace_at(path: &str) -> WorkspaceModel {
+        let id = PaneId(1);
+        WorkspaceModel::new(PaneState::new(id, TabModel::at(path), ViewMode::Details))
+    }
+
+    /// Resolve a Slint slot index (0/1) to a `PaneId` via DFS leaf order —
+    /// mirrors `AppShell::pane_id_for_index`.
+    fn index_to_id(ws: &WorkspaceModel, index: usize) -> Option<PaneId> {
+        ws.layout.all_leaves().get(index).copied()
+    }
+
+    #[test]
+    fn pane_id_for_index_single_pane() {
+        let ws = workspace_at("/a");
+        assert_eq!(index_to_id(&ws, 0), Some(PaneId(1)));
+        assert_eq!(index_to_id(&ws, 1), None);
+    }
+
+    #[test]
+    fn split_and_both_indices_resolve() {
+        let mut ws = workspace_at("/a");
+        let new_id = ws.split_focused(SplitDirection::Horizontal, None);
+        assert_eq!(index_to_id(&ws, 0), Some(PaneId(1)));
+        assert_eq!(index_to_id(&ws, 1), Some(new_id));
+        assert_eq!(ws.layout.leaf_count(), 2);
+    }
+
+    #[test]
+    fn close_focused_leaves_one_pane() {
+        let mut ws = workspace_at("/a");
+        let new_id = ws.split_focused(SplitDirection::Horizontal, None);
+        assert_eq!(ws.focused, new_id);
+        let outcome = ws.close_focused().expect("two panes → close succeeds");
+        assert_eq!(outcome.removed, new_id);
+        assert_eq!(ws.focused, PaneId(1));
+        assert_eq!(ws.layout.leaf_count(), 1);
+        assert_eq!(index_to_id(&ws, 1), None);
+    }
+
+    #[test]
+    fn focus_direction_in_two_pane_horizontal_split() {
+        let mut ws = workspace_at("/a");
+        let right = ws.split_focused(SplitDirection::Horizontal, None);
+        let bounds = Rect::from_size(200.0, 200.0);
+        // Focus is on the right pane after split; move left → pane 0.
+        assert_eq!(ws.focus_direction(Cardinal::Left, bounds), Some(PaneId(1)));
+        assert_eq!(ws.focused, PaneId(1));
+        // Move right → back to the new pane.
+        assert_eq!(ws.focus_direction(Cardinal::Right, bounds), Some(right));
+        assert_eq!(ws.focused, right);
+    }
+
+    #[test]
+    fn dfs_ordering_stable_across_splits() {
+        let mut ws = workspace_at("/a");
+        let right = ws.split_focused(SplitDirection::Horizontal, None);
+        assert!(ws.set_focused(PaneId(1)));
+        let down = ws.split_focused(SplitDirection::Vertical, None);
+        // DFS order: pane 1's subtree (1, down) then the right sibling.
+        assert_eq!(ws.leaves_in_order(), vec![PaneId(1), down, right]);
+    }
 }

@@ -18,4 +18,4 @@ pub use pane_state::PaneState;
 pub use split::{Cardinal, CloseOutcome, PaneId, Rect, SplitDirection, SplitLayout};
 pub use status::{IndexerState, StatusModel};
 pub use tab::TabModel;
-pub use workspace::{WorkspaceModel, WorkspaceModelV2};
+pub use workspace::WorkspaceModel;

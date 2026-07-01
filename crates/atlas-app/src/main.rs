@@ -201,21 +201,25 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|_| PathBuf::from("/"))
         });
     search_ctrl.set_scope(Some(start_path.clone()));
-    nav.navigate(0, start_path);
+    nav.navigate_pane(shell.focused_pane_id(), start_path);
     shell.set_status(StatusModel::default());
     shell.set_palette(PaletteModel::default());
 
-    // Apply the config's default view mode to pane 0.
-    shell.set_view_mode(0, config_view_mode(config.view.default_mode));
+    // Apply the config's default view mode to the focused (initial) pane.
+    shell.set_view_mode(
+        shell.focused_pane_id(),
+        config_view_mode(config.view.default_mode),
+    );
 
     // Push config-driven UI settings into the Slint window.
     shell.set_vim_mode(config.general.vim_mode);
 
     // Open in dual-pane layout when the config asks for it (default: true).
-    // Pane 1 auto-navigates to pane 0's location via AppShell::set_dual_pane.
+    // The new pane inherits pane 0's location via AppShell::split_focused.
     if config.general.dual_pane {
-        shell.set_dual_pane(true);
-        shell.set_view_mode(1, config_view_mode(config.view.default_mode));
+        if let Some(new_id) = shell.split_focused(atlas_ui::SplitDirection::Horizontal) {
+            shell.set_view_mode(new_id, config_view_mode(config.view.default_mode));
+        }
     }
 
     // Build the keymap dispatcher and register handlers for common action IDs.
@@ -455,7 +459,7 @@ fn spawn_config_event_thread(
                                         ?path,
                                         "config reload: navigating pane 0 to new start_path"
                                     );
-                                    nav.navigate(0, path);
+                                    nav.navigate_pane(shell.focused_pane_id(), path);
                                 }
                             }
                         }
@@ -479,7 +483,7 @@ fn spawn_config_event_thread(
 fn build_dispatcher(
     keymap: atlas_keymap::Keymap,
     shell: &Arc<AppShell>,
-    nav: &Arc<NavigationController>,
+    _nav: &Arc<NavigationController>,
 ) -> Arc<Dispatcher> {
     let d = Dispatcher::new(keymap);
 
@@ -503,38 +507,39 @@ fn build_dispatcher(
     {
         let s = Arc::clone(shell);
         d.register("pane::MoveDown", move || {
-            let p = s.focused_pane();
-            s.pane(p).details.move_focus(1);
+            let id = s.focused_pane_id();
+            if let Some(ctrl) = s.pane_by_id(id) {
+                ctrl.details.move_focus(1);
+            }
         });
     }
     {
         let s = Arc::clone(shell);
         d.register("pane::MoveUp", move || {
-            let p = s.focused_pane();
-            s.pane(p).details.move_focus(-1);
+            let id = s.focused_pane_id();
+            if let Some(ctrl) = s.pane_by_id(id) {
+                ctrl.details.move_focus(-1);
+            }
         });
     }
 
     // ── Pane history / directory navigation ──────────────────────────────
     {
-        let n = Arc::clone(nav);
         let s = Arc::clone(shell);
         d.register("pane::GoUp", move || {
-            n.go_up(s.focused_pane());
+            s.go_up(s.focused_pane_id());
         });
     }
     {
-        let n = Arc::clone(nav);
         let s = Arc::clone(shell);
         d.register("pane::Back", move || {
-            n.navigate_relative(s.focused_pane(), true);
+            s.back_focused();
         });
     }
     {
-        let n = Arc::clone(nav);
         let s = Arc::clone(shell);
         d.register("pane::Forward", move || {
-            n.navigate_relative(s.focused_pane(), false);
+            s.forward_focused();
         });
     }
 
@@ -548,23 +553,21 @@ fn build_dispatcher(
     ] {
         let s = Arc::clone(shell);
         d.register(id, move || {
-            s.set_view_mode(s.focused_pane(), mode);
+            s.set_view_mode(s.focused_pane_id(), mode);
         });
     }
 
-    // ── Pane split / close (Phase-0 stubs; upgraded in Phase 3/4) ────────
+    // ── Pane split / close ───────────────────────────────────────────────
     {
         let s = Arc::clone(shell);
         d.register("pane::SplitRight", move || {
-            s.split_focused_or_toggle_dual();
+            s.split_focused(atlas_ui::SplitDirection::Horizontal);
         });
     }
     {
         let s = Arc::clone(shell);
         d.register("pane::SplitDown", move || {
-            // TODO(phase4): differentiate vertical split direction.
-            tracing::warn!("pane::SplitDown: direction not yet differentiated; falling back to SplitRight behaviour");
-            s.split_focused_or_toggle_dual();
+            s.split_focused(atlas_ui::SplitDirection::Vertical);
         });
     }
     {
@@ -574,60 +577,37 @@ fn build_dispatcher(
         });
     }
 
-    // ── Pane focus (Phase-0 stubs; replaced by focus_direction in Phase 3) ─
+    // ── Pane focus (directional, geometry-aware) ─────────────────────────
     {
         let s = Arc::clone(shell);
         d.register("pane::FocusLeft", move || {
-            if s.is_dual_pane() {
-                s.set_focused_pane(0);
-            }
+            s.focus_direction(atlas_ui::Cardinal::Left);
         });
     }
     {
         let s = Arc::clone(shell);
         d.register("pane::FocusRight", move || {
-            if s.is_dual_pane() {
-                s.set_focused_pane(1);
-            }
+            s.focus_direction(atlas_ui::Cardinal::Right);
         });
     }
     {
-        // TODO(phase3): no-op until N-pane grid layout lands.
-        d.register("pane::FocusUp", || {
-            tracing::debug!("pane::FocusUp: no-op until N-pane grid layout lands (Phase 3)");
+        let s = Arc::clone(shell);
+        d.register("pane::FocusUp", move || {
+            s.focus_direction(atlas_ui::Cardinal::Up);
         });
     }
     {
-        // TODO(phase3): no-op until N-pane grid layout lands.
-        d.register("pane::FocusDown", || {
-            tracing::debug!("pane::FocusDown: no-op until N-pane grid layout lands (Phase 3)");
+        let s = Arc::clone(shell);
+        d.register("pane::FocusDown", move || {
+            s.focus_direction(atlas_ui::Cardinal::Down);
         });
     }
 
     // ── View cycle (Cmd+Shift+E) ──────────────────────────────────────────
     {
-        use atlas_ui::models::ViewMode;
-        // Phase-0 stub: track cycle state locally since AppShell does not yet
-        // expose a pane_view_mode() accessor.  Will be replaced in Phase 3.
-        let modes = Arc::new(std::sync::Mutex::new([ViewMode::Details; 2]));
         let s = Arc::clone(shell);
         d.register("view::Cycle", move || {
-            let pane = s.focused_pane();
-            let idx = pane.min(1);
-            let mut guard = match modes.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            let next = match guard[idx] {
-                ViewMode::Details => ViewMode::Grid,
-                ViewMode::Grid => ViewMode::Gallery,
-                ViewMode::Gallery => ViewMode::Miller,
-                ViewMode::Miller => ViewMode::Tree,
-                ViewMode::Tree => ViewMode::Details,
-            };
-            guard[idx] = next;
-            drop(guard);
-            s.set_view_mode(pane, next);
+            s.cycle_view_mode();
         });
     }
 
@@ -635,13 +615,13 @@ fn build_dispatcher(
     {
         let s = Arc::clone(shell);
         d.register("tab::CyclePrev", move || {
-            s.cycle_tab(s.focused_pane(), -1);
+            s.cycle_tab(s.focused_pane_id(), -1);
         });
     }
     {
         let s = Arc::clone(shell);
         d.register("tab::CycleNext", move || {
-            s.cycle_tab(s.focused_pane(), 1);
+            s.cycle_tab(s.focused_pane_id(), 1);
         });
     }
 
