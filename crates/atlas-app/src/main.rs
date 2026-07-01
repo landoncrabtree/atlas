@@ -41,11 +41,28 @@ use atlas_ui::{
 /// The `Fs*` variants exist in [`UiAction`] for future atlas-keymap
 /// integration (when keymap strings like `"fs::Copy"` are translated to typed
 /// `UiAction` values by the keymap resolver).
-struct AtlasActionSink;
+struct AtlasActionSink {
+    nav: Arc<NavigationController>,
+}
+
+impl AtlasActionSink {
+    fn new(nav: Arc<NavigationController>) -> Self {
+        Self { nav }
+    }
+}
 
 impl ActionSink for AtlasActionSink {
     fn dispatch(&mut self, action: UiAction) {
-        match &action {
+        match action {
+            // Navigation — actually drive the controller so the view updates.
+            UiAction::Navigate { pane, path } => {
+                tracing::debug!(pane, ?path, "navigating");
+                self.nav.navigate(pane, path);
+            }
+            UiAction::BreadcrumbClicked { pane, segment } => {
+                tracing::debug!(pane, segment, "breadcrumb clicked");
+                self.nav.breadcrumb_clicked(pane, segment);
+            }
             // Fs* actions are wired directly in AppShell::wire_callbacks via
             // Slint F-key callbacks; they do not flow through this sink in the
             // current implementation. Log at debug so the path is traceable.
@@ -109,7 +126,7 @@ fn main() -> Result<()> {
     search_ctrl.attach_window(window.as_weak());
     let shell: Arc<AppShell> = AppShell::new(
         &window,
-        AtlasActionSink,
+        AtlasActionSink::new(Arc::clone(&nav)),
         Arc::clone(&nav),
         Arc::clone(&search_ctrl),
     );

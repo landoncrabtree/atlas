@@ -1,17 +1,54 @@
 //! [`PaletteSource`] trait and concrete implementations.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use atlas_fs::{walk, Entry, ListEvent, WalkRequest};
 use atlas_keymap::{ActionRegistry, Keymap};
 use parking_lot::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 /// Maximum paths kept in the in-memory cache.
 const MAX_CACHED_PATHS: usize = 20_000;
 /// Maximum directory depth to walk.
 const MAX_WALK_DEPTH: usize = 6;
+
+/// Directory names that are excluded from the palette walker.
+///
+/// These are either enormous (`Library`, `node_modules`), or backed by cloud
+/// filesystems that can time out when scanned (`Google Drive`, `iCloud Drive`,
+/// `Dropbox`, `OneDrive`). Skipping them keeps the walker fast, keeps the
+/// cache useful, and prevents log noise.
+const EXCLUDED_DIR_NAMES: &[&str] = &[
+    "Library",
+    "Applications",
+    ".Trash",
+    ".git",
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    ".cache",
+    ".cargo",
+    ".rustup",
+    ".npm",
+    ".pnpm-store",
+    ".yarn",
+    ".gradle",
+    ".m2",
+    "venv",
+    ".venv",
+    "__pycache__",
+    "Google Drive",
+    "GoogleDrive",
+    "iCloud Drive",
+    "iCloudDrive",
+    "Dropbox",
+    "OneDrive",
+    "Box",
+    "pCloudDrive",
+];
 
 /// A single item shown in the command palette.
 #[derive(Debug, Clone)]
@@ -131,7 +168,19 @@ impl WalkerPathIndex {
                     match event {
                         ListEvent::Batch(entries) => push_batch(&cache_bg, entries),
                         ListEvent::Error { path, error } => {
-                            debug!(?path, ?error, "palette walker encountered an error");
+                            // Cloud-mount timeouts are expected on macOS
+                            // (Google Drive / iCloud FUSE mounts can stall);
+                            // demote them to trace so logs stay clean. Real
+                            // errors still surface at debug.
+                            let root_source = std::error::Error::source(&error);
+                            let is_timeout = root_source
+                                .and_then(|s| s.downcast_ref::<io::Error>())
+                                .is_some_and(|e| e.kind() == io::ErrorKind::TimedOut);
+                            if is_timeout {
+                                trace!(?path, "palette walker skipped timed-out entry");
+                            } else {
+                                debug!(?path, ?error, "palette walker encountered an error");
+                            }
                         }
                         ListEvent::Done => break,
                     }
@@ -161,8 +210,25 @@ fn push_batch(cache: &Arc<Mutex<Vec<PathBuf>>>, entries: Vec<Entry>) {
         if cache.len() >= MAX_CACHED_PATHS {
             break;
         }
+        if is_excluded(&entry.path) {
+            continue;
+        }
         cache.push(entry.path);
     }
+}
+
+/// Returns true if any component of `path` matches an excluded directory name.
+///
+/// Exclusion is component-wise (case-insensitive on the leaf) so both
+/// `~/Google Drive/whatever` and `~/some/nested/node_modules/foo.js` get
+/// filtered.
+fn is_excluded(path: &Path) -> bool {
+    path.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        EXCLUDED_DIR_NAMES
+            .iter()
+            .any(|excluded| name.eq_ignore_ascii_case(excluded))
+    })
 }
 
 impl PathIndex for WalkerPathIndex {
