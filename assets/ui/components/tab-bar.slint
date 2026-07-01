@@ -87,20 +87,22 @@ export component TabBar {
 
                     // Close button — visible only on hover (progressive disclosure)
                     close-ta := TouchArea {
-                        width: 16px;
-                        height: 16px;
+                        width: 18px;
+                        height: 18px;
                         visible: tab-ta.has-hover || i == active-index;
                         clicked => { root.close(i); }
 
                         Rectangle {
-                            border-radius: 8px;
+                            width: parent.width;
+                            height: parent.height;
+                            border-radius: parent.width / 2;
                             background: close-ta.has-hover ? Theme.border-strong : transparent;
                             animate background { duration: 100ms; easing: ease-out; }
 
                             Text {
-                                text: "×";
+                                text: "✕";
                                 color: close-ta.has-hover ? Theme.fg : Theme.fg-muted;
-                                font-size: 11px;
+                                font-size: 10px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 width: parent.width;

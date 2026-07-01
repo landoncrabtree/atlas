@@ -652,18 +652,49 @@ impl AppShell {
         // ── Focused-pane navigation callbacks ────────────────────────────
         // The FocusScope in atlas.slint dispatches these when no modal or
         // text input has focus (arrow keys / Enter / Backspace / vim hjkl).
+        // Route to the focused pane's *current view* — details/grid/etc.
         {
             let shell = self.clone();
             window.on_pane_move_focus(move |delta| {
                 let pane = shell.focused_pane();
-                shell.panes_ctrl[pane].details.move_focus(delta as i64);
+                let mode = shell
+                    .workspace
+                    .read()
+                    .panes
+                    .get(pane)
+                    .map(|p| p.view_mode)
+                    .unwrap_or(crate::models::ViewMode::Details);
+                let ctrl = &shell.panes_ctrl[pane];
+                match mode {
+                    crate::models::ViewMode::Details => ctrl.details.move_focus(delta as i64),
+                    crate::models::ViewMode::Grid => {
+                        ctrl.grid.move_focus(delta as isize, 0);
+                    }
+                    crate::models::ViewMode::Gallery => ctrl.gallery.move_focus(delta as isize),
+                    crate::models::ViewMode::Miller => ctrl.miller.move_focus(delta as isize),
+                    crate::models::ViewMode::Tree => ctrl.tree.move_focus(delta as isize),
+                }
             });
         }
         {
             let shell = self.clone();
             window.on_pane_activate_focused(move || {
                 let pane = shell.focused_pane();
-                shell.panes_ctrl[pane].details.activate_focused();
+                let mode = shell
+                    .workspace
+                    .read()
+                    .panes
+                    .get(pane)
+                    .map(|p| p.view_mode)
+                    .unwrap_or(crate::models::ViewMode::Details);
+                let ctrl = &shell.panes_ctrl[pane];
+                match mode {
+                    crate::models::ViewMode::Details => ctrl.details.activate_focused(),
+                    crate::models::ViewMode::Grid => ctrl.grid.activate_focused(),
+                    crate::models::ViewMode::Gallery => ctrl.gallery.activate_focused(),
+                    crate::models::ViewMode::Miller => ctrl.miller.activate_focused(),
+                    crate::models::ViewMode::Tree => ctrl.tree.activate_focused(),
+                }
             });
         }
         {
