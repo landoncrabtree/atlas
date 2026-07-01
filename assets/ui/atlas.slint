@@ -200,6 +200,10 @@ export component AtlasWindow inherits Window {
     in property <int> search-panel-selected: 0;
     in property <string> search-panel-status: "";
 
+    /// Whether the confirm-quit modal is shown. Toggled by Rust on the OS
+    /// close-window event when `config.general.confirm_on_quit = true`.
+    in property <bool> confirm-quit-visible: false;
+
     /// Whether the bulk-rename modal is shown.
     in property <bool> bulk-rename-visible: false;
     /// Current find pattern (regex or literal) — pushed from Rust.
@@ -245,6 +249,11 @@ export component AtlasWindow inherits Window {
     /// Open the bulk-rename modal with the current pane's selection.
     /// Triggered by Cmd/Ctrl+Shift+F2.
     callback open-bulk-rename();
+
+    /// Confirm the pending quit. Rust hides the window immediately.
+    callback confirm-quit-accept();
+    /// Cancel the pending quit. Rust dismisses the modal.
+    callback confirm-quit-cancel();
 
     /// Cancel the operation at `index` in `ops-rows`.
     callback ops-cancel(int);
@@ -893,6 +902,89 @@ export component AtlasWindow inherits Window {
             toggle-case => { root.bulk-rename-toggle-case(); }
             confirm => { root.bulk-rename-confirm(); }
             cancel => { root.bulk-rename-cancel(); }
+        }
+
+        // Quit-confirmation modal — shown when the user tries to close the
+        // window and `general.confirm_on_quit = true`. Rust returns
+        // KeepWindowShown from the OS close callback, sets
+        // `confirm-quit-visible` to true, then honours accept/cancel here.
+        if root.confirm-quit-visible : Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: #00000099;
+
+            // Swallow clicks on the backdrop.
+            TouchArea { width: 100%; height: 100%; }
+
+            Rectangle {
+                x: parent.width / 2 - self.width / 2;
+                y: parent.height / 2 - self.height / 2;
+                width: 360px;
+                height: 140px;
+                background: Theme.panel-bg-elevated;
+                border-radius: Theme.radius-lg;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+
+                VerticalLayout {
+                    padding: Theme.space-4;
+                    spacing: Theme.space-3;
+
+                    Text {
+                        text: "Quit Atlas?";
+                        color: Theme.fg;
+                        font-size: Theme.font-size + 2px;
+                        font-weight: 600;
+                    }
+
+                    Text {
+                        text: "Are you sure you want to quit? Any in-flight file operations will be cancelled.";
+                        color: Theme.fg-muted;
+                        font-size: Theme.font-size;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: Theme.space-2;
+
+                        Rectangle {
+                            width: 90px;
+                            height: 28px;
+                            background: Theme.hover-bg;
+                            border-radius: Theme.radius-sm;
+                            cancel-ta := TouchArea {
+                                clicked => { root.confirm-quit-cancel(); }
+                            }
+                            Text {
+                                text: "Cancel";
+                                color: Theme.fg;
+                                font-size: Theme.font-size;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            width: 90px;
+                            height: 28px;
+                            background: Theme.accent;
+                            border-radius: Theme.radius-sm;
+                            quit-ta := TouchArea {
+                                clicked => { root.confirm-quit-accept(); }
+                            }
+                            Text {
+                                text: "Quit";
+                                color: Theme.accent-fg;
+                                font-size: Theme.font-size;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

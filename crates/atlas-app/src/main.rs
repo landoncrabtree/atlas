@@ -300,9 +300,6 @@ fn main() -> Result<()> {
     // Push config-driven UI settings into the Slint window.
     shell.set_vim_mode(config.general.vim_mode); // config: reads config.general.vim_mode
 
-    // TODO(config-sweep): general.confirm_on_quit — Slint 1.17 does not expose
-    //   an on-close-requested hook; defer to gap-quit-confirm once that lands.
-    //
     // TODO(config-sweep): ui.font_family / ui.font_size / ui.monospace_font_family —
     //   requires pushing new properties into the Theme Slint global. Tracked in
     //   gap-ui-fonts.
@@ -331,6 +328,53 @@ fn main() -> Result<()> {
             .set_on_dispatch(move |action_id| {
                 d.dispatch_action(&ActionId::new(action_id));
             });
+    }
+
+    // ── Quit confirmation ────────────────────────────────────────────────
+    // When config.general.confirm_on_quit = true, intercept OS close events
+    // and show an in-app modal. `quit_confirmed` flips to true once the user
+    // clicks "Quit" in the modal, which lets the second close_requested slip
+    // straight through to HideWindow.
+    // config: reads config.general.confirm_on_quit
+    let quit_confirmed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let cfg_arc = config_arc.clone();
+        let default_confirm = config.general.confirm_on_quit;
+        let win_weak = window.as_weak();
+        let quit_confirmed = Arc::clone(&quit_confirmed);
+        window.window().on_close_requested(move || {
+            let confirm = cfg_arc
+                .as_ref()
+                .map(|a| a.load().general.confirm_on_quit)
+                .unwrap_or(default_confirm);
+            if !confirm || quit_confirmed.load(std::sync::atomic::Ordering::Relaxed) {
+                slint::CloseRequestResponse::HideWindow
+            } else if let Some(w) = win_weak.upgrade() {
+                w.set_confirm_quit_visible(true);
+                slint::CloseRequestResponse::KeepWindowShown
+            } else {
+                slint::CloseRequestResponse::HideWindow
+            }
+        });
+    }
+    {
+        let win_weak = window.as_weak();
+        let quit_confirmed = Arc::clone(&quit_confirmed);
+        window.on_confirm_quit_accept(move || {
+            quit_confirmed.store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(w) = win_weak.upgrade() {
+                w.set_confirm_quit_visible(false);
+                let _ = w.hide();
+            }
+        });
+    }
+    {
+        let win_weak = window.as_weak();
+        window.on_confirm_quit_cancel(move || {
+            if let Some(w) = win_weak.upgrade() {
+                w.set_confirm_quit_visible(false);
+            }
+        });
     }
 
     window.run()?;
