@@ -1,4 +1,5 @@
 import { Theme } from "../theme.slint";
+import { ListView } from "std-widgets.slint";
 
 export struct SearchRow {
     path: string,
@@ -81,6 +82,12 @@ export component SearchPanel inherits Rectangle {
                     padding-right: Theme.space-3;
 
                     TextInput {
+                        // Auto-focus the input every time the panel becomes
+                        // visible so users can start typing immediately.
+                        // `if visible-panel` recreates this subtree on each
+                        // open, so `init` fires per-open (not once per app
+                        // lifetime).
+                        init => { self.focus(); }
                         text: root.query;
                         color: Theme.fg;
                         font-size: 15px;
@@ -111,7 +118,11 @@ export component SearchPanel inherits Rectangle {
                 clip: true;
 
                 if rows.length == 0 : Text {
-                    text: query == "" ? "Type to search…" : "No results";
+                    // The status text ("Type ≥ 2 characters", "No results",
+                    // "Searching…") is the source of truth for the empty
+                    // state, so mirror it rather than showing a competing
+                    // "Type to search…" placeholder.
+                    text: status-text != "" ? status-text : "Type to search…";
                     color: Theme.fg-faint;
                     font-size: 13px;
                     horizontal-alignment: center;
@@ -119,43 +130,51 @@ export component SearchPanel inherits Rectangle {
                     height: 60px;
                 }
 
-                for row[i] in rows : row-bg := Rectangle {
-                    height: 30px;
-                    background: i == selected-index
-                        ? Theme.selection-bg
-                        : (row-ta.has-hover ? Theme.hover-bg : transparent);
-                    border-radius: Theme.radius-sm;
+                // Virtualised result list: ListView only mounts the visible
+                // window of rows, so the panel stays responsive even when
+                // the Rust controller has capped the list at 100.
+                if rows.length > 0 : ListView {
+                    width: parent.width;
+                    height: parent.height;
 
-                    row-ta := TouchArea {
-                        width: 100%;
-                        height: 100%;
-                        clicked => { root.confirm(i); }
-                        double-clicked => { root.confirm(i); }
-                    }
+                    for row[i] in rows : row-bg := Rectangle {
+                        height: 30px;
+                        background: i == selected-index
+                            ? Theme.selection-bg
+                            : (row-ta.has-hover ? Theme.hover-bg : transparent);
+                        border-radius: Theme.radius-sm;
 
-                    HorizontalLayout {
-                        padding-left: Theme.space-2;
-                        padding-right: Theme.space-2;
-                        spacing: Theme.space-2;
-                        alignment: center;
-
-                        Text {
-                            text: row.label;
-                            color: i == selected-index ? Theme.selection-fg : Theme.fg;
-                            font-size: 13px;
-                            overflow: elide;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
+                        row-ta := TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => { root.confirm(i); }
+                            double-clicked => { root.confirm(i); }
                         }
 
-                        Text {
-                            text: row.snippet;
-                            color: i == selected-index ? Theme.selection-fg : Theme.fg-muted;
-                            font-size: 11px;
-                            font-family: Theme.monospace;
-                            overflow: elide;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
+                        HorizontalLayout {
+                            padding-left: Theme.space-2;
+                            padding-right: Theme.space-2;
+                            spacing: Theme.space-2;
+                            alignment: center;
+
+                            Text {
+                                text: row.label;
+                                color: i == selected-index ? Theme.selection-fg : Theme.fg;
+                                font-size: 13px;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: row.snippet;
+                                color: i == selected-index ? Theme.selection-fg : Theme.fg-muted;
+                                font-size: 11px;
+                                font-family: Theme.monospace;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
                         }
                     }
                 }
