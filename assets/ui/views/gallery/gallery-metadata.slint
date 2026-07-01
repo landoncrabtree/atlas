@@ -1,0 +1,64 @@
+import { Theme } from "../../theme.slint";
+
+export struct MetadataFields {
+    name: string,
+    path: string,
+    size-text: string,
+    modified-text: string,
+    kind: string,
+    dimensions: string,
+}
+
+component MetaRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+
+    spacing: Theme.spacing-xs;
+
+    Text {
+        text: label;
+        color: Theme.fg-muted;
+        font-size: 12px;
+        width: 84px;
+    }
+
+    Text {
+        text: value == "" ? "—" : value;
+        color: Theme.fg;
+        font-size: Theme.font-size;
+        wrap: word-wrap;
+        vertical-stretch: 1;
+        horizontal-stretch: 1;
+    }
+}
+
+export component GalleryMetadata {
+    in property <MetadataFields> metadata;
+
+    Rectangle {
+        background: Theme.panel-bg;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.radius-md;
+
+        VerticalLayout {
+            padding: Theme.spacing-md;
+            spacing: Theme.spacing-sm;
+
+            Text {
+                text: metadata.name == "" ? "No selection" : metadata.name;
+                color: Theme.fg;
+                font-size: 18px;
+                wrap: word-wrap;
+            }
+
+            Rectangle { height: 1px; background: Theme.border; }
+
+            MetaRow { label: "Path"; value: metadata.path; }
+            MetaRow { label: "Size"; value: metadata.size-text; }
+            MetaRow { label: "Modified"; value: metadata.modified-text; }
+            MetaRow { label: "Kind"; value: metadata.kind; }
+            MetaRow { label: "Dimensions"; value: metadata.dimensions; }
+        }
+    }
+}

@@ -1,0 +1,48 @@
+import { Theme } from "../../theme.slint";
+
+export component GalleryPreview {
+    in property <image> preview-image;
+    in property <bool> preview-loading: false;
+    in property <string> preview-fallback-glyph: "";
+
+    Rectangle {
+        background: Theme.panel-bg;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.radius-md;
+        clip: true;
+
+        if preview-fallback-glyph == "" : Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.preview-image;
+            image-fit: contain;
+        }
+
+        if preview-fallback-glyph != "" : Text {
+            width: parent.width;
+            height: parent.height;
+            text: root.preview-fallback-glyph;
+            color: Theme.fg-muted;
+            font-size: 120px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        if preview-loading : Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: Theme.bg;
+            opacity: 0.65;
+
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: "Loading…";
+                color: Theme.fg;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

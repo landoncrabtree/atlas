@@ -5,10 +5,12 @@ import { TabBar, TabEntry } from "tab-bar.slint";
 import { EmptyView } from "../views/empty-view.slint";
 import { DetailsView } from "../views/details/details-view.slint";
 import { GridView } from "../views/grid/grid-view.slint";
+import { GalleryView } from "../views/gallery/gallery-view.slint";
 import { MillerView } from "../views/miller/miller-view.slint";
 import { MillerColData } from "../views/miller/miller-state.slint";
 import { EntryRowItem, ColumnSpec } from "../views/details/column.slint";
 import { TreeView, TreeNode } from "../views/tree/tree-view.slint";
+import { MetadataFields } from "../views/gallery/gallery-metadata.slint";
 
 // A single pane: address bar + breadcrumbs + tab bar + content view.
 //
@@ -34,6 +36,21 @@ export component Pane {
     in property <[bool]> grid-has-thumbs: [];
     in property <[bool]> grid-selected-mask: [];
     in property <int> grid-focused-index: -1;
+
+    // Gallery view properties
+    in property <[image]> gallery-strip-thumbnails: [];
+    in property <image> gallery-preview-image;
+    in property <bool> gallery-preview-loading: false;
+    in property <string> gallery-preview-fallback-glyph: "";
+    in property <int> gallery-focused-index: -1;
+    in property <MetadataFields> gallery-metadata: {
+        name: "",
+        path: "",
+        size-text: "",
+        modified-text: "",
+        kind: "",
+        dimensions: "",
+    };
 
     // Tree view properties
     in property <[TreeNode]> tree-nodes: [];
@@ -64,6 +81,12 @@ export component Pane {
     callback grid-entry-context-menu(int, length, length);
     callback grid-thumbnail-visible(int);
     callback grid-columns-changed(int);
+
+    callback gallery-entry-clicked(int);
+    callback gallery-strip-visible(int);
+    callback gallery-preview-visible(int);
+    callback gallery-prev-image();
+    callback gallery-next-image();
 
     // Tree view callbacks
     callback tree-row-clicked(int, bool, bool);
@@ -143,6 +166,23 @@ export component Pane {
                     columns-changed(c) => { root.grid-columns-changed(c); }
                 }
 
+                if root.view-mode == "Gallery" : GalleryView {
+                    vertical-stretch: 1;
+                    entries: root.details-rows;
+                    strip-thumbnails: root.gallery-strip-thumbnails;
+                    preview-image: root.gallery-preview-image;
+                    preview-loading: root.gallery-preview-loading;
+                    preview-fallback-glyph: root.gallery-preview-fallback-glyph;
+                    focused-index: root.gallery-focused-index;
+                    metadata: root.gallery-metadata;
+
+                    entry-clicked(i) => { root.gallery-entry-clicked(i); }
+                    strip-visible(i) => { root.gallery-strip-visible(i); }
+                    preview-visible(i) => { root.gallery-preview-visible(i); }
+                    prev-image => { root.gallery-prev-image(); }
+                    next-image => { root.gallery-next-image(); }
+                }
+
                 if root.view-mode == "Miller" : MillerView {
                     vertical-stretch: 1;
                     columns: root.miller-columns;
@@ -162,7 +202,7 @@ export component Pane {
                     chevron-clicked(i) => { root.tree-chevron-clicked(i); }
                 }
 
-                if root.view-mode != "Details" && root.view-mode != "Grid" && root.view-mode != "Miller" && root.view-mode != "Tree" : EmptyView {
+                if root.view-mode != "Details" && root.view-mode != "Grid" && root.view-mode != "Gallery" && root.view-mode != "Miller" && root.view-mode != "Tree" : EmptyView {
                     view-mode: root.view-mode;
                     vertical-stretch: 1;
                 }

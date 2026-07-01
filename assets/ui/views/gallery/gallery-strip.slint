@@ -1,0 +1,61 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EntryRowItem } from "../details/column.slint";
+
+export component GalleryStrip {
+    in property <[EntryRowItem]> entries;
+    in property <[image]> thumbnails;
+    in property <int> focused-index: -1;
+    in property <length> cell-width: 96px;
+    in property <length> gap: Theme.spacing-sm;
+
+    callback entry-clicked(int);
+    callback item-visible(int);
+
+    ScrollView {
+        width: parent.width;
+        height: parent.height;
+        viewport-width: max(parent.width, gap + entries.length * (cell-width + gap));
+
+        HorizontalLayout {
+            spacing: gap;
+            padding-left: gap;
+            padding-right: gap;
+            padding-top: gap;
+            padding-bottom: gap;
+
+            for item[i] in root.entries : Rectangle {
+                init => { root.item-visible(i); }
+                width: cell-width;
+                height: cell-width;
+                background: Theme.panel-bg;
+                border-width: root.focused-index == i ? 2px : 1px;
+                border-color: root.focused-index == i ? Theme.accent : Theme.border;
+                border-radius: Theme.radius-sm;
+                opacity: item.is-hidden ? 0.6 : 1.0;
+                clip: true;
+
+                Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: item.kind-icon;
+                    color: Theme.fg-muted;
+                    font-size: 34px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.thumbnails[i];
+                    image-fit: cover;
+                }
+
+                TouchArea {
+                    clicked => { root.entry-clicked(i); }
+                }
+            }
+        }
+    }
+}

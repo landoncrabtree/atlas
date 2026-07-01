@@ -1,0 +1,78 @@
+import { Theme } from "../../theme.slint";
+import { EntryRowItem } from "../details/column.slint";
+import { GalleryPreview } from "gallery-preview.slint";
+import { GalleryStrip } from "gallery-strip.slint";
+import { GalleryMetadata, MetadataFields } from "gallery-metadata.slint";
+
+export { MetadataFields }
+
+export component GalleryView inherits FocusScope {
+    in property <[EntryRowItem]> entries;
+    in property <[image]> strip-thumbnails;
+    in property <image> preview-image;
+    in property <bool> preview-loading;
+    in property <string> preview-fallback-glyph;
+    in property <int> focused-index;
+    in property <MetadataFields> metadata;
+
+    callback entry-clicked(int);
+    callback strip-visible(int);
+    callback preview-visible(int);
+    callback prev-image();
+    callback next-image();
+
+    key-pressed(event) => {
+        if event.text == Key.LeftArrow {
+            root.prev-image();
+            return accept;
+        }
+        if event.text == Key.RightArrow {
+            root.next-image();
+            return accept;
+        }
+        reject;
+    }
+
+    changed focused-index => {
+        if root.focused-index >= 0 {
+            root.preview-visible(root.focused-index);
+        }
+    }
+
+    VerticalLayout {
+        spacing: Theme.spacing-md;
+        padding: Theme.spacing-md;
+
+        HorizontalLayout {
+            spacing: Theme.spacing-md;
+            vertical-stretch: 1;
+
+            GalleryPreview {
+                horizontal-stretch: 1;
+                preview-image: root.preview-image;
+                preview-loading: root.preview-loading;
+                preview-fallback-glyph: root.preview-fallback-glyph;
+            }
+
+            GalleryMetadata {
+                width: 280px;
+                metadata: root.metadata;
+            }
+        }
+
+        Rectangle {
+            height: 120px;
+            background: transparent;
+
+            GalleryStrip {
+                width: parent.width;
+                height: parent.height;
+                entries: root.entries;
+                thumbnails: root.strip-thumbnails;
+                focused-index: root.focused-index;
+                entry-clicked(i) => { root.entry-clicked(i); }
+                item-visible(i) => { root.strip-visible(i); }
+            }
+        }
+    }
+}

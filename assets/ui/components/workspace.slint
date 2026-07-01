@@ -3,6 +3,7 @@ import { Pane } from "pane.slint";
 import { TabEntry } from "tab-bar.slint";
 import { EntryRowItem, ColumnSpec } from "../views/details/column.slint";
 import { TreeNode } from "../views/tree/tree-view.slint";
+import { MetadataFields } from "../views/gallery/gallery-metadata.slint";
 import { MillerColData } from "../views/miller/miller-state.slint";
 
 // Container for one or two Pane children with an optional vertical splitter.
@@ -24,6 +25,19 @@ export component Workspace {
     in property <[bool]> pane0-grid-has-thumbs: [];
     in property <[bool]> pane0-grid-selected-mask: [];
     in property <int> pane0-grid-focused-index: -1;
+    in property <[image]> pane0-gallery-strip-thumbnails: [];
+    in property <image> pane0-gallery-preview-image;
+    in property <bool> pane0-gallery-preview-loading: false;
+    in property <string> pane0-gallery-preview-fallback-glyph: "";
+    in property <int> pane0-gallery-focused-index: -1;
+    in property <MetadataFields> pane0-gallery-metadata: {
+        name: "",
+        path: "",
+        size-text: "",
+        modified-text: "",
+        kind: "",
+        dimensions: "",
+    };
     in property <[TreeNode]> pane0-tree-nodes: [];
     in property <int> pane0-tree-focused-index: -1;
     in property <int> pane0-tree-selected-index: -1;
@@ -44,6 +58,19 @@ export component Workspace {
     in property <[bool]> pane1-grid-has-thumbs: [];
     in property <[bool]> pane1-grid-selected-mask: [];
     in property <int> pane1-grid-focused-index: -1;
+    in property <[image]> pane1-gallery-strip-thumbnails: [];
+    in property <image> pane1-gallery-preview-image;
+    in property <bool> pane1-gallery-preview-loading: false;
+    in property <string> pane1-gallery-preview-fallback-glyph: "";
+    in property <int> pane1-gallery-focused-index: -1;
+    in property <MetadataFields> pane1-gallery-metadata: {
+        name: "",
+        path: "",
+        size-text: "",
+        modified-text: "",
+        kind: "",
+        dimensions: "",
+    };
     in property <[TreeNode]> pane1-tree-nodes: [];
     in property <int> pane1-tree-focused-index: -1;
     in property <int> pane1-tree-selected-index: -1;
@@ -65,6 +92,11 @@ export component Workspace {
     callback pane0-grid-entry-context-menu(int, length, length);
     callback pane0-grid-thumbnail-visible(int);
     callback pane0-grid-columns-changed(int);
+    callback pane0-gallery-entry-clicked(int);
+    callback pane0-gallery-strip-visible(int);
+    callback pane0-gallery-preview-visible(int);
+    callback pane0-gallery-prev-image();
+    callback pane0-gallery-next-image();
     callback pane0-tree-row-clicked(int, bool, bool);
     callback pane0-tree-row-double-clicked(int);
     callback pane0-tree-chevron-clicked(int);
@@ -88,6 +120,11 @@ export component Workspace {
     callback pane1-grid-entry-context-menu(int, length, length);
     callback pane1-grid-thumbnail-visible(int);
     callback pane1-grid-columns-changed(int);
+    callback pane1-gallery-entry-clicked(int);
+    callback pane1-gallery-strip-visible(int);
+    callback pane1-gallery-preview-visible(int);
+    callback pane1-gallery-prev-image();
+    callback pane1-gallery-next-image();
     callback pane1-tree-row-clicked(int, bool, bool);
     callback pane1-tree-row-double-clicked(int);
     callback pane1-tree-chevron-clicked(int);
@@ -112,6 +149,12 @@ export component Workspace {
             grid-has-thumbs: root.pane0-grid-has-thumbs;
             grid-selected-mask: root.pane0-grid-selected-mask;
             grid-focused-index: root.pane0-grid-focused-index;
+            gallery-strip-thumbnails: root.pane0-gallery-strip-thumbnails;
+            gallery-preview-image: root.pane0-gallery-preview-image;
+            gallery-preview-loading: root.pane0-gallery-preview-loading;
+            gallery-preview-fallback-glyph: root.pane0-gallery-preview-fallback-glyph;
+            gallery-focused-index: root.pane0-gallery-focused-index;
+            gallery-metadata: root.pane0-gallery-metadata;
             tree-nodes: root.pane0-tree-nodes;
             tree-focused-index: root.pane0-tree-focused-index;
             tree-selected-index: root.pane0-tree-selected-index;
@@ -135,6 +178,11 @@ export component Workspace {
             grid-entry-context-menu(i, x, y) => { root.pane0-grid-entry-context-menu(i, x, y); }
             grid-thumbnail-visible(i) => { root.pane0-grid-thumbnail-visible(i); }
             grid-columns-changed(c) => { root.pane0-grid-columns-changed(c); }
+            gallery-entry-clicked(i) => { root.pane0-gallery-entry-clicked(i); }
+            gallery-strip-visible(i) => { root.pane0-gallery-strip-visible(i); }
+            gallery-preview-visible(i) => { root.pane0-gallery-preview-visible(i); }
+            gallery-prev-image => { root.pane0-gallery-prev-image(); }
+            gallery-next-image => { root.pane0-gallery-next-image(); }
             tree-row-clicked(i, ctrl, shift) => { root.pane0-tree-row-clicked(i, ctrl, shift); }
             tree-row-double-clicked(i) => { root.pane0-tree-row-double-clicked(i); }
             tree-chevron-clicked(i) => { root.pane0-tree-chevron-clicked(i); }
@@ -164,6 +212,12 @@ export component Workspace {
             grid-has-thumbs: root.pane1-grid-has-thumbs;
             grid-selected-mask: root.pane1-grid-selected-mask;
             grid-focused-index: root.pane1-grid-focused-index;
+            gallery-strip-thumbnails: root.pane1-gallery-strip-thumbnails;
+            gallery-preview-image: root.pane1-gallery-preview-image;
+            gallery-preview-loading: root.pane1-gallery-preview-loading;
+            gallery-preview-fallback-glyph: root.pane1-gallery-preview-fallback-glyph;
+            gallery-focused-index: root.pane1-gallery-focused-index;
+            gallery-metadata: root.pane1-gallery-metadata;
             tree-nodes: root.pane1-tree-nodes;
             tree-focused-index: root.pane1-tree-focused-index;
             tree-selected-index: root.pane1-tree-selected-index;
@@ -185,6 +239,11 @@ export component Workspace {
             grid-entry-context-menu(i, x, y) => { root.pane1-grid-entry-context-menu(i, x, y); }
             grid-thumbnail-visible(i) => { root.pane1-grid-thumbnail-visible(i); }
             grid-columns-changed(c) => { root.pane1-grid-columns-changed(c); }
+            gallery-entry-clicked(i) => { root.pane1-gallery-entry-clicked(i); }
+            gallery-strip-visible(i) => { root.pane1-gallery-strip-visible(i); }
+            gallery-preview-visible(i) => { root.pane1-gallery-preview-visible(i); }
+            gallery-prev-image => { root.pane1-gallery-prev-image(); }
+            gallery-next-image => { root.pane1-gallery-next-image(); }
             tree-row-clicked(i, ctrl, shift) => { root.pane1-tree-row-clicked(i, ctrl, shift); }
             tree-row-double-clicked(i) => { root.pane1-tree-row-double-clicked(i); }
             tree-chevron-clicked(i) => { root.pane1-tree-chevron-clicked(i); }
