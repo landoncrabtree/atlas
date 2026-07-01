@@ -821,6 +821,7 @@ impl AppShell {
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(window) = weak.upgrade() {
                 window.set_vim_mode(enabled);
+                tracing::info!(vim_mode = enabled, "vim keybinds toggled");
             }
         });
     }

@@ -648,6 +648,7 @@ fn spawn_config_event_thread(
                         shell.set_breadcrumbs_visible(cfg.ui.show_breadcrumbs);
                         shell.set_animations_enabled(cfg.ui.animations);
                         shell.set_active_pane_border_px(cfg.ui.active_pane_border_px);
+                        shell.set_vim_mode(cfg.general.vim_mode);
 
                         // ── Search knobs ──────────────────────────────────
                         search_ctrl.set_max_results(cfg.search.fuzzy_max_results);
