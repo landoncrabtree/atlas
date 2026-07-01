@@ -440,12 +440,30 @@ impl AppShell {
                 return;
             }
             p.active_tab = tab;
-            // Read the tab's remembered location (falls back to pane location).
             p.tabs[tab].location.clone().unwrap_or_else(|| p.location.clone())
         };
         let snapshot = self.workspace.read().clone();
         self.set_workspace(snapshot);
         self.navigation.navigate(pane, target_location);
+    }
+
+    /// Cycle to the next (`delta = 1`) or previous (`delta = -1`) tab in
+    /// `pane`, wrapping around at the ends.
+    pub fn cycle_tab(self: &Arc<Self>, pane: usize, delta: isize) {
+        let target = {
+            let ws = self.workspace.read();
+            let Some(p) = ws.panes.get(pane) else {
+                return;
+            };
+            let len = p.tabs.len() as isize;
+            if len == 0 {
+                return;
+            }
+            let cur = p.active_tab as isize;
+            let next = ((cur + delta) % len + len) % len;
+            next as usize
+        };
+        self.select_tab(pane, target);
     }
 
     /// Append a new tab to `pane` pointing at the pane's current location.
@@ -708,6 +726,14 @@ impl AppShell {
             window.on_select_tab(move |pane, tab| {
                 if pane >= 0 && tab >= 0 {
                     shell.select_tab(pane as usize, tab as usize);
+                }
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_cycle_tab(move |pane, delta| {
+                if pane >= 0 {
+                    shell.cycle_tab(pane as usize, delta as isize);
                 }
             });
         }

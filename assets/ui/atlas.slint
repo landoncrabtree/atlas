@@ -305,6 +305,7 @@ export component AtlasWindow inherits Window {
     callback pane-go-up();                  // Backspace / left arrow: parent dir
     callback palette-selection-delta(int);  // arrow up/down while palette open
     callback select-tab(int /*pane*/, int /*tab*/);
+    callback cycle-tab(int /*pane*/, int /*delta*/);
 
     pure function location-str() -> string {
         dual-pane
@@ -535,6 +536,18 @@ export component AtlasWindow inherits Window {
                 if event.text == "7" { root.select-tab(focus-index, 6); return accept; }
                 if event.text == "8" { root.select-tab(focus-index, 7); return accept; }
                 if event.text == "9" { root.select-tab(focus-index, 8); return accept; }
+            }
+
+            // Cmd/Ctrl+Shift+[ / Cmd/Ctrl+Shift+] — cycle to previous/next tab.
+            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && !palette-visible && !bulk-rename-visible {
+                if event.text == "[" || event.text == "{" {
+                    root.cycle-tab(focus-index, -1);
+                    return accept;
+                }
+                if event.text == "]" || event.text == "}" {
+                    root.cycle-tab(focus-index, 1);
+                    return accept;
+                }
             }
 
             // ── View navigation (when no modal has focus) ────────────────

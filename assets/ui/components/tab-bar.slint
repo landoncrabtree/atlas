@@ -46,6 +46,13 @@ export component TabBar {
                     x: 0px; y: 0px;
                     width: parent.width;
                     height: parent.height;
+                    mouse-cursor: MouseCursor.pointer;
+                    // Left-click selects; middle-click closes.
+                    pointer-event(event) => {
+                        if event.button == PointerEventButton.middle && event.kind == PointerEventKind.up {
+                            root.close(i);
+                        }
+                    }
                     clicked => { root.select(i); }
                 }
 
