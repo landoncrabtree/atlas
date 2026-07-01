@@ -205,10 +205,7 @@ impl GalleryController {
                 .unwrap_or(0);
             self.actions
                 .lock()
-                .dispatch(crate::actions::UiAction::Navigate {
-                    pane: slot,
-                    path,
-                });
+                .dispatch(crate::actions::UiAction::Navigate { pane: slot, path });
         }
     }
 

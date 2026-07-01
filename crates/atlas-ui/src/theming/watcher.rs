@@ -133,7 +133,9 @@ impl ThemeWatcher {
         // any edit that happens after start() without emitting a redundant
         // "reload" on the first poll tick.
         let initial_fingerprint = {
-            let path = loader.user_themes_dir_ref().join(format!("{initial_id}.toml"));
+            let path = loader
+                .user_themes_dir_ref()
+                .join(format!("{initial_id}.toml"));
             std::fs::metadata(&path)
                 .ok()
                 .and_then(|m| m.modified().ok().map(|t| (t, m.len())))

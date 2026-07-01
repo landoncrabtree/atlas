@@ -141,9 +141,7 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         // plain Delete key (matching Nautilus / Explorer).
         match platform {
             PrettyPlatform::Mac => p("backspace", ("Pane", "fs::Delete")),
-            PrettyPlatform::Linux | PrettyPlatform::Windows => {
-                b("delete", "Pane", "fs::Delete")
-            }
+            PrettyPlatform::Linux | PrettyPlatform::Windows => b("delete", "Pane", "fs::Delete"),
         },
         // New folder — Finder ⌘⇧N, Nautilus/Explorer Ctrl+Shift+N.
         ps("n", ("Pane", "fs::Mkdir")),

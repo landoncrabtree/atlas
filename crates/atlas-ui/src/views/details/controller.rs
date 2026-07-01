@@ -251,7 +251,10 @@ impl DetailsController {
     /// persisted widths from config on startup). Column order is preserved;
     /// only the width_px field is overlaid where a matching kind exists in
     /// the provided map.
-    pub fn apply_persisted_widths(self: &Arc<Self>, widths: &std::collections::HashMap<String, f32>) {
+    pub fn apply_persisted_widths(
+        self: &Arc<Self>,
+        widths: &std::collections::HashMap<String, f32>,
+    ) {
         {
             let mut columns = self.columns.write();
             for column in columns.iter_mut() {
@@ -320,10 +323,9 @@ impl DetailsController {
                 .upgrade()
                 .and_then(|s| s.slint_slot_for(self.pane_id))
                 .unwrap_or(0);
-            self.actions.lock().dispatch(UiAction::Navigate {
-                pane: slot,
-                path,
-            });
+            self.actions
+                .lock()
+                .dispatch(UiAction::Navigate { pane: slot, path });
         }
     }
 
@@ -340,9 +342,7 @@ impl DetailsController {
         } else {
             current as i64
         };
-        let next = current_i64
-            .saturating_add(delta)
-            .clamp(0, (len as i64) - 1) as usize;
+        let next = current_i64.saturating_add(delta).clamp(0, (len as i64) - 1) as usize;
         self.focused.store(next, Ordering::Relaxed);
         self.push_selection_to_ui();
     }
@@ -362,9 +362,7 @@ impl DetailsController {
         } else {
             current as i64
         };
-        let next = current_i64
-            .saturating_add(delta)
-            .clamp(0, (len as i64) - 1) as usize;
+        let next = current_i64.saturating_add(delta).clamp(0, (len as i64) - 1) as usize;
         {
             let mut selection = self.selection.write();
             selection.resize(len);
@@ -388,9 +386,7 @@ impl DetailsController {
         } else {
             current as i64
         };
-        let next = current_i64
-            .saturating_add(delta)
-            .clamp(0, (len as i64) - 1) as usize;
+        let next = current_i64.saturating_add(delta).clamp(0, (len as i64) - 1) as usize;
         let anchor = self.selection.read().anchor.unwrap_or(next);
         {
             let mut selection = self.selection.write();

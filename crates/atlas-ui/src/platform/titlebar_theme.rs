@@ -109,9 +109,8 @@ mod windows {
             // a single window; the loop future-proofs the helper.
             unsafe {
                 let use_dark: windows_sys::core::BOOL = if dark { 1 } else { 0 };
-                let mut hwnd = windows_sys::Win32::UI::WindowsAndMessaging::GetTopWindow(
-                    std::ptr::null_mut(),
-                );
+                let mut hwnd =
+                    windows_sys::Win32::UI::WindowsAndMessaging::GetTopWindow(std::ptr::null_mut());
                 while !hwnd.is_null() {
                     // DWMWA_USE_IMMERSIVE_DARK_MODE = 20 on 20H1+; 19 on the
                     // 1809/1903 preview builds. Try 20 first, silently fall

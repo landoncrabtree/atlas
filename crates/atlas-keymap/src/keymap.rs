@@ -144,7 +144,7 @@ impl Keymap {
     }
 
     /// Return the highest-priority chord sequence bound to `action_id` in
-     /// any of the given contexts, or `None` if no binding exists. Useful for
+    /// any of the given contexts, or `None` if no binding exists. Useful for
     /// rendering "action → shortcut" hints (e.g. the bottom shortcut footer).
     #[must_use]
     pub fn chord_for_action(

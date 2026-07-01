@@ -1130,19 +1130,25 @@ fn build_dispatcher(
     {
         let w = win_weak.clone();
         d.register("fs::Delete", move || {
-            if let Some(win) = w.upgrade() { win.invoke_fs_delete(); }
+            if let Some(win) = w.upgrade() {
+                win.invoke_fs_delete();
+            }
         });
     }
     {
         let w = win_weak.clone();
         d.register("fs::Rename", move || {
-            if let Some(win) = w.upgrade() { win.invoke_fs_rename(); }
+            if let Some(win) = w.upgrade() {
+                win.invoke_fs_rename();
+            }
         });
     }
     {
         let w = win_weak.clone();
         d.register("fs::Mkdir", move || {
-            if let Some(win) = w.upgrade() { win.invoke_fs_mkdir(); }
+            if let Some(win) = w.upgrade() {
+                win.invoke_fs_mkdir();
+            }
         });
     }
 
@@ -1151,7 +1157,11 @@ fn build_dispatcher(
         let search = shell.search();
         let search2 = Arc::clone(&search);
         d.register("search::Toggle", move || {
-            if search.is_open() { search.close(); } else { search.open(); }
+            if search.is_open() {
+                search.close();
+            } else {
+                search.open();
+            }
         });
         d.register("search::Open", move || {
             search2.open();
@@ -1238,8 +1248,10 @@ fn apply_font_overrides(tokens: &mut ThemeTokens, ui: &atlas_config::Ui) {
             prepend_font(&ui.font_family, &tokens.typography.font_family);
     }
     if !ui.monospace_font_family.trim().is_empty() {
-        tokens.typography.monospace_family =
-            prepend_font(&ui.monospace_font_family, &tokens.typography.monospace_family);
+        tokens.typography.monospace_family = prepend_font(
+            &ui.monospace_font_family,
+            &tokens.typography.monospace_family,
+        );
     }
     if ui.font_size > 0.0 && ui.font_size.is_finite() {
         tokens.typography.font_size_pt = ui.font_size;
@@ -1369,9 +1381,7 @@ fn slint_key_text_to_keymap_key(text: &str) -> Option<Key> {
         // ── Bare modifier presses — ignore ─────────────────────────────
         '\u{0010}'..='\u{0018}' => None,
         // ── C0 control codes: fold Ctrl+letter (0x01..0x1a) → letter. ──
-        c @ '\u{0001}'..='\u{001a}' => {
-            Some(Key::Char(char::from(c as u8 + b'a' - 1)))
-        }
+        c @ '\u{0001}'..='\u{001a}' => Some(Key::Char(char::from(c as u8 + b'a' - 1))),
         // ── Plain printable character ──────────────────────────────────
         c => Some(Key::Char(c.to_ascii_lowercase())),
     }

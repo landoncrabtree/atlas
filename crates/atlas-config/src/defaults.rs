@@ -1,8 +1,8 @@
 //! Default values for every configuration struct.
 
 use super::schema::{
-    Density, DetailsView, General, Indexer, Navigation, Search, SortKey, SortOrder, Thumbnails,
-    Ui, View, ViewMode,
+    Density, DetailsView, General, Indexer, Navigation, Search, SortKey, SortOrder, Thumbnails, Ui,
+    View, ViewMode,
 };
 
 impl Default for General {

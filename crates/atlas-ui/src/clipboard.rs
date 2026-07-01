@@ -104,14 +104,9 @@ impl ClipboardController {
                 return;
             }
         };
-        let sources: Vec<PathBuf> = text
-            .lines()
-            .filter_map(parse_clipboard_line)
-            .collect();
+        let sources: Vec<PathBuf> = text.lines().filter_map(parse_clipboard_line).collect();
         if sources.is_empty() {
-            tracing::debug!(
-                "clipboard: paste — no file:// URIs or paths found in clipboard text"
-            );
+            tracing::debug!("clipboard: paste — no file:// URIs or paths found in clipboard text");
             return;
         }
         let mode = *self.mode.lock();

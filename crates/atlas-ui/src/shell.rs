@@ -32,7 +32,9 @@ use crate::{
     },
     navigation::NavigationController,
     ops::OpsController,
-    palette::{ActionsSource, BookmarksSource, GotoPathsSource, PaletteController, WalkerPathIndex},
+    palette::{
+        ActionsSource, BookmarksSource, GotoPathsSource, PaletteController, WalkerPathIndex,
+    },
     rename::BulkRenameController,
     search::SearchController,
     theme::{ThemeMode, ThemeTokens},
@@ -816,10 +818,7 @@ impl AppShell {
                 ws.set_focused(id);
                 let bounds = self.workspace_content_bounds();
                 let rects = ws.layout.layout_rects(bounds);
-                let idx = rects
-                    .iter()
-                    .position(|(pid, _)| *pid == id)
-                    .unwrap_or(0) as i32;
+                let idx = rects.iter().position(|(pid, _)| *pid == id).unwrap_or(0) as i32;
                 (true, idx)
             }
         };
@@ -2329,9 +2328,12 @@ impl AppShell {
             let shell = self.clone();
             window.on_details_header_resize(move |pane_id, column_index, new_width_px| {
                 let id = PaneId(pane_id as u32);
-                let Some(c) = shell.pane_by_id(id) else { return };
-                if let Some((kind, clamped_width)) =
-                    c.details.set_column_width(column_index as usize, new_width_px)
+                let Some(c) = shell.pane_by_id(id) else {
+                    return;
+                };
+                if let Some((kind, clamped_width)) = c
+                    .details
+                    .set_column_width(column_index as usize, new_width_px)
                 {
                     tracing::trace!(
                         pane = pane_id,
@@ -2548,18 +2550,25 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_ctx_open(move || {
-                let Some((id, _)) = shell.context_menu_target() else { return };
+                let Some((id, _)) = shell.context_menu_target() else {
+                    return;
+                };
                 shell.view_focused_entry(id);
             });
         }
         {
             let shell = self.clone();
             window.on_ctx_open_with(move || {
-                let Some((_, path)) = shell.context_menu_target() else { return };
+                let Some((_, path)) = shell.context_menu_target() else {
+                    return;
+                };
                 // MVP: no picker UI yet. Fall through to the OS "open" so
                 // the user at least sees the default handler; the "Open
                 // With…" picker is a v0.3 follow-up.
-                tracing::info!(?path, "ctx: Open With — no picker yet (v0.3); using OS default");
+                tracing::info!(
+                    ?path,
+                    "ctx: Open With — no picker yet (v0.3); using OS default"
+                );
                 if let Err(err) = open::that(&path) {
                     tracing::warn!(?path, %err, "ctx: open::that failed");
                 }
@@ -2568,22 +2577,30 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_ctx_copy(move || {
-                let Some((id, _)) = shell.context_menu_target() else { return };
+                let Some((id, _)) = shell.context_menu_target() else {
+                    return;
+                };
                 shell.clipboard.copy(shell.selected_paths(id));
             });
         }
         {
             let shell = self.clone();
             window.on_ctx_cut(move || {
-                let Some((id, _)) = shell.context_menu_target() else { return };
+                let Some((id, _)) = shell.context_menu_target() else {
+                    return;
+                };
                 shell.clipboard.cut(shell.selected_paths(id));
             });
         }
         {
             let shell = self.clone();
             window.on_ctx_paste(move || {
-                let Some((id, _)) = shell.context_menu_target() else { return };
-                let Some(dest) = shell.pane_location(id) else { return };
+                let Some((id, _)) = shell.context_menu_target() else {
+                    return;
+                };
+                let Some(dest) = shell.pane_location(id) else {
+                    return;
+                };
                 shell.clipboard.paste(dest);
             });
         }
@@ -2595,9 +2612,15 @@ impl AppShell {
                 // right-click handler that opened this menu already
                 // single-selects the pointed-at row, so `selected_paths`
                 // is always non-empty when this fires.
-                let Some((id, target)) = shell.context_menu_target() else { return };
+                let Some((id, target)) = shell.context_menu_target() else {
+                    return;
+                };
                 let selected = shell.selected_paths(id);
-                let paths = if selected.is_empty() { vec![target] } else { selected };
+                let paths = if selected.is_empty() {
+                    vec![target]
+                } else {
+                    selected
+                };
                 shell.duplicate_paths(paths);
             });
         }
@@ -2620,7 +2643,9 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_ctx_reveal(move || {
-                let Some((_, path)) = shell.context_menu_target() else { return };
+                let Some((_, path)) = shell.context_menu_target() else {
+                    return;
+                };
                 reveal_in_os_file_manager(&path);
                 let _ = shell;
             });
@@ -2628,8 +2653,13 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_ctx_get_info(move || {
-                let Some((_, path)) = shell.context_menu_target() else { return };
-                tracing::info!(?path, "ctx: Get Info — v0.3 (implement a size-preview drawer)");
+                let Some((_, path)) = shell.context_menu_target() else {
+                    return;
+                };
+                tracing::info!(
+                    ?path,
+                    "ctx: Get Info — v0.3 (implement a size-preview drawer)"
+                );
                 let _ = shell;
             });
         }
@@ -3152,11 +3182,7 @@ impl AppShell {
     }
 
     /// Publish the Gallery metadata sidebar for pane `id`.
-    pub fn publish_gallery_metadata(
-        self: &Arc<Self>,
-        id: PaneId,
-        metadata: crate::MetadataFields,
-    ) {
+    pub fn publish_gallery_metadata(self: &Arc<Self>, id: PaneId, metadata: crate::MetadataFields) {
         self.with_cache(id, |c| c.gallery_metadata = metadata);
         self.push_pane_data_to_slint();
     }
@@ -3184,11 +3210,7 @@ impl AppShell {
     }
 
     /// Publish the Miller columns snapshot for pane `id`.
-    pub fn publish_miller_columns(
-        self: &Arc<Self>,
-        id: PaneId,
-        columns: Vec<MillerColumnCache>,
-    ) {
+    pub fn publish_miller_columns(self: &Arc<Self>, id: PaneId, columns: Vec<MillerColumnCache>) {
         self.with_cache(id, |c| c.miller_columns = columns);
         self.push_pane_data_to_slint();
     }
@@ -3265,7 +3287,10 @@ impl AppShell {
                 .collect();
             window.set_panes_details_selected_mask(ModelRc::new(VecModel::from(d_mask)));
 
-            let d_anchor: Vec<i32> = snapshots.iter().map(|s| s.details_selected_anchor).collect();
+            let d_anchor: Vec<i32> = snapshots
+                .iter()
+                .map(|s| s.details_selected_anchor)
+                .collect();
             window.set_panes_details_selected_anchor(ModelRc::new(VecModel::from(d_anchor)));
 
             let d_focus: Vec<i32> = snapshots.iter().map(|s| s.details_focused_index).collect();
@@ -3343,13 +3368,16 @@ impl AppShell {
                 .iter()
                 .map(|s| SharedString::from(s.gallery_preview_fallback_glyph.as_str()))
                 .collect();
-            window.set_panes_gallery_preview_fallback_glyph(ModelRc::new(VecModel::from(gal_glyph)));
+            window
+                .set_panes_gallery_preview_fallback_glyph(ModelRc::new(VecModel::from(gal_glyph)));
 
             let gal_focus: Vec<i32> = snapshots.iter().map(|s| s.gallery_focused_index).collect();
             window.set_panes_gallery_focused_index(ModelRc::new(VecModel::from(gal_focus)));
 
-            let gal_meta: Vec<crate::MetadataFields> =
-                snapshots.iter().map(|s| s.gallery_metadata.clone()).collect();
+            let gal_meta: Vec<crate::MetadataFields> = snapshots
+                .iter()
+                .map(|s| s.gallery_metadata.clone())
+                .collect();
             window.set_panes_gallery_metadata(ModelRc::new(VecModel::from(gal_meta)));
 
             // Tree.
@@ -3435,7 +3463,10 @@ impl AppShell {
                 .collect();
             window.set_panes_details_selected_mask(ModelRc::new(VecModel::from(d_mask)));
 
-            let d_anchor: Vec<i32> = snapshots.iter().map(|s| s.details_selected_anchor).collect();
+            let d_anchor: Vec<i32> = snapshots
+                .iter()
+                .map(|s| s.details_selected_anchor)
+                .collect();
             window.set_panes_details_selected_anchor(ModelRc::new(VecModel::from(d_anchor)));
 
             let d_focus: Vec<i32> = snapshots.iter().map(|s| s.details_focused_index).collect();
@@ -3470,12 +3501,10 @@ impl AppShell {
             // Slint's `panes-status-*[i]` indexing is always valid, even
             // before the first `refresh_pane_status` fires for a newly
             // opened pane.
-            let s_folders: Vec<i32> =
-                snapshots.iter().map(|s| s.status_folder_count).collect();
+            let s_folders: Vec<i32> = snapshots.iter().map(|s| s.status_folder_count).collect();
             window.set_panes_status_folder_count(ModelRc::new(VecModel::from(s_folders)));
 
-            let s_files: Vec<i32> =
-                snapshots.iter().map(|s| s.status_file_count).collect();
+            let s_files: Vec<i32> = snapshots.iter().map(|s| s.status_file_count).collect();
             window.set_panes_status_file_count(ModelRc::new(VecModel::from(s_files)));
 
             let s_total: Vec<SharedString> = snapshots

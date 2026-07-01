@@ -231,10 +231,9 @@ impl TreeController {
                 .upgrade()
                 .and_then(|s| s.slint_slot_for(self.pane_id))
                 .unwrap_or(0);
-            self.actions.lock().dispatch(UiAction::Navigate {
-                pane: slot,
-                path,
-            });
+            self.actions
+                .lock()
+                .dispatch(UiAction::Navigate { pane: slot, path });
         }
     }
 

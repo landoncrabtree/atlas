@@ -245,10 +245,9 @@ impl GridController {
                 .upgrade()
                 .and_then(|s| s.slint_slot_for(self.pane_id))
                 .unwrap_or(0);
-            self.actions.lock().dispatch(UiAction::Navigate {
-                pane: slot,
-                path,
-            });
+            self.actions
+                .lock()
+                .dispatch(UiAction::Navigate { pane: slot, path });
         }
     }
 
@@ -377,7 +376,11 @@ impl GridController {
                 tracing::debug!(pane = self.pane_id.0, %e, "grid subscription already stopped");
             }
             if let Err(e) = handle.join() {
-                tracing::warn!(pane = self.pane_id.0, ?e, "grid subscription thread panicked");
+                tracing::warn!(
+                    pane = self.pane_id.0,
+                    ?e,
+                    "grid subscription thread panicked"
+                );
             }
         }
     }
