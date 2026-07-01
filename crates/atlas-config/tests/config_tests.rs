@@ -258,7 +258,11 @@ fn path_helpers() {
     assert_eq!(cf.file_name().and_then(|n| n.to_str()), Some("config.toml"));
 
     let kf = keymap_file_path().expect("keymap_file_path");
-    assert_eq!(kf.file_name().and_then(|n| n.to_str()), Some("keymap.toml"));
+    // Phase 1 moved the keymap to keymaps/default.toml; assert the filename only.
+    assert_eq!(
+        kf.file_name().and_then(|n| n.to_str()),
+        Some("default.toml")
+    );
 
     let ensured = ensure_config_dir().expect("ensure_config_dir");
     assert!(ensured.is_dir());

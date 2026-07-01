@@ -143,17 +143,31 @@ fn main() -> Result<()> {
     let nav = NavigationController::with_config(&config);
     let search_ctrl = SearchController::new();
 
-    // Try to reach the indexer daemon; if it isn't running, auto-launch it
-    // and retry. Fall back to embedded-search (no index) on total failure.
-    let index_client = connect_or_launch_indexd(&search_ctrl);
+    // config: reads config.search.fuzzy_max_results
+    search_ctrl.set_max_results(config.search.fuzzy_max_results);
+
+    // config: reads config.indexer.enabled — skip daemon launch when disabled.
+    let index_client = if config.indexer.enabled {
+        connect_or_launch_indexd(&search_ctrl, &config)
+    } else {
+        tracing::info!("indexer disabled by config (indexer.enabled = false)");
+        None
+    };
     search_ctrl.set_index_client(index_client);
     search_ctrl.attach_window(window.as_weak());
+
+    // config: reads config.thumbnails.generation_threads / cache_max_size_mb
+    let thumb_worker_count = config.thumbnails.generation_threads.unwrap_or(0);
+    // 0 means "use num_cpus" inside ThumbRequester
+    let thumb_max_cache_bytes = (config.thumbnails.cache_max_size_mb as u64).max(1) * 1024 * 1024;
 
     let shell: Arc<AppShell> = AppShell::new(
         &window,
         AtlasActionSink::new(Arc::clone(&nav)),
         Arc::clone(&nav),
         Arc::clone(&search_ctrl),
+        thumb_worker_count,
+        thumb_max_cache_bytes,
     );
 
     let loader = ThemeLoader::new();
@@ -212,7 +226,50 @@ fn main() -> Result<()> {
     );
 
     // Push config-driven UI settings into the Slint window.
-    shell.set_vim_mode(config.general.vim_mode);
+    shell.set_vim_mode(config.general.vim_mode); // config: reads config.general.vim_mode
+
+    // TODO(config-sweep): general.confirm_on_quit — Slint 1.17 does not expose
+    //   an on-close-requested hook; defer to gap-quit-confirm once that lands.
+    //
+    // TODO(config-sweep): ui.font_family / ui.font_size / ui.monospace_font_family —
+    //   requires pushing new properties into the Theme Slint global. Tracked in
+    //   gap-ui-fonts.
+    //
+    // TODO(config-sweep): ui.density — row-height multiplier via Theme token;
+    //   tracked in gap-ui-density.
+    //
+    // TODO(config-sweep): ui.show_status_bar / ui.show_breadcrumbs — Slint bool
+    //   props on AtlasWindow; tracked in gap-ui-chrome-visibility.
+    //
+    // TODO(config-sweep): ui.animations — gate animate{} blocks on a Theme bool;
+    //   tracked in gap-ui-animations.
+    //
+    // TODO(config-sweep): navigation.remember_last_location persist-on-quit —
+    //   requires a shutdown hook to write the active path back into config.toml
+    //   via atlas_config::save(); read side already gates navigation in the config
+    //   event thread. Tracked in gap-remember-last-location.
+    //
+    // TODO(config-sweep): indexer.roots — IndexClient needs an add_root() method
+    //   before we can iterate config.indexer.roots after daemon connect; tracked in
+    //   gap-indexer-add-roots.
+    //
+    // TODO(config-sweep): indexer.respect_gitignore — needs to be threaded into
+    //   the IPC AddRoot request; tracked in gap-indexer-gitignore.
+    //
+    // TODO(config-sweep): search.content_search_threads — needs a setter on the
+    //   content-search request builder; tracked in gap-search-threads.
+    //
+    // TODO(config-sweep): search.default_globs_exclude — needs to be threaded into
+    //   the UnifiedRequest FileFilter; tracked in gap-search-globs-exclude.
+    //
+    // TODO(config-sweep): thumbnails.enabled — requires Option<Generator> in
+    //   ThumbRequester to skip generation; tracked in gap-thumbs-enabled.
+    //
+    // TODO(config-sweep): thumbnails.generate_for_size_up_to_mb — requires a file
+    //   size guard in the generator worker; tracked in gap-thumbs-size-limit.
+    //
+    // TODO(config-sweep): bookmarks palette source — add a BookmarksSource
+    //   alongside the existing action/goto sources; tracked in gap-bookmarks-palette.
 
     // Open in dual-pane layout when the config asks for it (default: true).
     // The new pane inherits pane 0's location via AppShell::split_focused.
@@ -341,8 +398,13 @@ fn load_keymap_with_user_overrides() -> atlas_keymap::Keymap {
 
 /// Try to connect to `atlas-indexd`; if it isn't listening, spawn the sibling
 /// binary and retry a few times before giving up.
+///
+/// The `config` is used to log indexer settings; actual `indexer.roots` wiring
+/// requires `IndexClient::add_root` which is not yet implemented — tracked in
+/// `gap-indexer-add-roots`.
 fn connect_or_launch_indexd(
     search_ctrl: &Arc<SearchController>,
+    _config: &atlas_config::Config,
 ) -> Option<Arc<atlas_search::IndexClient>> {
     let handle = search_ctrl.runtime_handle();
 

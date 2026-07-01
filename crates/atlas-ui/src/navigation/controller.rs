@@ -58,13 +58,18 @@ impl NavigationController {
     /// [`Self::with_config`] to thread user config through.
     #[must_use]
     pub fn new(config_bookmarks: &[atlas_config::Bookmark]) -> Arc<Self> {
-        Self::build(config_bookmarks, OpenOptions::default())
+        Self::build(
+            config_bookmarks,
+            OpenOptions::default(),
+            DEFAULT_HISTORY_CAPACITY,
+        )
     }
 
     /// Construct a new controller with defaults derived from the full
     /// [`atlas_config::Config`]. Reads `general.follow_symlinks`,
     /// `view.show_hidden`, `view.natural_sort`, `view.dirs_first`,
-    /// `view.default_sort_key`, `view.default_sort_order`.
+    /// `view.default_sort_key`, `view.default_sort_order`,
+    /// and `navigation.history_size`.
     #[must_use]
     pub fn with_config(config: &atlas_config::Config) -> Arc<Self> {
         let opts = OpenOptions {
@@ -89,14 +94,20 @@ impl NavigationController {
             },
             filter: Filter::default(),
         };
-        Self::build(&config.bookmarks, opts)
+        // config: reads config.navigation.history_size
+        let history_cap = config.navigation.history_size.max(1);
+        Self::build(&config.bookmarks, opts, history_cap)
     }
 
-    fn build(config_bookmarks: &[atlas_config::Bookmark], open_options: OpenOptions) -> Arc<Self> {
+    fn build(
+        config_bookmarks: &[atlas_config::Bookmark],
+        open_options: OpenOptions,
+        history_capacity: usize,
+    ) -> Arc<Self> {
         Arc::new(Self {
             stacks: smallvec::smallvec![
-                Mutex::new(BackForwardStack::new(DEFAULT_HISTORY_CAPACITY)),
-                Mutex::new(BackForwardStack::new(DEFAULT_HISTORY_CAPACITY)),
+                Mutex::new(BackForwardStack::new(history_capacity)),
+                Mutex::new(BackForwardStack::new(history_capacity)),
             ],
             bookmarks: Arc::new(BookmarkStore::from_config(config_bookmarks)),
             locations: RwLock::new(smallvec::smallvec![None, None]),

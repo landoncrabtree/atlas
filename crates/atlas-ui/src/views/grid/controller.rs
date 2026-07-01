@@ -119,14 +119,20 @@ impl GridController {
     ///
     /// Accepts a shared [`SqliteCache`] for thumbnail persistence and starts
     /// the drain background thread inside [`ThumbRequester`].
+    ///
+    /// `worker_count` / `max_cache_bytes` are forwarded to [`ThumbRequester`];
+    /// pass `0` / `500 * 1024 * 1024` for defaults.
     #[must_use]
     pub fn new(
         pane: usize,
         window: slint::Weak<AtlasWindow>,
         actions: Arc<Mutex<Box<dyn ActionSink>>>,
         cache: Arc<SqliteCache>,
+        worker_count: usize,
+        max_cache_bytes: u64,
     ) -> Arc<Self> {
-        let thumb_requester = ThumbRequester::new(cache, pane, window.clone());
+        let thumb_requester =
+            ThumbRequester::new(cache, pane, window.clone(), worker_count, max_cache_bytes);
         Arc::new(Self {
             pane,
             location: RwLock::new(None),

@@ -84,15 +84,27 @@ pub struct ThumbRequester {
 
 impl ThumbRequester {
     /// Construct a requester and start the result-drain background thread.
+    ///
+    /// `worker_count` sets the thumbnail generation thread pool size
+    /// (config: `thumbnails.generation_threads`); pass `0` to use
+    /// `num_cpus` clamped to 4.  `max_cache_bytes` caps the LRU eviction
+    /// target (config: `thumbnails.cache_max_size_mb`).
     #[must_use]
     pub fn new(
         cache: Arc<SqliteCache>,
         pane: usize,
         window: slint::Weak<AtlasWindow>,
+        worker_count: usize,
+        max_cache_bytes: u64,
     ) -> Arc<Self> {
-        let worker_count = num_cpus::get().clamp(1, 4);
-        // 500 MiB cache cap; the generator's trim-loop handles eviction.
-        let generator = Arc::new(Generator::start(cache, worker_count, 500 * 1024 * 1024));
+        // config: reads config.thumbnails.generation_threads
+        let workers = if worker_count == 0 {
+            num_cpus::get().clamp(1, 4)
+        } else {
+            worker_count.clamp(1, 16)
+        };
+        // config: reads config.thumbnails.cache_max_size_mb
+        let generator = Arc::new(Generator::start(cache, workers, max_cache_bytes));
 
         let shared = Arc::new(Shared {
             pending: Mutex::new(AHashMap::new()),

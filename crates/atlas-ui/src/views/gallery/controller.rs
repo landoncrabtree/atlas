@@ -76,6 +76,8 @@ impl GalleryController {
         window: slint::Weak<AtlasWindow>,
         actions: Arc<Mutex<Box<dyn ActionSink>>>,
         cache: Arc<SqliteCache>,
+        worker_count: usize,
+        max_cache_bytes: u64,
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak: &std::sync::Weak<Self>| {
             let weak_ctrl = weak.clone();
@@ -87,6 +89,8 @@ impl GalleryController {
                         controller.handle_thumb_event(event);
                     }
                 }),
+                worker_count,
+                max_cache_bytes,
             );
 
             Self {
@@ -676,7 +680,14 @@ mod tests {
         let cache = Arc::new(
             SqliteCache::open(&cache_dir.join("thumbs.db")).expect("open thumbnail cache"),
         );
-        GalleryController::new(0, slint::Weak::default(), actions, cache)
+        GalleryController::new(
+            0,
+            slint::Weak::default(),
+            actions,
+            cache,
+            0,
+            500 * 1024 * 1024,
+        )
     }
 
     fn wait_for<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {

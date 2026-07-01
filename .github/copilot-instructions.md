@@ -130,7 +130,10 @@ The non-negotiable headline: **no blocking I/O on the UI thread or any thread se
 - The source-of-truth docs are:
   - `.github/instructions/architecture.instructions.md` — crate layout, process model, threading, storage.
   - `.github/instructions/performance.instructions.md` — performance goals and benchmark methodology.
+  - `.github/instructions/multi-pane-refactor.instructions.md` — N-pane workspace design contract; read before touching `workspace.rs`, `shell.rs`, or any Slint pane/workspace component.
   - `docs/developer-setup.md` — toolchain, prerequisites, daily commands.
   - `docs/contributing.md` — contributing guidelines.
+  - `docs/multi-pane.md` — user-facing guide to the tiling workspace (concepts, keybinds, config recipes).
+  - `docs/keymap.md` — full default keymap reference.
 - For any significant changes (producer, consumer, API, performance, etc.), update the relevant doc(s) to ensure consistency and clarity.
 - All documentation must be up-to-date and accurately reflect the current state of the repository.

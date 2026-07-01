@@ -29,6 +29,8 @@ struct SearchState {
     scope: RwLock<Option<PathBuf>>,
     status: RwLock<String>,
     window: RwLock<Option<slint::Weak<crate::AtlasWindow>>>,
+    /// Maximum results per source, derived from `config.search.fuzzy_max_results`.
+    max_results_per_source: parking_lot::Mutex<usize>,
 }
 
 /// Controller for the right-side search panel.
@@ -58,6 +60,7 @@ impl SearchController {
                 scope: RwLock::new(None),
                 status: RwLock::new(String::new()),
                 window: RwLock::new(None),
+                max_results_per_source: parking_lot::Mutex::new(50),
             }),
             index_client: RwLock::new(None),
             active_cancel: Mutex::new(None),
@@ -122,6 +125,11 @@ impl SearchController {
         *self.state.scope.write() = scope;
     }
 
+    /// Set the maximum number of results per source (config: search.fuzzy_max_results).
+    pub fn set_max_results(&self, n: usize) {
+        *self.state.max_results_per_source.lock() = n.max(1);
+    }
+
     /// Update the current query and start a fresh unified search.
     pub fn set_query(self: &Arc<Self>, query: String) {
         if let Some(cancel) = self.active_cancel.lock().take() {
@@ -158,7 +166,8 @@ impl SearchController {
             query,
             sources,
             scope,
-            max_results_per_source: 50,
+            // config: reads config.search.fuzzy_max_results
+            max_results_per_source: *self.state.max_results_per_source.lock(),
             candidates: Vec::new(),
         };
         let cancel_flag = Arc::new(AtomicBool::new(false));
