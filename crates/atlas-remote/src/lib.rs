@@ -15,8 +15,10 @@
 //!   * [`secrets`] wraps the `keyring` crate so credentials can be stored
 //!     out-of-tree from the workspace state.
 //!
-//! Higher-level policy (connection pooling, retries, saved-server catalogues,
-//! cross-backend copy) lives in later phases.
+//! Higher-level policy (connection pooling, retries, saved-server catalogues)
+//! lives in later phases. The [`stream`] module already provides a
+//! chunked async→async copy pipeline that `atlas-ops` will reuse for
+//! cross-backend transfers.
 //!
 //! # Async model
 //!
@@ -33,9 +35,11 @@
 pub mod backend;
 pub mod opendal_vm;
 pub mod secrets;
+pub mod stream;
 
 pub use backend::{open, BackendError, Credentials};
 pub use opendal_vm::OpenDalLocationViewModel;
 pub use secrets::{
     delete as delete_secret, retrieve as retrieve_secret, store as store_secret, SecretError,
 };
+pub use stream::{stream_copy, StreamProgress, DEFAULT_CHUNK_BYTES};

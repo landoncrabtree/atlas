@@ -194,6 +194,73 @@ impl OpenDalLocationViewModel {
         Ok(bs.to_vec())
     }
 
+    /// Fetch a single entry's metadata (size, kind, modified time).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`opendal::Error`] surfaced by the operator.
+    pub async fn stat(&self, path: &str) -> Result<opendal::Metadata, opendal::Error> {
+        self.operator.stat(path).await
+    }
+
+    /// Upload `bytes` to `path`, replacing any existing object.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`opendal::Error`] from the underlying operator.
+    pub async fn write(&self, path: &str, bytes: Vec<u8>) -> Result<(), opendal::Error> {
+        self.operator.write(path, bytes).await?;
+        Ok(())
+    }
+
+    /// Create a directory at `path`.
+    ///
+    /// OpenDAL requires directory paths to end with `/`; this helper
+    /// normalises `path` before calling `create_dir` so callers can
+    /// pass either shape.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`opendal::Error`] from the underlying operator.
+    pub async fn create_dir(&self, path: &str) -> Result<(), opendal::Error> {
+        let normalised = if path.ends_with('/') {
+            path.to_owned()
+        } else {
+            format!("{path}/")
+        };
+        self.operator.create_dir(&normalised).await
+    }
+
+    /// Rename `from` to `to`. Both paths are interpreted relative to
+    /// the operator's root.
+    ///
+    /// Some OpenDAL backends implement `rename` as copy + delete; this
+    /// method surfaces whichever native call the backend provides.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`opendal::Error`] from the underlying operator.
+    pub async fn rename(&self, from: &str, to: &str) -> Result<(), opendal::Error> {
+        self.operator.rename(from, to).await
+    }
+
+    /// Delete `path`. Absent entries are treated as success on most
+    /// backends (OpenDAL surfaces the underlying semantics unchanged).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`opendal::Error`] from the underlying operator.
+    pub async fn delete(&self, path: &str) -> Result<(), opendal::Error> {
+        self.operator.delete(path).await
+    }
+
+    /// Access the raw `opendal::Operator` for streaming reads/writes
+    /// (used by [`crate::stream::stream_copy`]).
+    #[must_use]
+    pub fn operator(&self) -> &Operator {
+        &self.operator
+    }
+
     fn notify(&self, event: ViewModelEvent) {
         let mut subs = self.subscribers.lock();
         subs.retain(|tx| tx.send(event.clone()).is_ok());
@@ -680,5 +747,85 @@ mod tests {
         let names: Vec<String> = this.entries().into_iter().map(|e| e.name).collect();
         assert!(names.iter().any(|n| n == "alpha.txt"), "names = {names:?}");
         assert!(names.iter().any(|n| n == "beta.txt"), "names = {names:?}");
+    }
+
+    /// Build a view-model over a fresh in-memory Operator for
+    /// exercising the write-side methods (`write` / `create_dir` /
+    /// `rename` / `delete`) without touching a real backend.
+    fn build_memory_vm() -> Arc<OpenDalLocationViewModel> {
+        let op = Operator::new(Memory::default())
+            .expect("build memory operator")
+            .finish();
+        let inner = Inner {
+            raw: Vec::new(),
+            view: Vec::new(),
+            sort: SortSpec::default(),
+            filter: Filter::default(),
+            compiled: Filter::default().compile().expect("empty compiles"),
+            loaded: false,
+        };
+        Arc::new(OpenDalLocationViewModel {
+            uri: RemoteUri {
+                scheme: "memory".to_owned(),
+                host: None,
+                port: None,
+                username: None,
+                path: String::new(),
+                credential_ref: None,
+            },
+            kind: BackendKind::S3,
+            path_cache: PathBuf::from(""),
+            operator: op,
+            state: RwLock::new(inner),
+            subscribers: Mutex::new(Vec::new()),
+            _runtime: resolve_runtime_handle(),
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_read_round_trip() {
+        let vm = build_memory_vm();
+        vm.write("greeting.txt", b"hello".to_vec())
+            .await
+            .expect("write");
+        let bytes = vm.read("greeting.txt").await.expect("read");
+        assert_eq!(bytes, b"hello");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_dir_normalises_trailing_slash() {
+        let vm = build_memory_vm();
+        // No trailing slash — helper should add one.
+        vm.create_dir("sub").await.expect("create_dir");
+        let meta = vm.stat("sub/").await.expect("stat sub/");
+        assert!(meta.mode().is_dir());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_surfaces_backend_capability() {
+        // OpenDAL's `memory` backend doesn't implement rename, so this
+        // asserts the wrapper propagates the underlying Unsupported
+        // error instead of panicking. Real backends (sftp / webdav /
+        // s3 / ftp) exercise a successful rename in tests/*.rs.
+        let vm = build_memory_vm();
+        vm.write("old.txt", b"payload".to_vec())
+            .await
+            .expect("seed");
+        let err = vm
+            .rename("old.txt", "new.txt")
+            .await
+            .expect_err("memory backend has no rename; the wrapper should surface Unsupported");
+        assert_eq!(err.kind(), opendal::ErrorKind::Unsupported);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delete_removes_object() {
+        let vm = build_memory_vm();
+        vm.write("victim.txt", b"..".to_vec()).await.expect("seed");
+        vm.delete("victim.txt").await.expect("delete");
+        assert!(matches!(
+            vm.stat("victim.txt").await,
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound
+        ));
     }
 }
