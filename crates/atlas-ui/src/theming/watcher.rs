@@ -129,6 +129,16 @@ impl ThemeWatcher {
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<ThemeEvent>();
         let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(1);
 
+        // Capture the initial (mtime, size) so the poll fallback can detect
+        // any edit that happens after start() without emitting a redundant
+        // "reload" on the first poll tick.
+        let initial_fingerprint = {
+            let path = loader.user_themes_dir_ref().join(format!("{initial_id}.toml"));
+            std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok().map(|t| (t, m.len())))
+        };
+
         let state = Arc::new(WatcherState {
             loader: Arc::new(loader),
             shared: Arc::clone(&shared),
@@ -139,7 +149,7 @@ impl ThemeWatcher {
         let state_bg = Arc::clone(&state);
         let thread = std::thread::Builder::new()
             .name("atlas-theme-watcher".to_owned())
-            .spawn(move || watcher_thread(state_bg, stop_rx))
+            .spawn(move || watcher_thread(state_bg, stop_rx, initial_fingerprint))
             .map_err(|error| ThemeError::Thread(error.to_string()))?;
 
         Ok((
@@ -189,7 +199,11 @@ impl Drop for ThemeWatcher {
     }
 }
 
-fn watcher_thread(state: Arc<WatcherState>, stop_rx: Receiver<()>) {
+fn watcher_thread(
+    state: Arc<WatcherState>,
+    stop_rx: Receiver<()>,
+    initial_fingerprint: Option<(std::time::SystemTime, u64)>,
+) {
     let (notify_tx, notify_rx) =
         crossbeam_channel::unbounded::<notify_debouncer_full::DebounceEventResult>();
 
@@ -212,9 +226,30 @@ fn watcher_thread(state: Arc<WatcherState>, stop_rx: Receiver<()>) {
         );
     }
 
+    // ── Poll fallback ────────────────────────────────────────────────────
+    // macOS FSEvents can take 1–3 s to warm up after `watch()`, which makes
+    // us miss the first edit. A cheap (mtime, size) tick every 300ms fills
+    // the gap without paying the CPU cost of a full PollWatcher. The
+    // baseline fingerprint is captured in `start()` before the thread is
+    // spawned so a change that arrives before our first tick is still
+    // detected.
+    let poll_ticker = crossbeam_channel::tick(Duration::from_millis(300));
+    let mut last_seen_fingerprint: Option<(std::time::SystemTime, u64)> = initial_fingerprint;
+
     loop {
         crossbeam_channel::select! {
             recv(stop_rx) -> _ => break,
+            recv(poll_ticker) -> _ => {
+                let active_id = state.active_id.lock().clone();
+                let path = state.loader.user_themes_dir_ref().join(format!("{active_id}.toml"));
+                let Ok(meta) = std::fs::metadata(&path) else { continue; };
+                let Ok(mtime) = meta.modified() else { continue; };
+                let fingerprint = (mtime, meta.len());
+                if last_seen_fingerprint.map(|prev| prev != fingerprint).unwrap_or(true) {
+                    reload_active_theme(&state, &active_id, &path);
+                    last_seen_fingerprint = Some(fingerprint);
+                }
+            }
             recv(notify_rx) -> msg => {
                 let events = match msg {
                     Ok(Ok(events)) => events,
@@ -243,30 +278,43 @@ fn watcher_thread(state: Arc<WatcherState>, stop_rx: Receiver<()>) {
                 }
 
                 let path = state.loader.user_themes_dir_ref().join(&expected_filename);
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => match toml::from_str::<ThemeTokens>(&content) {
-                        Ok(tokens) => {
-                            state.shared.store(Arc::new(tokens));
-                            let _ = state.event_tx.send(ThemeEvent::Reloaded(active_id.clone()));
-                            tracing::info!("hot-reloaded theme: {active_id}");
-                        }
-                        Err(error) => {
-                            tracing::warn!("theme parse error for {active_id}: {error}");
-                            let _ = state.event_tx.send(ThemeEvent::LoadError {
-                                id: active_id.clone(),
-                                message: error.to_string(),
-                            });
-                        }
-                    },
-                    Err(error) => {
-                        tracing::warn!("cannot read theme file {}: {error}", path.display());
-                        let _ = state.event_tx.send(ThemeEvent::LoadError {
-                            id: active_id.clone(),
-                            message: error.to_string(),
-                        });
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    if let Ok(mtime) = meta.modified() {
+                        last_seen_fingerprint = Some((mtime, meta.len()));
                     }
                 }
+                reload_active_theme(&state, &active_id, &path);
             }
+        }
+    }
+}
+
+/// Read `path` and swap the resulting [`ThemeTokens`] into `state.shared`,
+/// emitting a [`ThemeEvent::Reloaded`] (or `LoadError`) on the event channel.
+fn reload_active_theme(state: &Arc<WatcherState>, active_id: &str, path: &std::path::Path) {
+    match std::fs::read_to_string(path) {
+        Ok(content) => match toml::from_str::<ThemeTokens>(&content) {
+            Ok(tokens) => {
+                state.shared.store(Arc::new(tokens));
+                let _ = state
+                    .event_tx
+                    .send(ThemeEvent::Reloaded(active_id.to_owned()));
+                tracing::info!("hot-reloaded theme: {active_id}");
+            }
+            Err(error) => {
+                tracing::warn!("theme parse error for {active_id}: {error}");
+                let _ = state.event_tx.send(ThemeEvent::LoadError {
+                    id: active_id.to_owned(),
+                    message: error.to_string(),
+                });
+            }
+        },
+        Err(error) => {
+            tracing::warn!("cannot read theme file {}: {error}", path.display());
+            let _ = state.event_tx.send(ThemeEvent::LoadError {
+                id: active_id.to_owned(),
+                message: error.to_string(),
+            });
         }
     }
 }
@@ -321,17 +369,9 @@ mod tests {
 
     /// Tests filesystem-triggered hot-reload.
     ///
-    /// This test passes in isolation but is flaky under high I/O concurrency
-    /// (full test suite) because macOS FSEvents cold-starts slowly (1-3 s) when
-    /// many other threads are also watching temp directories.  The actual
-    /// hot-reload code path is exercised by [`set_active_switches_theme`], and
-    /// the file-watching behaviour is covered by the `notify_debouncer_full`
-    /// crate's own test suite.  Re-enable once we add a polling fallback for
-    /// the watcher thread.
-    ///
-    /// See `gap-fix-watcher-fsevents-concurrency` todo for follow-up.
+    /// A poll fallback (500 ms mtime tick) covers macOS FSEvents cold-start
+    /// latency so this test is deterministic under parallel I/O.
     #[test]
-    #[ignore = "flaky under parallel I/O (macOS FSEvents cold-start); see gap-fix-watcher-fsevents-concurrency"]
     #[serial]
     fn hot_reload_on_file_change() {
         let dir = TempDir::new().expect("tempdir");
@@ -384,13 +424,9 @@ mod tests {
 
     /// Tests that a parse error on hot-reload keeps the previous valid theme.
     ///
-    /// Ignored for the same reason as [`hot_reload_on_file_change`]: macOS
-    /// FSEvents cold-start latency causes spurious failures when run alongside
-    /// other test threads doing file I/O.
-    ///
-    /// See `gap-fix-watcher-fsevents-concurrency` todo.
+    /// The same 500 ms poll fallback used by [`hot_reload_on_file_change`]
+    /// keeps this test deterministic on macOS.
     #[test]
-    #[ignore = "flaky under parallel I/O (macOS FSEvents cold-start); see gap-fix-watcher-fsevents-concurrency"]
     #[serial]
     fn hot_reload_parse_error_keeps_prior_value() {
         let dir = TempDir::new().expect("tempdir");
