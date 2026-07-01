@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Allow the user to select files/folders via open panels -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- Allow reading from ~/Downloads (useful for file manager context) -->
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+
+    <!-- Read-only access to ~/Documents -->
+    <key>com.apple.security.files.documents.read-only</key>
+    <true/>
+
+    <!-- Network client — reserved for future remote FS (SSH/SFTP/S3/WebDAV) -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!--
+        Hardened runtime: we do NOT need unsigned executable memory or
+        disabled library validation.  Keep both at false (default).
+    -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <false/>
+</dict>
+</plist>

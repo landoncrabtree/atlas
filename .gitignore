@@ -18,7 +18,8 @@ Thumbs.db
 # Local config / state for dev
 /.atlas-dev/
 
-# Generated
-/dist/
+# Generated build outputs (but track dist/ packaging scripts)
+dist/icons/atlas.icns
+dist/icons/atlas.iconset/
 *.dmg
 *.app/

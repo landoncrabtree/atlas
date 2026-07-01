@@ -69,6 +69,44 @@ atlas-search
  └── atlas-ipc
 ```
 
+## Packaging (macOS)
+
+```bash
+dist/release.sh
+```
+
+Produces `target/dist/Atlas.app` and `target/dist/Atlas-<version>.dmg`.
+
+Individual steps:
+
+```bash
+dist/build-app.sh   # compile release binaries, assemble Atlas.app
+dist/sign.sh        # code-sign with hardened runtime (requires credentials)
+dist/build-dmg.sh   # create compressed DMG
+dist/notarize.sh    # submit to Apple Notary Service and staple ticket
+```
+
+Signing and notarization require environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `ATLAS_SIGNING_IDENTITY` | `Developer ID Application: Name (TEAMID)` — from your Apple developer keychain |
+| `ATLAS_NOTARY_PROFILE` | Keychain profile name for `notarytool`; set via `xcrun notarytool store-credentials <profile-name>` |
+
+If either variable is unset, the corresponding step is silently skipped — you still get a working (unsigned) bundle and DMG that testers can right-click → Open.
+
+### Notes
+
+- Icons: place artwork PNGs in `dist/icons/atlas.iconset/` before release; `build-app.sh` generates a solid-color placeholder automatically so the bundle is always valid.
+- Themes and keymaps in `assets/` are copied into `Contents/Resources/` so Atlas can seed user directories on first launch.
+- `atlas-indexd` is bundled at `Contents/MacOS/atlas-indexd`; a LaunchAgent plist is placed at `Contents/Library/LaunchAgents/dev.atlas.atlas-indexd.plist` for post-install daemon registration.
+
+### Planned (v0.2)
+
+- Sparkle auto-updater integration
+- Linux `.deb` / `.rpm` / AppImage
+- Windows MSI / MSIX
+
 ## Licensing note (Slint)
 
 Slint ships under three license tracks: **GPLv3**, the free **Royalty-Free Desktop

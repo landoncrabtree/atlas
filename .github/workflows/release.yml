@@ -1,0 +1,57 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build app bundle
+        run: dist/build-app.sh
+
+      - name: Sign (if credentials present)
+        if: env.ATLAS_SIGNING_IDENTITY != ''
+        env:
+          ATLAS_SIGNING_IDENTITY: ${{ secrets.ATLAS_SIGNING_IDENTITY }}
+        run: dist/sign.sh
+
+      - name: Build DMG
+        run: dist/build-dmg.sh
+
+      - name: Notarize (if credentials present)
+        if: env.ATLAS_NOTARY_PROFILE != ''
+        env:
+          ATLAS_NOTARY_PROFILE: ${{ secrets.ATLAS_NOTARY_PROFILE }}
+        run: dist/notarize.sh
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-dmg
+          path: target/dist/*.dmg
+
+      - name: Zip .app bundle
+        run: cd target/dist && zip -r Atlas.app.zip Atlas.app
+
+      - name: Upload .app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-app
+          path: target/dist/Atlas.app.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/dist/*.dmg
+            target/dist/Atlas.app.zip

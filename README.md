@@ -65,15 +65,26 @@ Atlas refuses the trade-off.
 
 ## Installation
 
-> Pre-built binaries will be published once Atlas reaches alpha. Until then, build from source.
+### Pre-built releases (macOS)
 
-### From source
+Download the latest **Atlas-\<version\>.dmg** from the [Releases](https://github.com/landoncrabtree/atlas/releases) page, open it, and drag **Atlas.app** to `/Applications`.
+
+> **First launch**: until a notarization ticket is attached to the release, macOS Gatekeeper will warn about an unidentified developer. Right-click → **Open** to bypass the check once. Subsequent launches work normally.
+
+### Build from source
 
 ```bash
 git clone https://github.com/landoncrabtree/atlas.git
 cd atlas
-cargo build --release
+cargo build --release -p atlas-app -p atlas-indexd
 ./target/release/atlas
+```
+
+For a proper `.app` bundle and DMG:
+
+```bash
+dist/build-app.sh   # → target/dist/Atlas.app
+dist/build-dmg.sh   # → target/dist/Atlas-<version>.dmg
 ```
 
 Toolchain prerequisites and platform-specific notes live in [`docs/developer-setup.md`](docs/developer-setup.md).
