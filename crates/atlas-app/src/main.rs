@@ -14,6 +14,17 @@
 //!    global via `invoke_from_event_loop`.
 //! 5. A background thread drains the event channel; on each `Reloaded` it
 //!    reads the fresh tokens from the `ArcSwap` and calls `apply_theme` again.
+//!
+//! # Keymap dispatch chain
+//!
+//! 1. `load_keymap_with_user_overrides()` builds a [`atlas_keymap::Keymap`].
+//! 2. [`atlas_keymap::Dispatcher::new`] wraps it; handlers for common action
+//!    IDs are registered (palette, navigation, cursor movement).
+//! 3. The command palette's `on_dispatch` callback calls
+//!    [`Dispatcher::dispatch_action`] so palette-triggered actions invoke
+//!    the same handlers as keyboard-triggered ones.
+//! 4. The Slint `FocusScope` → [`Dispatcher::handle_key`] routing is tracked
+//!    in the `gap-keymap-slint-routing` follow-up.
 
 use std::{env, path::PathBuf, sync::Arc};
 
@@ -22,6 +33,7 @@ use arc_swap::ArcSwap;
 use slint::ComponentHandle as _;
 use tracing_subscriber::EnvFilter;
 
+use atlas_keymap::{ActionId, Dispatcher};
 use atlas_ui::{
     actions::{ActionSink, UiAction},
     models::{PaletteModel, StatusModel},
@@ -161,7 +173,14 @@ fn main() -> Result<()> {
         }
     };
     if let (Some(arc), Some(events)) = (config_arc.clone(), config_events) {
-        spawn_config_event_thread(Arc::clone(&shell), arc, events);
+        spawn_config_event_thread(
+            Arc::clone(&shell),
+            arc,
+            events,
+            Arc::clone(&nav),
+            Arc::clone(&search_ctrl),
+            Arc::clone(&themes_arc),
+        );
     }
 
     let start_path = config_arc
@@ -178,15 +197,30 @@ fn main() -> Result<()> {
     shell.set_status(StatusModel::default());
     shell.set_palette(PaletteModel::default());
 
-    // Keep `keymap` alive for the lifetime of the app so a future keymap-
-    // dispatch integration can consume it. Suppress the unused warning until
-    // the Slint FocusScope routing lands (tracked as a follow-up).
-    let _keymap_handle = keymap;
+    // Build the keymap dispatcher and register handlers for common action IDs.
+    // The palette on_dispatch callback routes through this dispatcher so that
+    // palette-triggered actions use the same code paths as keyboard-triggered ones.
+    // The Slint FocusScope → Dispatcher::handle_key wiring is tracked separately
+    // in the `gap-keymap-slint-routing` follow-up todo.
+    let dispatcher = build_dispatcher(keymap, &shell, &nav);
+
+    // Wire palette confirm → dispatcher so picking an action from the palette
+    // has the same effect as pressing its keyboard chord.
+    {
+        let d = Arc::clone(&dispatcher);
+        shell
+            .palette_controller()
+            .set_on_dispatch(move |action_id| {
+                d.dispatch_action(&ActionId::new(action_id));
+            });
+    }
 
     window.run()?;
     if let Some(w) = config_watcher {
         w.stop();
     }
+    // Keep dispatcher alive until the event loop exits.
+    drop(dispatcher);
     theme_watcher.stop();
 
     Ok(())
@@ -265,7 +299,9 @@ fn connect_or_launch_indexd(
     let daemon_path = match daemon_path {
         Some(p) if p.exists() => p,
         _ => {
-            tracing::warn!("atlas-indexd binary not found next to atlas-app; search index disabled");
+            tracing::warn!(
+                "atlas-indexd binary not found next to atlas-app; search index disabled"
+            );
             return None;
         }
     };
@@ -297,20 +333,76 @@ fn connect_or_launch_indexd(
 }
 
 /// Spawn a thread that drains [`atlas_config::ConfigEvent`]s and re-applies
-/// user settings. Currently we log; a follow-up will route theme changes into
-/// the theme watcher and start-path changes into the navigation controller.
+/// user settings:
+///
+/// - **Theme changed** — loads the new theme via a fresh [`ThemeLoader`],
+///   stores it in `themes_arc`, and calls `shell.apply_theme`. The file-watcher
+///   for the new theme file is updated automatically because `ThemeWatcher` polls
+///   the user themes dir on every file event.
+/// - **`start_path` changed** — updates the search scope and, when
+///   `navigation.remember_last_location` is `false`, navigates pane 0 to the
+///   new start path.
 fn spawn_config_event_thread(
-    _shell: Arc<AppShell>,
-    _config_arc: Arc<ArcSwap<atlas_config::Config>>,
+    shell: Arc<AppShell>,
+    config_arc: Arc<ArcSwap<atlas_config::Config>>,
     events: crossbeam_channel::Receiver<atlas_config::ConfigEvent>,
+    nav: Arc<NavigationController>,
+    search_ctrl: Arc<SearchController>,
+    themes_arc: Arc<ArcSwap<ThemeTokens>>,
 ) {
     std::thread::Builder::new()
         .name(String::from("atlas-config-events"))
         .spawn(move || {
+            let theme_loader = ThemeLoader::new();
+            // Capture the initial values so we can detect changes.
+            let initial = config_arc.load();
+            let mut last_theme = initial.ui.theme.clone();
+            let mut last_start = initial.general.start_path.clone();
+            drop(initial);
+
             for event in events {
                 match event {
                     atlas_config::ConfigEvent::Reloaded => {
                         tracing::info!("config reloaded from disk");
+                        let cfg = config_arc.load();
+
+                        // ── Theme ─────────────────────────────────────────
+                        if cfg.ui.theme != last_theme {
+                            match theme_loader.load(&cfg.ui.theme) {
+                                Ok(tokens) => {
+                                    last_theme = cfg.ui.theme.clone();
+                                    themes_arc.store(Arc::new(tokens));
+                                    shell.apply_theme(&themes_arc.load());
+                                    tracing::info!(theme = %cfg.ui.theme, "config reload: theme updated");
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        %err,
+                                        theme = %cfg.ui.theme,
+                                        "config reload: cannot load new theme; keeping previous"
+                                    );
+                                }
+                            }
+                        }
+
+                        // ── Start path / search scope ─────────────────────
+                        let new_start = cfg.general.start_path.clone();
+                        if new_start != last_start {
+                            last_start = new_start.clone();
+                            let scope = new_start.or_else(|| {
+                                env::var("HOME").ok().map(PathBuf::from)
+                            });
+                            search_ctrl.set_scope(scope.clone());
+                            if !cfg.navigation.remember_last_location {
+                                if let Some(path) = scope {
+                                    tracing::info!(
+                                        ?path,
+                                        "config reload: navigating pane 0 to new start_path"
+                                    );
+                                    nav.navigate(0, path);
+                                }
+                            }
+                        }
                     }
                     atlas_config::ConfigEvent::LoadError(msg) => {
                         tracing::warn!(msg, "config file has errors; keeping previous values");
@@ -319,6 +411,79 @@ fn spawn_config_event_thread(
             }
         })
         .expect("failed to spawn atlas-config-events thread");
+}
+
+/// Build a [`Dispatcher`] wrapping `keymap` and register handlers for the
+/// action IDs that are unconditionally wired at startup.
+///
+/// Handlers that require Slint-side key routing (all chord-triggered bindings)
+/// are registered here now so that palette-driven dispatch works immediately.
+/// The `FocusScope` → [`Dispatcher::handle_key`] wiring is tracked separately
+/// in `gap-keymap-slint-routing`.
+fn build_dispatcher(
+    keymap: atlas_keymap::Keymap,
+    shell: &Arc<AppShell>,
+    nav: &Arc<NavigationController>,
+) -> Arc<Dispatcher> {
+    let d = Dispatcher::new(keymap);
+
+    // ── Command palette ───────────────────────────────────────────────────
+    {
+        let palette = shell.palette_controller();
+        let p2 = Arc::clone(&palette);
+        d.register("command_palette::Toggle", move || {
+            if palette.is_visible() {
+                palette.close();
+            } else {
+                palette.open(0);
+            }
+        });
+        d.register("goto::Anything", move || {
+            p2.open(1);
+        });
+    }
+
+    // ── Pane cursor movement ──────────────────────────────────────────────
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::MoveDown", move || {
+            let p = s.focused_pane();
+            s.pane(p).details.move_focus(1);
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::MoveUp", move || {
+            let p = s.focused_pane();
+            s.pane(p).details.move_focus(-1);
+        });
+    }
+
+    // ── Pane history / directory navigation ──────────────────────────────
+    {
+        let n = Arc::clone(nav);
+        let s = Arc::clone(shell);
+        d.register("pane::GoUp", move || {
+            n.go_up(s.focused_pane());
+        });
+    }
+    {
+        let n = Arc::clone(nav);
+        let s = Arc::clone(shell);
+        d.register("pane::Back", move || {
+            n.navigate_relative(s.focused_pane(), true);
+        });
+    }
+    {
+        let n = Arc::clone(nav);
+        let s = Arc::clone(shell);
+        d.register("pane::Forward", move || {
+            n.navigate_relative(s.focused_pane(), false);
+        });
+    }
+
+    tracing::info!(handlers = d.handler_count(), "keymap dispatcher ready");
+    d
 }
 
 /// Spawn a thread that drains [`ThemeEvent`]s and calls [`AppShell::apply_theme`]
