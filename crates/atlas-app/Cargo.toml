@@ -19,6 +19,7 @@ atlas-ui.workspace = true
 atlas-search.workspace = true
 atlas-fs.workspace = true
 atlas-config.workspace = true
+atlas-keymap.workspace = true
 slint.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
