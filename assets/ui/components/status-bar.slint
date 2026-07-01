@@ -7,9 +7,7 @@ export component StatusBar {
     in property <string> total-size-text: "";
     in property <int> selected-entries: 0;
     in property <string> selected-size-text: "";
-    in property <string> view-mode: "Details";
-    in property <string> sort-by: "Name";
-    in property <string> indexer-status: "Stopped";
+    in property <string> free-space-text: "";
 
     height: Theme.statusbar-h;
 
@@ -44,27 +42,9 @@ export component StatusBar {
 
             Rectangle { horizontal-stretch: 1; }
 
-            Text {
-                text: view-mode;
-                color: Theme.fg-muted;
-                font-size: 11px;
-                vertical-alignment: center;
-            }
-
-            Text {
-                text: sort-by;
-                color: Theme.fg-muted;
-                font-size: 11px;
-                vertical-alignment: center;
-            }
-
-            Text {
-                text: indexer-status;
-                color: indexer-status == "Error"
-                    ? Theme.error
-                    : indexer-status == "Stopped"
-                        ? Theme.fg-faint
-                        : Theme.success;
+            if free-space-text != "" : Text {
+                text: free-space-text;
+                color: Theme.fg-faint;
                 font-size: 11px;
                 vertical-alignment: center;
             }

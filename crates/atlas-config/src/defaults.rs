@@ -28,6 +28,7 @@ impl Default for Ui {
             show_status_bar: true,
             show_breadcrumbs: true,
             animations: true,
+            active_pane_border_px: 2.0,
         }
     }
 }

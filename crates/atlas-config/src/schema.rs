@@ -71,6 +71,10 @@ pub struct Ui {
     pub show_breadcrumbs: bool,
     /// Enable animations and transitions.
     pub animations: bool,
+    /// Border thickness (in logical pixels) drawn inside the focused pane so
+    /// the user can tell which pane will receive keystrokes. `0.0` disables
+    /// the border entirely. Clamped to `[0.0, 6.0]` at load time.
+    pub active_pane_border_px: f32,
 }
 
 /// Layout density of the file list.

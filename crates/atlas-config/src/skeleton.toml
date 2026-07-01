@@ -51,6 +51,10 @@ show_breadcrumbs = true
 # Enable UI animations and transitions.
 animations = true
 
+# Thickness (in logical pixels) of the accent border drawn inside the
+# currently-focused pane. Use `0.0` to disable. Clamped to [0.0, 6.0].
+active_pane_border_px = 2.0
+
 [view]
 # Default view mode: "details", "grid", "gallery", "miller", or "tree".
 default_mode = "details"

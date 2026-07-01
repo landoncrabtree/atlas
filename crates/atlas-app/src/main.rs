@@ -236,6 +236,8 @@ fn main() -> Result<()> {
     shell.set_breadcrumbs_visible(config.ui.show_breadcrumbs);
     // config: reads config.ui.animations
     shell.set_animations_enabled(config.ui.animations);
+    // config: reads config.ui.active_pane_border_px
+    shell.set_active_pane_border_px(config.ui.active_pane_border_px);
     spawn_theme_event_thread(Arc::clone(&shell), Arc::clone(&themes_arc), theme_events);
 
     // Start the config hot-reload watcher so users can edit config.toml and
@@ -645,6 +647,7 @@ fn spawn_config_event_thread(
                         shell.set_status_bar_visible(cfg.ui.show_status_bar);
                         shell.set_breadcrumbs_visible(cfg.ui.show_breadcrumbs);
                         shell.set_animations_enabled(cfg.ui.animations);
+                        shell.set_active_pane_border_px(cfg.ui.active_pane_border_px);
 
                         // ── Search knobs ──────────────────────────────────
                         search_ctrl.set_max_results(cfg.search.fuzzy_max_results);

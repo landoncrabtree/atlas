@@ -91,15 +91,23 @@ fn path_segments_for(path: &Path) -> Vec<String> {
     segments
 }
 
-fn dispatch_navigation(
-    actions: &Arc<Mutex<Box<dyn ActionSink>>>,
-    pane: usize,
-    raw_path: SharedString,
-) {
-    actions.lock().dispatch(UiAction::Navigate {
-        pane,
-        path: expand_tilde(Path::new(raw_path.as_str())),
-    });
+/// Return a "NN GB free of NN TB" string for the volume that contains `path`.
+/// Returns `None` if the platform stat call fails (unmounted volume, etc.).
+fn free_space_text_for(path: &Path) -> Option<String> {
+    // Walk up to the nearest existing ancestor so we can stat SOMEthing even
+    // if the pane's active path was just deleted from underneath us.
+    let mut probe: &Path = path;
+    while !probe.exists() {
+        probe = probe.parent()?;
+    }
+    let stats = fs2::statvfs(probe).ok()?;
+    let avail = stats.available_space();
+    let total = stats.total_space();
+    Some(format!(
+        "{} free of {}",
+        crate::format_size(avail),
+        crate::format_size(total)
+    ))
 }
 
 /// Raw (non-Slint) descriptor for a split-handle grab area.
@@ -593,6 +601,24 @@ impl AppShell {
         self.project_workspace_to_slint();
     }
 
+    /// Force the root FocusScope to re-grab keyboard focus by bumping the
+    /// `refocus-tick` property Slint watches. Call this after any UI action
+    /// that may leave focus stranded on a TextInput or dismissed modal.
+    pub fn bump_refocus_tick(&self) {
+        if let Some(window) = self.window.upgrade() {
+            let next = window.get_refocus_tick().wrapping_add(1);
+            window.set_refocus_tick(next);
+        }
+    }
+
+    /// Set the active-pane border thickness (in logical pixels). Bound to
+    /// `config.ui.active_pane_border_px`.
+    pub fn set_active_pane_border_px(&self, px: f32) {
+        if let Some(window) = self.window.upgrade() {
+            window.set_active_pane_border_px(px);
+        }
+    }
+
     /// Show or hide the bottom status bar. Bound to `ui.show_status_bar`.
     pub fn set_status_bar_visible(&self, visible: bool) {
         if let Some(window) = self.window.upgrade() {
@@ -727,12 +753,14 @@ impl AppShell {
         self.window
             .upgrade()
             .map(|w| {
-                let size = w.window().size();
+                let win = w.window();
+                let scale = win.scale_factor().max(1.0);
+                let size = win.size();
                 Rect {
                     x: 0.0,
                     y: 0.0,
-                    width: size.width as f32,
-                    height: size.height as f32,
+                    width: (size.width as f32) / scale,
+                    height: (size.height as f32) / scale,
                 }
             })
             .unwrap_or(Rect::from_size(1440.0, 900.0))
@@ -1760,21 +1788,20 @@ impl AppShell {
         }
 
         {
-            let actions = Arc::clone(&self.actions);
-            let nav = Arc::clone(&self.navigation);
             let shell = Arc::clone(self);
+            let nav = Arc::clone(&self.navigation);
             window.on_address_submitted(move |pane_id, path| {
                 let id = PaneId(pane_id as u32);
-                let slot = shell.pane_slint_index.read().get(&id).copied().unwrap_or(0);
-                dispatch_navigation(&actions, slot, path.clone());
+                shell.set_focused_pane_id(id);
                 let expanded = expand_tilde(Path::new(path.as_str()));
                 nav.navigate_pane(id, expanded);
+                shell.bump_refocus_tick();
             });
         }
         {
-            let actions = Arc::clone(&self.actions);
+            let shell = Arc::clone(self);
             window.on_address_cancelled(move |_pane_id| {
-                actions.lock().dispatch(UiAction::DismissPalette);
+                shell.bump_refocus_tick();
             });
         }
         {
@@ -2401,19 +2428,23 @@ impl AppShell {
     /// Update status bar state.
     pub fn set_status(self: &Arc<Self>, model: StatusModel) {
         *self.status.write() = model.clone();
+        // Compute free space for the focused pane's volume (best-effort;
+        // failure is silent — the chip just hides).
+        let free_text = self
+            .pane_location(self.focused_pane_id())
+            .and_then(|p| free_space_text_for(&p));
         let weak = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(window) = weak.upgrade() else {
                 return;
             };
-            let indexer_status = model.indexer_state.to_string();
             window.set_total_entries(model.total_entries as i32);
             window.set_folder_count(model.folder_count as i32);
             window.set_file_count(model.file_count as i32);
             window.set_total_size_text(crate::format_size(model.total_bytes).into());
             window.set_selected_entries(model.selected_entries as i32);
             window.set_selected_size_text(crate::format_size(model.selected_bytes).into());
-            window.set_indexer_status(indexer_status.into());
+            window.set_free_space_text(free_text.unwrap_or_default().into());
         });
     }
 

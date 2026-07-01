@@ -180,14 +180,24 @@ export component AtlasWindow inherits Window {
     in property <string> total-size-text: "";
     in property <int> selected-entries: 0;
     in property <string> selected-size-text: "";
-    in property <string> status-view-mode: "Details";
-    in property <string> sort-by: "Name";
-    in property <string> indexer-status: "Stopped";
+    /// Free-space string for the focused pane's volume (e.g. "312 GB free of 1 TB").
+    /// Empty string hides the chip entirely.
+    in property <string> free-space-text: "";
 
     // When true, the `hjkl` keys navigate (vim style). When false, only
     // arrow keys / Enter / Backspace navigate; letter keys pass through
     // to focused controls. Driven by `config.general.vim_mode`.
     in property <bool> vim-mode: false;
+
+    /// Border thickness (in logical pixels) drawn inside the focused pane so
+    /// users can tell which pane will receive keystrokes. Wired from
+    /// `config.ui.active_pane_border_px`; set to 0 to disable.
+    in property <length> active-pane-border-px: 2px;
+
+    /// Bumped by Rust whenever the root FocusScope must re-grab focus (after
+    /// a TextInput steals it, after a modal closes, etc.). The FocusScope
+    /// watches this via a `changed` handler and calls `self.focus()`.
+    in property <int> refocus-tick: 0;
 
     in property <bool> palette-visible: false;
     in-out property <string> palette-query: "";
@@ -495,6 +505,12 @@ export component AtlasWindow inherits Window {
             if !any-modal-visible { self.focus(); }
         }
 
+        // Ticks up whenever Rust wants the root FocusScope to re-grab focus
+        // (e.g. after the AddressBar's TextInput cancels or submits). We rely
+        // on the `changed` handler so we don't need a Slint-side callback.
+        property <int> refocus-tick: root.refocus-tick;
+        changed refocus-tick => { self.focus(); }
+
         key-pressed(event) => {
             if event.text == Key.Escape && palette-visible {
                 root.palette-dismiss();
@@ -691,6 +707,7 @@ export component AtlasWindow inherits Window {
                     path: pane.path;
                     view-mode: pane.view-mode;
                     show-breadcrumbs: root.show-breadcrumbs;
+                    focused-border-px: root.active-pane-border-px;
 
                     // Per-slot data — routed by DFS position i.
                     // Phase 4.1: replace with panes-*[i] once controllers support N slots.
@@ -832,9 +849,7 @@ export component AtlasWindow inherits Window {
                 total-size-text: root.total-size-text;
                 selected-entries: root.selected-entries;
                 selected-size-text: root.selected-size-text;
-                view-mode: root.status-view-mode;
-                sort-by: root.sort-by;
-                indexer-status: root.indexer-status;
+                free-space-text: root.free-space-text;
             }
 
             ShortcutFooter { }

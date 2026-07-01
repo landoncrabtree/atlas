@@ -97,16 +97,22 @@ export component Pane {
 
     callback tree-row-clicked(int, bool, bool);
     callback tree-row-double-clicked(int);
+    /// Border thickness for the focused-pane ring. `0px` disables it.
+    in property <length> focused-border-px: 2px;
+
     callback tree-chevron-clicked(int);
     callback miller-row-clicked(int, int);
     callback miller-row-double-clicked(int, int);
 
     Rectangle {
         background: Theme.bg;
-        // Focus ring: 1-px accent border when focused.
-        // Drag-target ring: 2-px accent border when this pane is the drop destination.
-        border-width: drag-target ? 2px : (focused ? 1px : 0px);
-        border-color: Theme.accent.with-alpha(drag-target ? 0.9 : 0.4);
+        // Focus ring: accent border when focused (thickness from
+        // config.ui.active_pane_border_px), fatter accent border when this
+        // pane is the drop destination.
+        border-width: drag-target ? focused-border-px + 1px : (focused ? focused-border-px : 0px);
+        border-color: focused
+            ? Theme.accent.with-alpha(drag-target ? 0.95 : 0.85)
+            : Theme.accent.with-alpha(drag-target ? 0.9 : 0.4);
 
         // Full-pane click capture (fires on empty background clicks so the
         // pane can request focus). Placed BEHIND the layout so children with

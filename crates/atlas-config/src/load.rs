@@ -69,6 +69,15 @@ fn validate(mut cfg: Config) -> Config {
         cfg.ui.font_size = cfg.ui.font_size.clamp(8.0, 72.0);
     }
 
+    // ── ui.active_pane_border_px ───────────────────────────────────────────
+    if !(0.0_f32..=6.0).contains(&cfg.ui.active_pane_border_px) {
+        tracing::warn!(
+            "ui.active_pane_border_px {} is outside [0.0, 6.0]; clamping",
+            cfg.ui.active_pane_border_px
+        );
+        cfg.ui.active_pane_border_px = cfg.ui.active_pane_border_px.clamp(0.0, 6.0);
+    }
+
     // ── indexer.max_memory_mb ──────────────────────────────────────────────
     const MIN_MEMORY_MB: u32 = 16;
     if cfg.indexer.max_memory_mb < MIN_MEMORY_MB {
