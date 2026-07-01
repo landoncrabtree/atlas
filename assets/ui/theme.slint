@@ -5,32 +5,59 @@
 export global Theme {
     in-out property <bool> dark: true;
 
-    in-out property <color> bg: #0e1116;
-    in-out property <color> panel-bg: #161b22;
-    in-out property <color> fg: #e6edf3;
-    in-out property <color> fg-muted: #7d8590;
-    in-out property <color> border: #30363d;
-    in-out property <color> accent: #2f81f7;
+    // ── Palette ──────────────────────────────────────────────────────────────
+    in-out property <color> bg: #0f1115;
+    in-out property <color> panel-bg: #171a20;
+    in-out property <color> panel-bg-elevated: #1e232b;
+    in-out property <color> fg: #e6ebf4;
+    in-out property <color> fg-muted: #8b95a7;
+    in-out property <color> fg-faint: #5a6478;
+    in-out property <color> border: #20262f;
+    in-out property <color> border-strong: #2b3341;
+    in-out property <color> accent: #4a9eff;
     in-out property <color> accent-fg: #ffffff;
-    in-out property <color> selection-bg: #1f6feb;
+    in-out property <color> accent-soft: #4a9eff26;
+    in-out property <color> selection-bg: #3d7ac9;
     in-out property <color> selection-fg: #ffffff;
-    in-out property <color> error: #f85149;
-    in-out property <color> success: #3fb950;
-    in-out property <color> warning: #d29922;
+    in-out property <color> hover-bg: #ffffff0d;
+    in-out property <color> error: #ff6b6b;
+    in-out property <color> success: #5bd18a;
+    in-out property <color> warning: #f5c274;
 
-    in-out property <string> font-family: "Inter";
-    in-out property <length> font-size: 14px;
-    in-out property <string> monospace: "JetBrains Mono";
+    // ── Typography ────────────────────────────────────────────────────────────
+    in-out property <string> font-family: "SF Pro Text, Inter, system-ui, sans-serif";
+    in-out property <length> font-size: 13px;
+    in-out property <string> monospace: "SF Mono, JetBrains Mono, Menlo, monospace";
 
-    in-out property <length> radius-sm: 4px;
+    // ── Radii ─────────────────────────────────────────────────────────────────
+    in-out property <length> radius-xs: 4px;
+    in-out property <length> radius-sm: 6px;
     in-out property <length> radius-md: 8px;
+    in-out property <length> radius-lg: 10px;
+    in-out property <length> radius-xl: 14px;
 
+    // ── Spacing (8pt grid) ────────────────────────────────────────────────────
+    in-out property <length> space-1: 4px;
+    in-out property <length> space-2: 8px;
+    in-out property <length> space-3: 12px;
+    in-out property <length> space-4: 16px;
+    in-out property <length> space-5: 20px;
+    in-out property <length> space-6: 24px;
+    in-out property <length> space-8: 32px;
+    in-out property <length> space-10: 40px;
+
+    // ── Legacy spacing aliases (kept for compat) ──────────────────────────────
     in-out property <length> spacing-xs: 4px;
     in-out property <length> spacing-sm: 8px;
     in-out property <length> spacing-md: 12px;
     in-out property <length> spacing-lg: 16px;
 
+    // ── Chrome heights ────────────────────────────────────────────────────────
     in-out property <length> titlebar-h: 36px;
     in-out property <length> statusbar-h: 24px;
-    in-out property <length> tab-h: 28px;
+    in-out property <length> tab-h: 32px;
+    in-out property <length> addressbar-h: 30px;
+    in-out property <length> row-h-default: 30px;
+    in-out property <length> row-h-compact: 24px;
+    in-out property <length> row-h-spacious: 38px;
 }

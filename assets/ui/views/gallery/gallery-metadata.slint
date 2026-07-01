@@ -13,19 +13,20 @@ component MetaRow inherits HorizontalLayout {
     in property <string> label;
     in property <string> value;
 
-    spacing: Theme.spacing-xs;
+    spacing: Theme.space-2;
 
     Text {
         text: label;
         color: Theme.fg-muted;
-        font-size: 12px;
+        font-size: 10px;
+        font-weight: 600;
         width: 84px;
     }
 
     Text {
         text: value == "" ? "—" : value;
         color: Theme.fg;
-        font-size: Theme.font-size;
+        font-size: 13px;
         wrap: word-wrap;
         vertical-stretch: 1;
         horizontal-stretch: 1;
@@ -42,13 +43,14 @@ export component GalleryMetadata {
         border-radius: Theme.radius-md;
 
         VerticalLayout {
-            padding: Theme.spacing-md;
-            spacing: Theme.spacing-sm;
+            padding: Theme.space-4;
+            spacing: Theme.space-2;
 
             Text {
                 text: metadata.name == "" ? "No selection" : metadata.name;
                 color: Theme.fg;
-                font-size: 18px;
+                font-size: 15px;
+                font-weight: 600;
                 wrap: word-wrap;
             }
 

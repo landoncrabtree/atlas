@@ -4,30 +4,46 @@ mode = "light"
 
 [colors]
 bg = "#ffffff"
-panel_bg = "#f6f8fa"
-fg = "#1f2328"
-fg_muted = "#656d76"
-border = "#d0d7de"
-accent = "#0969da"
+panel_bg = "#f6f8fb"
+panel_bg_elevated = "#eef1f6"
+fg = "#1c2030"
+fg_muted = "#556070"
+fg_faint = "#8a96a8"
+border = "#dce1ea"
+border_strong = "#c8d0dc"
+accent = "#2f7de1"
 accent_fg = "#ffffff"
-selection_bg = "#0969da"
+accent_soft = "#2f7de126"
+selection_bg = "#2563c4"
 selection_fg = "#ffffff"
-error = "#cf222e"
-success = "#1a7f37"
-warning = "#9a6700"
+hover_bg = "#00000008"
+error = "#d93025"
+success = "#1a7a46"
+warning = "#9a6400"
 
 [typography]
-font_family = "Inter"
-monospace_family = "JetBrains Mono"
-font_size_pt = 14.0
+font_family = "SF Pro Text, Inter, system-ui, sans-serif"
+monospace_family = "SF Mono, JetBrains Mono, Menlo, monospace"
+font_size_pt = 13.0
 
 [chrome]
 titlebar_h_px = 36.0
 statusbar_h_px = 24.0
-tab_h_px = 28.0
-radius_sm_px = 4.0
+tab_h_px = 32.0
+addressbar_h_px = 30.0
+row_h_default_px = 30.0
+row_h_compact_px = 24.0
+row_h_spacious_px = 38.0
+radius_xs_px = 4.0
+radius_sm_px = 6.0
 radius_md_px = 8.0
-spacing_xs_px = 4.0
-spacing_sm_px = 8.0
-spacing_md_px = 12.0
-spacing_lg_px = 16.0
+radius_lg_px = 10.0
+radius_xl_px = 14.0
+space_1_px = 4.0
+space_2_px = 8.0
+space_3_px = 12.0
+space_4_px = 16.0
+space_5_px = 20.0
+space_6_px = 24.0
+space_8_px = 32.0
+space_10_px = 40.0

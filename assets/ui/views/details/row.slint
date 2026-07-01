@@ -1,11 +1,6 @@
 import { Theme } from "../../theme.slint";
 import { EntryRowItem, ColumnSpec } from "column.slint";
 
-// A single row in the Details view list.
-//
-// The row renders each column cell in order. Selection, focus, and hover
-// states are applied to the background rectangle. Pointer events capture
-// keyboard modifier state (ctrl/shift) at button-down time.
 export component EntryRow {
     in property <EntryRowItem> item;
     in property <[ColumnSpec]> columns: [];
@@ -17,14 +12,17 @@ export component EntryRow {
     callback double-clicked();
     callback context-menu(length, length);
 
-    height: 24px;
+    height: Theme.row-h-default;
 
     bg := Rectangle {
         background: root.selected
             ? Theme.selection-bg
-            : (ta.has-hover ? Theme.panel-bg : transparent);
+            : (ta.has-hover ? Theme.hover-bg : transparent);
+        border-radius: Theme.radius-sm;
         border-width: root.focused && !root.selected ? 1px : 0px;
         border-color: Theme.accent;
+
+        animate background { duration: 120ms; easing: ease-out; }
 
         HorizontalLayout {
             spacing: 0px;
@@ -35,15 +33,16 @@ export component EntryRow {
                 clip: true;
 
                 if col.kind == "name" : HorizontalLayout {
-                    padding-left: Theme.spacing-sm;
-                    spacing: Theme.spacing-xs;
+                    padding-left: Theme.space-2;
+                    spacing: Theme.space-2;
                     alignment: start;
 
                     Text {
                         text: item.kind-icon;
                         color: root.selected ? Theme.selection-fg : Theme.fg-muted;
                         vertical-alignment: center;
-                        width: 18px;
+                        width: 16px;
+                        font-size: 13px;
                     }
 
                     Text {
@@ -56,6 +55,7 @@ export component EntryRow {
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;
+                        font-size: 13px;
                     }
                 }
 
@@ -64,7 +64,8 @@ export component EntryRow {
                     color: root.selected ? Theme.selection-fg : Theme.fg-muted;
                     horizontal-alignment: right;
                     vertical-alignment: center;
-                    width: parent.width - Theme.spacing-sm;
+                    width: parent.width - Theme.space-2;
+                    font-size: 12px;
                 }
 
                 if col.kind == "modified" : Text {
@@ -72,8 +73,9 @@ export component EntryRow {
                     color: root.selected ? Theme.selection-fg : Theme.fg-muted;
                     horizontal-alignment: left;
                     vertical-alignment: center;
-                    width: parent.width - Theme.spacing-sm;
-                    x: Theme.spacing-sm;
+                    width: parent.width - Theme.space-2;
+                    x: Theme.space-2;
+                    font-size: 12px;
                 }
 
                 if col.kind == "kind" : Text {
@@ -83,6 +85,7 @@ export component EntryRow {
                     horizontal-alignment: center;
                     vertical-alignment: center;
                     width: parent.width;
+                    font-size: 12px;
                 }
 
                 if col.kind == "extension" : Text {
@@ -90,8 +93,9 @@ export component EntryRow {
                     color: root.selected ? Theme.selection-fg : Theme.fg-muted;
                     horizontal-alignment: left;
                     vertical-alignment: center;
-                    width: parent.width - Theme.spacing-sm;
-                    x: Theme.spacing-sm;
+                    width: parent.width - Theme.space-2;
+                    x: Theme.space-2;
+                    font-size: 12px;
                 }
             }
         }
@@ -107,13 +111,8 @@ export component EntryRow {
                 }
             }
 
-            clicked => {
-                root.clicked(ta.mod-ctrl, ta.mod-shift);
-            }
-
-            double-clicked => {
-                root.double-clicked();
-            }
+            clicked => { root.clicked(ta.mod-ctrl, ta.mod-shift); }
+            double-clicked => { root.double-clicked(); }
         }
     }
 }

@@ -1,55 +1,43 @@
 import { Theme } from "../theme.slint";
 
 // Custom titlebar. On macOS with no-frame: true the OS draws traffic-light
-// buttons at the left inset, so we leave a 72px spacer for them.
-//
-// Draggable chrome: Slint 1.17 doesn't expose a dedicated window-drag API
-// for frameless windows via Slint markup directly. As a stop-gap the whole
-// bar is marked as the drag zone with a comment; real integration should use
-// the platform window's native move API when Slint exposes it.
-// TODO: wire `TouchArea.moved` to `Window.invoke_start_drag_window()` once
-// Slint 1.17+ provides that entry point.
+// buttons at the left inset, so we leave a 78px spacer for them.
 export component Titlebar {
-    in property <string> app-name: "Atlas";
     in property <string> location: "";
 
     height: Theme.titlebar-h;
 
     Rectangle {
         background: Theme.panel-bg;
-        border-width: 1px;
-        border-color: Theme.border;
+
+        // Bottom border
+        Rectangle {
+            y: parent.height - 1px;
+            height: 1px;
+            background: Theme.border;
+        }
 
         // macOS traffic-light spacer
         Rectangle {
             x: 0px;
             y: 0px;
-            width: 72px;
+            width: 78px;
             height: Theme.titlebar-h;
-            background: #00000000;
+            background: transparent;
         }
 
-        // App name (left, after spacer)
+        // Centered path (caption style, muted)
         Text {
-            x: 80px;
-            y: (Theme.titlebar-h - Theme.font-size) / 2;
-            text: app-name;
-            color: Theme.fg;
-            font-size: Theme.font-size;
-            font-weight: 600;
-        }
-
-        // Current pane location (centered)
-        Text {
-            x: 0px;
+            x: 78px;
             y: 0px;
-            width: parent.width;
+            width: parent.width - 156px;
             height: parent.height;
             text: location;
             color: Theme.fg-muted;
             font-size: 11px;
             horizontal-alignment: center;
             vertical-alignment: center;
+            overflow: elide;
         }
     }
 }

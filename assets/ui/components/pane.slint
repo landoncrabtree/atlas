@@ -13,10 +13,6 @@ import { TreeView, TreeNode } from "../views/tree/tree-view.slint";
 import { MetadataFields } from "../views/gallery/gallery-metadata.slint";
 
 // A single pane: address bar + breadcrumbs + tab bar + content view.
-//
-// When view-mode is "Details" the DetailsView is shown; all other modes
-// fall back to EmptyView so that future agents can slot in Grid/Gallery/
-// Miller/Tree without touching this file.
 export component Pane {
     in property <bool> focused: false;
     in property <string> path: "";
@@ -31,13 +27,11 @@ export component Pane {
     in property <int> details-selected-anchor: -1;
     in property <int> details-focused-index: -1;
 
-    // Grid view properties
     in property <[image]> grid-thumbnails: [];
     in property <[bool]> grid-has-thumbs: [];
     in property <[bool]> grid-selected-mask: [];
     in property <int> grid-focused-index: -1;
 
-    // Gallery view properties
     in property <[image]> gallery-strip-thumbnails: [];
     in property <image> gallery-preview-image;
     in property <bool> gallery-preview-loading: false;
@@ -52,12 +46,10 @@ export component Pane {
         dimensions: "",
     };
 
-    // Tree view properties
     in property <[TreeNode]> tree-nodes: [];
     in property <int> tree-focused-index: -1;
     in property <int> tree-selected-index: -1;
 
-    // Miller columns view properties
     in property <[MillerColData]> miller-columns: [];
     in property <int> miller-focused-col: 0;
 
@@ -75,7 +67,6 @@ export component Pane {
     callback details-header-clicked(int);
     callback details-header-resize(int, float);
 
-    // Grid view callbacks
     callback grid-entry-clicked(int, bool, bool);
     callback grid-entry-double-clicked(int);
     callback grid-entry-context-menu(int, length, length);
@@ -88,7 +79,6 @@ export component Pane {
     callback gallery-prev-image();
     callback gallery-next-image();
 
-    // Tree view callbacks
     callback tree-row-clicked(int, bool, bool);
     callback tree-row-double-clicked(int);
     callback tree-chevron-clicked(int);
@@ -100,8 +90,8 @@ export component Pane {
 
         Rectangle {
             background: Theme.bg;
-            border-width: 1px;
-            border-color: focused ? Theme.accent.with-alpha(0.4) : Theme.border;
+            border-width: focused ? 1px : 0px;
+            border-color: Theme.accent.with-alpha(0.4);
 
             VerticalLayout {
                 spacing: 0px;
@@ -109,11 +99,9 @@ export component Pane {
                 Rectangle {
                     height: 38px;
                     background: Theme.panel-bg;
-                    border-width: 1px;
-                    border-color: Theme.border;
 
                     HorizontalLayout {
-                        padding: Theme.spacing-sm;
+                        padding: Theme.space-2;
 
                         AddressBar {
                             path: root.path;

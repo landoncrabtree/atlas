@@ -1,107 +1,73 @@
 import { Theme } from "../theme.slint";
 import { ListView } from "std-widgets.slint";
 
-// Preview row model: one entry in the live-rename table.
 export struct RenamePreview {
-    // Original file name (last path segment).
     original: string,
-    // Proposed new file name after substitution.
     proposed: string,
-    // True when the proposed name collides with another proposed name or with
-    // an existing sibling that is not part of the rename set.
     is-conflict: bool,
-    // True when the substitution produces no change.
     is-unchanged: bool,
 }
 
-// Full-screen overlay that hosts the Bulk Rename dialog.
-//
-// Visibility is controlled by `visible-modal`.  When hidden the component
-// renders nothing.
 export component BulkRenameModal inherits Rectangle {
-    // ── Inputs (pushed from Rust) ─────────────────────────────────────────────
     in property <bool> visible-modal: false;
-    /// Current find pattern (regex or literal).
     in-out property <string> pattern: "";
-    /// Current replacement string.
     in-out property <string> replacement: "";
-    /// Whether regex mode is active (false = literal find / replace).
     in property <bool> use-regex: false;
-    /// Whether matching is case-insensitive.
     in property <bool> case-insensitive: false;
-    /// Computed preview rows.
     in property <[RenamePreview]> preview-rows: [];
-    /// Number of rows with `is-conflict = true`.
     in property <int> conflict-count: 0;
-    /// Number of rows that will actually be renamed (not unchanged, not
-    /// conflicted).
     in property <int> change-count: 0;
-    /// Non-empty when the regex pattern failed to compile.
     in property <string> error-text: "";
 
-    // ── Callbacks (dispatched to Rust) ────────────────────────────────────────
-    /// User edited the find input.
     callback pattern-changed(string);
-    /// User edited the replacement input.
     callback replacement-changed(string);
-    /// User clicked the "Regex" toggle.
     callback toggle-regex();
-    /// User clicked the "Case insensitive" toggle.
     callback toggle-case();
-    /// User confirmed the rename operation.
     callback confirm();
-    /// User dismissed the modal (Cancel button or Escape).
     callback cancel();
-
-    // ── Layout ────────────────────────────────────────────────────────────────
 
     if visible-modal: Rectangle {
         width: 100%;
         height: 100%;
-        background: #00000088;
+        background: #00000066;
 
-        // Click on the dimmed backdrop to cancel.
         TouchArea {
             width: 100%;
             height: 100%;
             clicked => { root.cancel(); }
         }
 
-        // Centered dialog box.
         Rectangle {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            width: min(600px, parent.width - 48px);
+            width: min(620px, parent.width - 48px);
             height: min(460px, parent.height - 96px);
-            background: Theme.panel-bg;
+            background: Theme.panel-bg-elevated;
             border-width: 1px;
             border-color: Theme.border;
-            border-radius: Theme.radius-md;
+            border-radius: Theme.radius-lg;
 
-            // Absorb clicks so they don't fall through to the backdrop.
             TouchArea {
                 width: 100%;
                 height: 100%;
             }
 
             VerticalLayout {
-                padding: Theme.spacing-md;
-                spacing: Theme.spacing-sm;
+                padding: Theme.space-4;
+                spacing: Theme.space-2;
 
-                // ── Header ────────────────────────────────────────────────────
                 Text {
                     text: "Bulk Rename (" + preview-rows.length + " items)";
                     color: Theme.fg;
-                    font-size: Theme.font-size;
+                    font-size: 17px;
                     font-weight: 600;
                     horizontal-alignment: left;
                 }
 
                 Rectangle { height: 1px; background: Theme.border; }
 
-                // ── Find input ────────────────────────────────────────────────
                 VerticalLayout {
-                    spacing: 4px;
+                    spacing: Theme.space-1;
                     Text {
                         text: "Find";
                         color: Theme.fg-muted;
@@ -112,11 +78,11 @@ export component BulkRenameModal inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.border;
                         border-radius: Theme.radius-sm;
-                        background: Theme.bg;
+                        background: Theme.panel-bg-elevated;
 
                         HorizontalLayout {
-                            padding-left: Theme.spacing-sm;
-                            padding-right: Theme.spacing-sm;
+                            padding-left: Theme.space-3;
+                            padding-right: Theme.space-3;
                             alignment: center;
 
                             TextInput {
@@ -138,9 +104,8 @@ export component BulkRenameModal inherits Rectangle {
                     }
                 }
 
-                // ── Replace-with input ────────────────────────────────────────
                 VerticalLayout {
-                    spacing: 4px;
+                    spacing: Theme.space-1;
                     Text {
                         text: "Replace with";
                         color: Theme.fg-muted;
@@ -151,11 +116,11 @@ export component BulkRenameModal inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.border;
                         border-radius: Theme.radius-sm;
-                        background: Theme.bg;
+                        background: Theme.panel-bg-elevated;
 
                         HorizontalLayout {
-                            padding-left: Theme.spacing-sm;
-                            padding-right: Theme.spacing-sm;
+                            padding-left: Theme.space-3;
+                            padding-right: Theme.space-3;
                             alignment: center;
 
                             TextInput {
@@ -177,17 +142,15 @@ export component BulkRenameModal inherits Rectangle {
                     }
                 }
 
-                // ── Mode toggles ──────────────────────────────────────────────
                 HorizontalLayout {
-                    spacing: Theme.spacing-sm;
+                    spacing: Theme.space-2;
 
-                    // "Regex" toggle button.
                     Rectangle {
                         width: 72px;
                         height: 26px;
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
-                        background: use-regex ? Theme.accent : Theme.bg;
+                        background: use-regex ? Theme.accent : Theme.panel-bg;
                         border-color: use-regex ? Theme.accent : Theme.border;
 
                         TouchArea {
@@ -204,13 +167,12 @@ export component BulkRenameModal inherits Rectangle {
                         }
                     }
 
-                    // "Case insensitive" toggle button.
                     Rectangle {
                         width: 128px;
                         height: 26px;
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
-                        background: case-insensitive ? Theme.accent : Theme.bg;
+                        background: case-insensitive ? Theme.accent : Theme.panel-bg;
                         border-color: case-insensitive ? Theme.accent : Theme.border;
 
                         TouchArea {
@@ -228,15 +190,14 @@ export component BulkRenameModal inherits Rectangle {
                     }
                 }
 
-                // ── Regex compile error ───────────────────────────────────────
                 if error-text != "": Rectangle {
                     height: 24px;
                     background: Theme.error.with-alpha(0.12);
                     border-radius: Theme.radius-sm;
 
                     HorizontalLayout {
-                        padding-left: Theme.spacing-sm;
-                        padding-right: Theme.spacing-sm;
+                        padding-left: Theme.space-3;
+                        padding-right: Theme.space-3;
                         alignment: center;
 
                         Text {
@@ -250,53 +211,52 @@ export component BulkRenameModal inherits Rectangle {
                     }
                 }
 
-                // ── Preview table ─────────────────────────────────────────────
-                Rectangle {
-                    height: 1px; background: Theme.border;
-                }
+                Rectangle { height: 1px; background: Theme.border; }
 
-                // Column header row.
                 HorizontalLayout {
-                    padding-left: Theme.spacing-sm;
-                    padding-right: Theme.spacing-sm;
-                    spacing: Theme.spacing-sm;
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-2;
+                    spacing: Theme.space-2;
 
                     Text {
                         text: "Original";
                         color: Theme.fg-muted;
-                        font-size: 11px;
+                        font-size: 10px;
+                        font-weight: 600;
                         horizontal-stretch: 1;
                     }
                     Text {
                         text: " ";
                         color: Theme.fg-muted;
-                        font-size: 11px;
+                        font-size: 10px;
                         width: 16px;
                     }
                     Text {
                         text: "Proposed";
                         color: Theme.fg-muted;
-                        font-size: 11px;
+                        font-size: 10px;
+                        font-weight: 600;
                         horizontal-stretch: 1;
                     }
                 }
 
-                // Virtualized preview list.
                 ListView {
                     vertical-stretch: 1;
 
-                    for row[i] in preview-rows: Rectangle {
-                        height: 26px;
+                    for row[i] in preview-rows: row-bg := Rectangle {
+                        height: 30px;
                         background: row.is-conflict
                             ? Theme.error.with-alpha(0.10)
-                            : (mod(i, 2) == 0 ? Theme.bg : Theme.panel-bg);
+                            : (row-ta.has-hover ? Theme.hover-bg : transparent);
                         opacity: row.is-unchanged ? 0.45 : 1.0;
-                        border-radius: 2px;
+                        border-radius: Theme.radius-sm;
+
+                        row-ta := TouchArea { width: 100%; height: 100%; }
 
                         HorizontalLayout {
-                            padding-left: Theme.spacing-sm;
-                            padding-right: Theme.spacing-sm;
-                            spacing: Theme.spacing-sm;
+                            padding-left: Theme.space-2;
+                            padding-right: Theme.space-2;
+                            spacing: Theme.space-2;
                             alignment: center;
 
                             Text {
@@ -332,12 +292,10 @@ export component BulkRenameModal inherits Rectangle {
 
                 Rectangle { height: 1px; background: Theme.border; }
 
-                // ── Footer: conflict hint + action buttons ────────────────────
                 HorizontalLayout {
-                    spacing: Theme.spacing-sm;
+                    spacing: Theme.space-2;
                     alignment: end;
 
-                    // Conflict / error hint.
                     if conflict-count > 0: Text {
                         text: conflict-count + " conflict(s)";
                         color: Theme.error;
@@ -346,14 +304,13 @@ export component BulkRenameModal inherits Rectangle {
                         horizontal-stretch: 1;
                     }
 
-                    // Cancel button.
                     Rectangle {
                         width: 80px;
                         height: 30px;
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
                         border-color: Theme.border;
-                        background: Theme.bg;
+                        background: Theme.panel-bg;
 
                         TouchArea {
                             width: 100%; height: 100%;
@@ -369,12 +326,6 @@ export component BulkRenameModal inherits Rectangle {
                         }
                     }
 
-                    // "Rename N files" primary button.
-                    //
-                    // Disabled when:
-                    //   - change-count == 0  (nothing to rename)
-                    //   - conflict-count > 0 (unresolved collisions)
-                    //   - error-text != ""   (regex compile error)
                     property <bool> confirm-enabled:
                         change-count > 0 && conflict-count == 0 && error-text == "";
 

@@ -1,10 +1,3 @@
-// One row in the Tree view.
-//
-// Renders indentation, a chevron (▸/▾) or leaf spacer, kind glyph, and name.
-// Applies selection / focus / hover / hidden visual states.
-//
-// Properties for each tree-node field are passed individually so that
-// tree-view.slint can avoid a circular import (TreeNode is declared there).
 import { Theme } from "../../theme.slint";
 import { EntryRowItem } from "../details/column.slint";
 
@@ -13,14 +6,14 @@ export component TreeRow {
     in property <string> node-name;
     in property <int> depth: 0;
     in property <length> indent-per-level: 16px;
-    in property <length> row-height: 24px;
+    in property <length> row-height: 26px;
     in property <bool> is-expandable: false;
     in property <bool> is-expanded: false;
     in property <bool> is-loading: false;
     in property <bool> selected: false;
     in property <bool> focused: false;
 
-    callback clicked(bool /*ctrl*/, bool /*shift*/);
+    callback clicked(bool, bool);
     callback double-clicked();
     callback chevron-clicked();
 
@@ -29,26 +22,25 @@ export component TreeRow {
     bg := Rectangle {
         background: root.selected
             ? Theme.selection-bg
-            : (ta.has-hover ? Theme.panel-bg : transparent);
+            : (ta.has-hover ? Theme.hover-bg : transparent);
         border-width: root.focused && !root.selected ? 1px : 0px;
         border-color: Theme.accent;
+        border-radius: Theme.radius-sm;
         opacity: root.entry.is-hidden ? 0.6 : 1.0;
 
         HorizontalLayout {
             spacing: 0px;
 
-            // Depth indentation
             Rectangle {
                 width: root.depth * root.indent-per-level;
                 horizontal-stretch: 0;
             }
 
-            // Chevron toggle area (always 16 px wide for consistent alignment)
             chevron-area := Rectangle {
                 width: 16px;
                 horizontal-stretch: 0;
 
-                if root.is-expandable : TouchArea {
+                if root.is-expandable : chevron-ta := TouchArea {
                     width: parent.width;
                     height: parent.height;
                     clicked => { root.chevron-clicked(); }
@@ -56,16 +48,16 @@ export component TreeRow {
                     Text {
                         width: parent.width;
                         height: parent.height;
-                        text: root.is-loading ? "⟳"
-                            : (root.is-expanded ? "▾" : "▸");
-                        color: root.selected ? Theme.selection-fg : Theme.fg-muted;
+                        text: root.is-loading ? "⟳" : (root.is-expanded ? "⌄" : "›");
+                        color: root.selected
+                            ? Theme.selection-fg
+                            : (chevron-ta.has-hover ? Theme.fg : Theme.fg-muted);
                         vertical-alignment: center;
                         horizontal-alignment: center;
                     }
                 }
             }
 
-            // Kind icon
             Text {
                 width: 20px;
                 horizontal-stretch: 0;
@@ -75,7 +67,6 @@ export component TreeRow {
                 horizontal-alignment: center;
             }
 
-            // Display name
             Text {
                 horizontal-stretch: 1;
                 text: root.node-name + (root.entry.is-symlink ? " →" : "");

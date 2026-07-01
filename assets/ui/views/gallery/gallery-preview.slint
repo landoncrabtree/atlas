@@ -12,21 +12,29 @@ export component GalleryPreview {
         border-radius: Theme.radius-md;
         clip: true;
 
-        if preview-fallback-glyph == "" : Image {
-            width: parent.width;
-            height: parent.height;
-            source: root.preview-image;
-            image-fit: contain;
-        }
+        Rectangle {
+            x: Theme.space-5;
+            y: Theme.space-5;
+            width: parent.width - Theme.space-5 * 2;
+            height: parent.height - Theme.space-5 * 2;
+            background: transparent;
 
-        if preview-fallback-glyph != "" : Text {
-            width: parent.width;
-            height: parent.height;
-            text: root.preview-fallback-glyph;
-            color: Theme.fg-muted;
-            font-size: 120px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+            if preview-fallback-glyph == "" : Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.preview-image;
+                image-fit: contain;
+            }
+
+            if preview-fallback-glyph != "" : Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.preview-fallback-glyph;
+                color: Theme.fg-muted;
+                font-size: 120px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
 
         if preview-loading : Rectangle {

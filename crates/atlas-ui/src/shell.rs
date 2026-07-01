@@ -107,7 +107,27 @@ fn build_palette_controller(
         registry.register(action);
     }
 
-    let keymap = Arc::new(Keymap::with_defaults());
+    // Build the keymap starting from defaults, then layer the user's
+    // keymap.toml on top if it exists.  Failures are logged as warnings so a
+    // malformed user keymap never prevents startup.
+    let mut keymap = Keymap::with_defaults();
+    if let Ok(km_path) = atlas_config::keymap_file_path() {
+        if km_path.exists() {
+            match std::fs::read_to_string(&km_path) {
+                Ok(text) => {
+                    if let Err(e) = keymap.apply_user_toml(&text) {
+                        tracing::warn!("ignoring malformed keymap {}: {e}", km_path.display());
+                    } else {
+                        tracing::info!("loaded user keymap from {}", km_path.display());
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("could not read keymap file {}: {e}", km_path.display());
+                }
+            }
+        }
+    }
+    let keymap = Arc::new(keymap);
     let actions_source = Arc::new(ActionsSource::new(Arc::new(registry), Arc::clone(&keymap)));
     let path_index = Arc::new(WalkerPathIndex::new(palette_root()));
     let goto_source = Arc::new(GotoPathsSource::new(path_index));
@@ -1252,13 +1272,18 @@ impl AppShell {
             let c = &tokens.colors;
             window.set_theme_bg(c.bg.to_slint_color());
             window.set_theme_panel_bg(c.panel_bg.to_slint_color());
+            window.set_theme_panel_bg_elevated(c.panel_bg_elevated.to_slint_color());
             window.set_theme_fg(c.fg.to_slint_color());
             window.set_theme_fg_muted(c.fg_muted.to_slint_color());
+            window.set_theme_fg_faint(c.fg_faint.to_slint_color());
             window.set_theme_border(c.border.to_slint_color());
+            window.set_theme_border_strong(c.border_strong.to_slint_color());
             window.set_theme_accent(c.accent.to_slint_color());
             window.set_theme_accent_fg(c.accent_fg.to_slint_color());
+            window.set_theme_accent_soft(c.accent_soft.to_slint_color());
             window.set_theme_selection_bg(c.selection_bg.to_slint_color());
             window.set_theme_selection_fg(c.selection_fg.to_slint_color());
+            window.set_theme_hover_bg(c.hover_bg.to_slint_color());
             window.set_theme_error(c.error.to_slint_color());
             window.set_theme_success(c.success.to_slint_color());
             window.set_theme_warning(c.warning.to_slint_color());
@@ -1272,12 +1297,27 @@ impl AppShell {
             window.set_theme_titlebar_h(ch.titlebar_h_px);
             window.set_theme_statusbar_h(ch.statusbar_h_px);
             window.set_theme_tab_h(ch.tab_h_px);
+            window.set_theme_addressbar_h(ch.addressbar_h_px);
+            window.set_theme_row_h_default(ch.row_h_default_px);
+            window.set_theme_row_h_compact(ch.row_h_compact_px);
+            window.set_theme_row_h_spacious(ch.row_h_spacious_px);
+            window.set_theme_radius_xs(ch.radius_xs_px);
             window.set_theme_radius_sm(ch.radius_sm_px);
             window.set_theme_radius_md(ch.radius_md_px);
-            window.set_theme_spacing_xs(ch.spacing_xs_px);
-            window.set_theme_spacing_sm(ch.spacing_sm_px);
-            window.set_theme_spacing_md(ch.spacing_md_px);
-            window.set_theme_spacing_lg(ch.spacing_lg_px);
+            window.set_theme_radius_lg(ch.radius_lg_px);
+            window.set_theme_radius_xl(ch.radius_xl_px);
+            window.set_theme_space_1(ch.space_1_px);
+            window.set_theme_space_2(ch.space_2_px);
+            window.set_theme_space_3(ch.space_3_px);
+            window.set_theme_space_4(ch.space_4_px);
+            window.set_theme_space_5(ch.space_5_px);
+            window.set_theme_space_6(ch.space_6_px);
+            window.set_theme_space_8(ch.space_8_px);
+            window.set_theme_space_10(ch.space_10_px);
+            window.set_theme_spacing_xs(ch.space_1_px);
+            window.set_theme_spacing_sm(ch.space_2_px);
+            window.set_theme_spacing_md(ch.space_3_px);
+            window.set_theme_spacing_lg(ch.space_4_px);
 
             window.set_dark(tokens.mode.is_dark());
         });

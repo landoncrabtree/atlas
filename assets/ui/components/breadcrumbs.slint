@@ -1,44 +1,56 @@
 import { Theme } from "../theme.slint";
 
-// Path breadcrumb strip. The Rust side splits the path string into segments
-// and passes them as a model. Each segment is a clickable text button.
+// Path breadcrumb strip.
 export component Breadcrumbs {
     in property <[string]> segments: [];
-    callback clicked(int /* segment index */);
+    callback clicked(int);
 
-    height: 28px;
+    height: 26px;
 
     Rectangle {
         background: Theme.panel-bg;
 
         HorizontalLayout {
             alignment: start;
-            padding-left: Theme.spacing-sm;
+            padding-left: Theme.space-3;
             spacing: 0px;
 
             for seg[i] in segments: HorizontalLayout {
                 spacing: 0px;
                 alignment: center;
 
-                TouchArea {
-                    width: seg-text.width + Theme.spacing-sm * 2;
-                    height: 28px;
+                seg-ta := TouchArea {
+                    width: seg-text.width + Theme.space-2 * 2;
+                    height: parent.height;
                     clicked => { root.clicked(i); }
 
+                    Rectangle {
+                        background: seg-ta.has-hover ? Theme.hover-bg : transparent;
+                        border-radius: Theme.radius-xs;
+                        x: 0px; y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+                        animate background { duration: 120ms; easing: ease-out; }
+                    }
+
                     seg-text := Text {
+                        x: Theme.space-2;
                         text: seg;
-                        color: i == segments.length - 1 ? Theme.fg : Theme.accent;
+                        color: i == segments.length - 1 ? Theme.fg : Theme.fg-muted;
                         font-size: 12px;
                         vertical-alignment: center;
+                        animate color { duration: 120ms; easing: ease-out; }
                     }
                 }
 
-                // Separator between segments (not after the last)
+                // Separator › (not after the last segment)
                 if i < segments.length - 1 : Text {
-                    text: "/";
-                    color: Theme.fg-muted;
-                    font-size: 12px;
+                    text: "›";
+                    color: Theme.fg-faint;
+                    font-size: 11px;
                     vertical-alignment: center;
+                    width: 12px;
+                    horizontal-alignment: center;
                 }
             }
         }

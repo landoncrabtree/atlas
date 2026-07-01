@@ -1,22 +1,18 @@
 import { Theme } from "../../theme.slint";
 import { ColumnSpec } from "column.slint";
 
-// Column header bar with sort indicators and resize handles.
-//
-// Each column title is a click target that emits header-clicked(column_index).
-// The narrow right edge of each column is a drag target for resize.
 export component Header {
     in property <[ColumnSpec]> columns: [];
 
     callback header-clicked(int);
     callback header-resize(int, float);
 
-    height: 26px;
+    height: 28px;
 
     Rectangle {
         background: Theme.panel-bg;
-        border-width: 0px;
 
+        // Bottom separator
         Rectangle {
             y: parent.height - 1px;
             height: 1px;
@@ -37,15 +33,16 @@ export component Header {
                 }
 
                 HorizontalLayout {
-                    padding-left: Theme.spacing-sm;
-                    padding-right: Theme.spacing-sm;
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-2;
                     alignment: col.align-right ? end : start;
-                    spacing: Theme.spacing-xs;
+                    spacing: Theme.space-1;
 
                     Text {
                         text: col.title;
-                        color: Theme.fg;
+                        color: Theme.fg-muted;
                         vertical-alignment: center;
+                        font-size: 10px;
                         font-weight: 600;
                     }
 
@@ -53,6 +50,7 @@ export component Header {
                         text: col.sort-dir == 1 ? "↑" : "↓";
                         color: Theme.accent;
                         vertical-alignment: center;
+                        font-size: 10px;
                     }
                 }
 

@@ -1,28 +1,24 @@
 import { Theme } from "../theme.slint";
 
-// Result item model for the command palette.
 export struct PaletteEntry {
     title: string,
     subtitle: string,
     action-id: string,
 }
 
-// Modal command palette overlay.
-// Visible when `visible` is true; dims the background and shows a centered
-// search box with a scrollable result list.
 export component CommandPalette {
     in-out property <string> query: "";
     in property <[PaletteEntry]> results: [];
     in property <int> selected-index: 0;
 
     callback query-changed(string);
-    callback confirm(string /* action_id */);
+    callback confirm(string);
     callback dismiss();
 
     if self.visible : Rectangle {
         width: 100%;
         height: 100%;
-        background: #00000088;
+        background: #00000066;
 
         TouchArea {
             width: 100%;
@@ -32,40 +28,34 @@ export component CommandPalette {
 
         Rectangle {
             x: (parent.width - self.width) / 2;
-            y: parent.height * 0.15;
-            width: min(600px, parent.width - 48px);
-            height: min(420px, parent.height - 96px);
-            background: Theme.panel-bg;
-            border-width: 1px;
-            border-color: Theme.border;
-            border-radius: Theme.radius-md;
+            y: parent.height * 0.20;
+            width: min(560px, parent.width - 48px);
+            height: min(440px, parent.height - 80px);
+            background: Theme.panel-bg-elevated;
+            border-radius: Theme.radius-lg;
 
-            TouchArea {
-                width: 100%;
-                height: 100%;
-            }
+            TouchArea { width: 100%; height: 100%; }
 
             VerticalLayout {
-                padding: Theme.spacing-sm;
-                spacing: Theme.spacing-sm;
+                spacing: 0px;
 
+                // Prompt input row
                 Rectangle {
-                    height: 36px;
-                    border-width: 1px;
-                    border-color: Theme.accent;
-                    border-radius: Theme.radius-sm;
-                    background: Theme.bg;
+                    height: 44px;
+                    background: transparent;
 
                     HorizontalLayout {
-                        padding-left: Theme.spacing-sm;
-                        padding-right: Theme.spacing-sm;
+                        padding-left: Theme.space-4;
+                        padding-right: Theme.space-4;
 
                         TextInput {
                             text <=> root.query;
                             color: Theme.fg;
-                            font-size: Theme.font-size;
+                            font-size: 15px;
+                            font-weight: 600;
                             vertical-alignment: center;
                             single-line: true;
+                            horizontal-stretch: 1;
                             edited => { root.query-changed(self.text); }
                             accepted => {
                                 if results.length > 0 {
@@ -83,15 +73,28 @@ export component CommandPalette {
                     }
                 }
 
+                // Divider
                 Rectangle { height: 1px; background: Theme.border; }
 
+                // Results list
                 Rectangle {
                     vertical-stretch: 1;
+                    clip: true;
 
                     for entry[i] in results : Rectangle {
-                        height: 48px;
-                        background: i == selected-index ? Theme.selection-bg : #00000000;
-                        border-radius: Theme.radius-sm;
+                        y: i * 40px;
+                        height: 40px;
+                        width: parent.width;
+                        background: i == selected-index ? Theme.accent-soft : transparent;
+                        animate background { duration: 100ms; easing: linear; }
+
+                        // Selected accent left rail
+                        if i == selected-index : Rectangle {
+                            x: 0px; y: 0px;
+                            width: 2px;
+                            height: 40px;
+                            background: Theme.accent;
+                        }
 
                         TouchArea {
                             width: 100%;
@@ -100,33 +103,36 @@ export component CommandPalette {
                         }
 
                         VerticalLayout {
-                            padding-left: Theme.spacing-sm;
-                            padding-right: Theme.spacing-sm;
+                            x: Theme.space-4;
+                            y: 0px;
+                            width: parent.width - Theme.space-4 * 2;
+                            height: parent.height;
                             alignment: center;
                             spacing: 2px;
 
                             Text {
                                 text: entry.title;
-                                color: i == selected-index ? Theme.selection-fg : Theme.fg;
+                                color: Theme.fg;
                                 font-size: 13px;
                             }
 
-                            Text {
+                            if entry.subtitle != "" : Text {
                                 text: entry.subtitle;
                                 color: Theme.fg-muted;
                                 font-size: 11px;
                             }
                         }
                     }
-                }
 
-                if results.length == 0 : Text {
-                    text: query == "" ? "Type to search…" : "No results";
-                    color: Theme.fg-muted;
-                    font-size: 13px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    height: 60px;
+                    if results.length == 0 : Text {
+                        text: query == "" ? "Type to search…" : "No results";
+                        color: Theme.fg-faint;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width;
+                        height: 60px;
+                    }
                 }
             }
         }

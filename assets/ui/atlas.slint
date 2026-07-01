@@ -27,32 +27,52 @@ export component AtlasWindow inherits Window {
 
     in property <bool> dark: true;
 
-    in-out property <color> theme-bg: #0e1116;
-    in-out property <color> theme-panel-bg: #161b22;
-    in-out property <color> theme-fg: #e6edf3;
-    in-out property <color> theme-fg-muted: #7d8590;
-    in-out property <color> theme-border: #30363d;
-    in-out property <color> theme-accent: #2f81f7;
+    in-out property <color> theme-bg: #0f1115;
+    in-out property <color> theme-panel-bg: #171a20;
+    in-out property <color> theme-panel-bg-elevated: #1e232b;
+    in-out property <color> theme-fg: #e6ebf4;
+    in-out property <color> theme-fg-muted: #8b95a7;
+    in-out property <color> theme-fg-faint: #5a6478;
+    in-out property <color> theme-border: #20262f;
+    in-out property <color> theme-border-strong: #2b3341;
+    in-out property <color> theme-accent: #4a9eff;
     in-out property <color> theme-accent-fg: #ffffff;
-    in-out property <color> theme-selection-bg: #1f6feb;
+    in-out property <color> theme-accent-soft: #4a9eff26;
+    in-out property <color> theme-selection-bg: #3d7ac9;
     in-out property <color> theme-selection-fg: #ffffff;
-    in-out property <color> theme-error: #f85149;
-    in-out property <color> theme-success: #3fb950;
-    in-out property <color> theme-warning: #d29922;
+    in-out property <color> theme-hover-bg: #ffffff0d;
+    in-out property <color> theme-error: #ff6b6b;
+    in-out property <color> theme-success: #5bd18a;
+    in-out property <color> theme-warning: #f5c274;
 
-    in-out property <string> theme-font-family: "Inter";
-    in-out property <length> theme-font-size: 14px;
-    in-out property <string> theme-monospace: "JetBrains Mono";
+    in-out property <string> theme-font-family: "SF Pro Text, Inter, system-ui, sans-serif";
+    in-out property <length> theme-font-size: 13px;
+    in-out property <string> theme-monospace: "SF Mono, JetBrains Mono, Menlo, monospace";
 
-    in-out property <length> theme-radius-sm: 4px;
+    in-out property <length> theme-radius-xs: 4px;
+    in-out property <length> theme-radius-sm: 6px;
     in-out property <length> theme-radius-md: 8px;
+    in-out property <length> theme-radius-lg: 10px;
+    in-out property <length> theme-radius-xl: 14px;
+    in-out property <length> theme-space-1: 4px;
+    in-out property <length> theme-space-2: 8px;
+    in-out property <length> theme-space-3: 12px;
+    in-out property <length> theme-space-4: 16px;
+    in-out property <length> theme-space-5: 20px;
+    in-out property <length> theme-space-6: 24px;
+    in-out property <length> theme-space-8: 32px;
+    in-out property <length> theme-space-10: 40px;
     in-out property <length> theme-spacing-xs: 4px;
     in-out property <length> theme-spacing-sm: 8px;
     in-out property <length> theme-spacing-md: 12px;
     in-out property <length> theme-spacing-lg: 16px;
     in-out property <length> theme-titlebar-h: 36px;
     in-out property <length> theme-statusbar-h: 24px;
-    in-out property <length> theme-tab-h: 28px;
+    in-out property <length> theme-tab-h: 32px;
+    in-out property <length> theme-addressbar-h: 30px;
+    in-out property <length> theme-row-h-default: 30px;
+    in-out property <length> theme-row-h-compact: 24px;
+    in-out property <length> theme-row-h-spacious: 38px;
 
     in property <bool> dual-pane: false;
     in property <int> focus-index: 0;
@@ -274,21 +294,37 @@ export component AtlasWindow inherits Window {
         Theme.dark = dark;
         Theme.bg = theme-bg;
         Theme.panel-bg = theme-panel-bg;
+        Theme.panel-bg-elevated = theme-panel-bg-elevated;
         Theme.fg = theme-fg;
         Theme.fg-muted = theme-fg-muted;
+        Theme.fg-faint = theme-fg-faint;
         Theme.border = theme-border;
+        Theme.border-strong = theme-border-strong;
         Theme.accent = theme-accent;
         Theme.accent-fg = theme-accent-fg;
+        Theme.accent-soft = theme-accent-soft;
         Theme.selection-bg = theme-selection-bg;
         Theme.selection-fg = theme-selection-fg;
+        Theme.hover-bg = theme-hover-bg;
         Theme.error = theme-error;
         Theme.success = theme-success;
         Theme.warning = theme-warning;
         Theme.font-family = theme-font-family;
         Theme.font-size = theme-font-size;
         Theme.monospace = theme-monospace;
+        Theme.radius-xs = theme-radius-xs;
         Theme.radius-sm = theme-radius-sm;
         Theme.radius-md = theme-radius-md;
+        Theme.radius-lg = theme-radius-lg;
+        Theme.radius-xl = theme-radius-xl;
+        Theme.space-1 = theme-space-1;
+        Theme.space-2 = theme-space-2;
+        Theme.space-3 = theme-space-3;
+        Theme.space-4 = theme-space-4;
+        Theme.space-5 = theme-space-5;
+        Theme.space-6 = theme-space-6;
+        Theme.space-8 = theme-space-8;
+        Theme.space-10 = theme-space-10;
         Theme.spacing-xs = theme-spacing-xs;
         Theme.spacing-sm = theme-spacing-sm;
         Theme.spacing-md = theme-spacing-md;
@@ -296,26 +332,46 @@ export component AtlasWindow inherits Window {
         Theme.titlebar-h = theme-titlebar-h;
         Theme.statusbar-h = theme-statusbar-h;
         Theme.tab-h = theme-tab-h;
+        Theme.addressbar-h = theme-addressbar-h;
+        Theme.row-h-default = theme-row-h-default;
+        Theme.row-h-compact = theme-row-h-compact;
+        Theme.row-h-spacious = theme-row-h-spacious;
     }
 
     changed dark => { Theme.dark = dark; }
     changed theme-bg => { Theme.bg = theme-bg; }
     changed theme-panel-bg => { Theme.panel-bg = theme-panel-bg; }
+    changed theme-panel-bg-elevated => { Theme.panel-bg-elevated = theme-panel-bg-elevated; }
     changed theme-fg => { Theme.fg = theme-fg; }
     changed theme-fg-muted => { Theme.fg-muted = theme-fg-muted; }
+    changed theme-fg-faint => { Theme.fg-faint = theme-fg-faint; }
     changed theme-border => { Theme.border = theme-border; }
+    changed theme-border-strong => { Theme.border-strong = theme-border-strong; }
     changed theme-accent => { Theme.accent = theme-accent; }
     changed theme-accent-fg => { Theme.accent-fg = theme-accent-fg; }
+    changed theme-accent-soft => { Theme.accent-soft = theme-accent-soft; }
     changed theme-selection-bg => { Theme.selection-bg = theme-selection-bg; }
     changed theme-selection-fg => { Theme.selection-fg = theme-selection-fg; }
+    changed theme-hover-bg => { Theme.hover-bg = theme-hover-bg; }
     changed theme-error => { Theme.error = theme-error; }
     changed theme-success => { Theme.success = theme-success; }
     changed theme-warning => { Theme.warning = theme-warning; }
     changed theme-font-family => { Theme.font-family = theme-font-family; }
     changed theme-font-size => { Theme.font-size = theme-font-size; }
     changed theme-monospace => { Theme.monospace = theme-monospace; }
+    changed theme-radius-xs => { Theme.radius-xs = theme-radius-xs; }
     changed theme-radius-sm => { Theme.radius-sm = theme-radius-sm; }
     changed theme-radius-md => { Theme.radius-md = theme-radius-md; }
+    changed theme-radius-lg => { Theme.radius-lg = theme-radius-lg; }
+    changed theme-radius-xl => { Theme.radius-xl = theme-radius-xl; }
+    changed theme-space-1 => { Theme.space-1 = theme-space-1; }
+    changed theme-space-2 => { Theme.space-2 = theme-space-2; }
+    changed theme-space-3 => { Theme.space-3 = theme-space-3; }
+    changed theme-space-4 => { Theme.space-4 = theme-space-4; }
+    changed theme-space-5 => { Theme.space-5 = theme-space-5; }
+    changed theme-space-6 => { Theme.space-6 = theme-space-6; }
+    changed theme-space-8 => { Theme.space-8 = theme-space-8; }
+    changed theme-space-10 => { Theme.space-10 = theme-space-10; }
     changed theme-spacing-xs => { Theme.spacing-xs = theme-spacing-xs; }
     changed theme-spacing-sm => { Theme.spacing-sm = theme-spacing-sm; }
     changed theme-spacing-md => { Theme.spacing-md = theme-spacing-md; }
@@ -323,6 +379,10 @@ export component AtlasWindow inherits Window {
     changed theme-titlebar-h => { Theme.titlebar-h = theme-titlebar-h; }
     changed theme-statusbar-h => { Theme.statusbar-h = theme-statusbar-h; }
     changed theme-tab-h => { Theme.tab-h = theme-tab-h; }
+    changed theme-addressbar-h => { Theme.addressbar-h = theme-addressbar-h; }
+    changed theme-row-h-default => { Theme.row-h-default = theme-row-h-default; }
+    changed theme-row-h-compact => { Theme.row-h-compact = theme-row-h-compact; }
+    changed theme-row-h-spacious => { Theme.row-h-spacious = theme-row-h-spacious; }
 
     FocusScope {
         key-pressed(event) => {
@@ -401,7 +461,6 @@ export component AtlasWindow inherits Window {
             spacing: 0px;
 
             Titlebar {
-                app-name: "Atlas";
                 location: location-str();
             }
 

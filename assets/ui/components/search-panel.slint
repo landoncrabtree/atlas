@@ -21,12 +21,18 @@ export component SearchPanel inherits Rectangle {
         width: 100%;
         height: 100%;
         background: Theme.panel-bg;
-        border-width: 1px;
-        border-color: Theme.border;
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 1px;
+            height: parent.height;
+            background: Theme.border;
+        }
 
         VerticalLayout {
-            padding: Theme.spacing-md;
-            spacing: Theme.spacing-sm;
+            padding: Theme.space-4;
+            spacing: Theme.space-3;
 
             HorizontalLayout {
                 height: 32px;
@@ -34,32 +40,31 @@ export component SearchPanel inherits Rectangle {
                 Text {
                     text: "Search";
                     color: Theme.fg;
-                    font-size: 16px;
+                    font-size: 15px;
                     font-weight: 600;
                     vertical-alignment: center;
                 }
 
                 Rectangle { horizontal-stretch: 1; }
 
-                Rectangle {
+                close-ta := TouchArea {
                     width: 24px;
                     height: 24px;
-                    border-width: 1px;
-                    border-color: Theme.border;
-                    border-radius: Theme.radius-sm;
-                    background: Theme.bg;
+                    clicked => { root.close(); }
 
-                    TouchArea {
-                        width: 100%;
-                        height: 100%;
-                        clicked => { root.close(); }
-                    }
+                    Rectangle {
+                        border-radius: Theme.radius-sm;
+                        background: close-ta.has-hover ? Theme.hover-bg : transparent;
+                        animate background { duration: 100ms; easing: ease-out; }
 
-                    Text {
-                        text: "×";
-                        color: Theme.fg-muted;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                        Text {
+                            text: "×";
+                            color: Theme.fg-muted;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: parent.width;
+                            height: parent.height;
+                        }
                     }
                 }
             }
@@ -69,16 +74,17 @@ export component SearchPanel inherits Rectangle {
                 border-width: 1px;
                 border-color: Theme.accent;
                 border-radius: Theme.radius-sm;
-                background: Theme.bg;
+                background: Theme.panel-bg-elevated;
 
                 HorizontalLayout {
-                    padding-left: Theme.spacing-sm;
-                    padding-right: Theme.spacing-sm;
+                    padding-left: Theme.space-3;
+                    padding-right: Theme.space-3;
 
                     TextInput {
                         text: root.query;
                         color: Theme.fg;
-                        font-size: Theme.font-size;
+                        font-size: 15px;
+                        font-weight: 600;
                         vertical-alignment: center;
                         single-line: true;
                         edited => { root.query-changed(self.text); }
@@ -106,41 +112,50 @@ export component SearchPanel inherits Rectangle {
 
                 if rows.length == 0 : Text {
                     text: query == "" ? "Type to search…" : "No results";
-                    color: Theme.fg-muted;
+                    color: Theme.fg-faint;
                     font-size: 13px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                     height: 60px;
                 }
 
-                for row[i] in rows : Rectangle {
-                    height: 56px;
-                    background: i == selected-index ? Theme.selection-bg : Theme.panel-bg;
+                for row[i] in rows : row-bg := Rectangle {
+                    height: 30px;
+                    background: i == selected-index
+                        ? Theme.selection-bg
+                        : (row-ta.has-hover ? Theme.hover-bg : transparent);
                     border-radius: Theme.radius-sm;
 
-                    TouchArea {
+                    row-ta := TouchArea {
                         width: 100%;
                         height: 100%;
+                        clicked => { root.confirm(i); }
                         double-clicked => { root.confirm(i); }
                     }
 
-                    VerticalLayout {
-                        padding-left: Theme.spacing-sm;
-                        padding-right: Theme.spacing-sm;
+                    HorizontalLayout {
+                        padding-left: Theme.space-2;
+                        padding-right: Theme.space-2;
+                        spacing: Theme.space-2;
                         alignment: center;
-                        spacing: 2px;
 
                         Text {
                             text: row.label;
                             color: i == selected-index ? Theme.selection-fg : Theme.fg;
                             font-size: 13px;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
                         }
 
                         Text {
                             text: row.snippet;
                             color: i == selected-index ? Theme.selection-fg : Theme.fg-muted;
                             font-size: 11px;
+                            font-family: Theme.monospace;
                             overflow: elide;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
                         }
                     }
                 }

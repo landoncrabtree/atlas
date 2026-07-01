@@ -1,11 +1,6 @@
 import { Theme } from "../../theme.slint";
 import { EntryRowItem } from "../details/column.slint";
 
-// A single cell in the Grid view.
-//
-// Shows either a thumbnail image (when `has-thumb` is true) layered over a
-// kind-icon glyph placeholder, or just the glyph for non-thumbnailable entries.
-// Label is below the thumbnail area, ellipsized to one line.
 export component GridCell {
     in property <EntryRowItem> item;
     in property <image> thumbnail;
@@ -15,7 +10,7 @@ export component GridCell {
     in property <length> cell-size: 128px;
     in property <length> label-height: 36px;
 
-    callback clicked(bool /*ctrl*/, bool /*shift*/);
+    callback clicked(bool, bool);
     callback double-clicked();
     callback context-menu(length, length);
     callback became-visible();
@@ -25,21 +20,22 @@ export component GridCell {
     opacity: item.is-hidden ? 0.6 : 1.0;
 
     bg := Rectangle {
-        background: selected ? Theme.selection-bg : (ta.has-hover ? Theme.panel-bg : transparent);
+        background: ta.has-hover ? Theme.hover-bg : transparent;
         border-width: focused && !selected ? 2px : 0px;
         border-color: Theme.accent;
-        border-radius: Theme.radius-sm;
+        border-radius: Theme.radius-md;
         width: parent.width;
         height: parent.height;
 
-        // Thumbnail area
         thumb-area := Rectangle {
             x: 4px;
             y: 4px;
             width: cell-size - 8px;
             height: cell-size - 8px;
+            background: selected ? Theme.selection-bg.with-alpha(0.25) : transparent;
+            border-radius: Theme.radius-md;
+            clip: true;
 
-            // Kind-icon glyph — always present as placeholder or sole icon
             Text {
                 width: parent.width;
                 height: parent.height;
@@ -50,7 +46,6 @@ export component GridCell {
                 color: selected ? Theme.selection-fg : Theme.fg-muted;
             }
 
-            // Thumbnail image layered on top; invisible when source is default
             if has-thumb : Image {
                 width: parent.width;
                 height: parent.height;
@@ -59,7 +54,6 @@ export component GridCell {
             }
         }
 
-        // File name label
         Text {
             x: 4px;
             y: cell-size - 4px;
