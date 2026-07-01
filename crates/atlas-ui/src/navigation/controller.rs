@@ -6,20 +6,25 @@ use std::{
     sync::Arc,
 };
 
+use ahash::AHashMap;
 use atlas_core::path::expand_tilde;
 use atlas_fs::{
-    Filter, InMemoryLocationViewModel, OpenOptions, SortKey as FsSortKey,
+    Filter, InMemoryLocationViewModel, LocationViewModel, OpenOptions, SortKey as FsSortKey,
     SortOrder as FsSortOrder, SortSpec,
 };
 use parking_lot::{Mutex, RwLock};
 use smallvec::SmallVec;
 
-use crate::navigation::{bookmarks::BookmarkStore, history::BackForwardStack};
+use crate::{
+    models::split::PaneId,
+    navigation::{bookmarks::BookmarkStore, history::BackForwardStack},
+};
 
 /// Default history capacity (number of back entries per pane).
 const DEFAULT_HISTORY_CAPACITY: usize = 100;
 
 type LocationChangedCallback = dyn Fn(usize, Arc<InMemoryLocationViewModel>) + Send + Sync;
+type PaneLocationChangedCallback = dyn Fn(PaneId, Arc<InMemoryLocationViewModel>) + Send + Sync;
 
 /// Per-pane navigation controller.
 ///
@@ -37,6 +42,10 @@ pub struct NavigationController {
     locations: RwLock<SmallVec<[Option<Arc<InMemoryLocationViewModel>>; 2]>>,
     /// Callback invoked when a pane's location changes.
     on_location_changed: RwLock<Option<Box<LocationChangedCallback>>>,
+    /// Current location view model per PaneId.
+    locations_v2: RwLock<AHashMap<PaneId, Arc<InMemoryLocationViewModel>>>,
+    /// Callback invoked when a PaneId-based location changes.
+    on_pane_location_changed: RwLock<Option<Box<PaneLocationChangedCallback>>>,
     /// Default [`OpenOptions`] applied to each newly-opened location. Built
     /// from `config.general` and `config.view` so hidden-file visibility,
     /// symlink handling, and sort defaults actually take effect.
@@ -83,10 +92,7 @@ impl NavigationController {
         Self::build(&config.bookmarks, opts)
     }
 
-    fn build(
-        config_bookmarks: &[atlas_config::Bookmark],
-        open_options: OpenOptions,
-    ) -> Arc<Self> {
+    fn build(config_bookmarks: &[atlas_config::Bookmark], open_options: OpenOptions) -> Arc<Self> {
         Arc::new(Self {
             stacks: smallvec::smallvec![
                 Mutex::new(BackForwardStack::new(DEFAULT_HISTORY_CAPACITY)),
@@ -95,6 +101,8 @@ impl NavigationController {
             bookmarks: Arc::new(BookmarkStore::from_config(config_bookmarks)),
             locations: RwLock::new(smallvec::smallvec![None, None]),
             on_location_changed: RwLock::new(None),
+            locations_v2: RwLock::new(AHashMap::default()),
+            on_pane_location_changed: RwLock::new(None),
             open_options: RwLock::new(open_options),
         })
     }
@@ -105,14 +113,8 @@ impl NavigationController {
     /// the same location, pushes to history, opens a fresh
     /// [`InMemoryLocationViewModel`], and fires `on_location_changed`.
     pub fn navigate(&self, pane: usize, path: impl Into<PathBuf>) {
-        let expanded = expand_tilde(path.into());
-
-        let canonical = match expanded.canonicalize() {
-            Ok(c) => c,
-            Err(error) => {
-                tracing::warn!(?expanded, %error, "navigation: cannot canonicalize path; skipping");
-                return;
-            }
+        let Some(canonical) = self.canonicalize_path(path.into()) else {
+            return;
         };
 
         if pane < self.stacks.len()
@@ -183,6 +185,32 @@ impl NavigationController {
         self.navigate(pane, target);
     }
 
+    /// Navigate `pane` to `path` using the PaneId-based API.
+    ///
+    /// This API does not modify tab history; callers own that state.
+    pub fn navigate_pane(&self, pane: PaneId, path: impl Into<PathBuf>) {
+        self.navigate_pane_impl(pane, path.into(), true);
+    }
+
+    /// Navigate `pane` to `path` without emitting the PaneId callback.
+    pub fn navigate_pane_no_push(&self, pane: PaneId, path: impl Into<PathBuf>) {
+        self.navigate_pane_impl(pane, path.into(), false);
+    }
+
+    /// Register a callback that fires whenever a PaneId-based location changes.
+    pub fn on_pane_location_changed(
+        &self,
+        f: impl Fn(PaneId, Arc<InMemoryLocationViewModel>) + Send + Sync + 'static,
+    ) {
+        *self.on_pane_location_changed.write() = Some(Box::new(f));
+    }
+
+    /// Get the current PaneId-based location view model.
+    #[must_use]
+    pub fn location_for_pane(&self, pane: PaneId) -> Option<Arc<InMemoryLocationViewModel>> {
+        self.locations_v2.read().get(&pane).map(Arc::clone)
+    }
+
     /// Return the shared bookmark store.
     #[must_use]
     pub fn bookmarks(&self) -> Arc<BookmarkStore> {
@@ -219,6 +247,21 @@ impl NavigationController {
         *self.on_location_changed.write() = Some(Box::new(f));
     }
 
+    fn navigate_pane_impl(&self, pane: PaneId, path: PathBuf, emit_callback: bool) {
+        let Some(canonical) = self.canonicalize_path(path) else {
+            return;
+        };
+
+        if self
+            .location_for_pane(pane)
+            .is_some_and(|vm| vm.location() == canonical.as_path())
+        {
+            return;
+        }
+
+        self.load_location_for_pane(pane, canonical, emit_callback);
+    }
+
     fn current_path(&self, pane: usize) -> Option<PathBuf> {
         if pane >= self.stacks.len() {
             return None;
@@ -226,12 +269,20 @@ impl NavigationController {
         self.stacks[pane].lock().current().map(Path::to_path_buf)
     }
 
+    fn canonicalize_path(&self, path: PathBuf) -> Option<PathBuf> {
+        let expanded = expand_tilde(path);
+        match expanded.canonicalize() {
+            Ok(canonical) => Some(canonical),
+            Err(error) => {
+                tracing::warn!(?expanded, %error, "navigation: cannot canonicalize path; skipping");
+                None
+            }
+        }
+    }
+
     /// Open a new view model for `path`, store it, and fire the callback.
     fn load_location(&self, pane: usize, path: PathBuf) {
-        // Clone the config-driven defaults so external mutations to
-        // `open_options` don't race with in-flight opens.
-        let opts = self.open_options.read().clone();
-        let vm = InMemoryLocationViewModel::open_live(path, opts);
+        let vm = self.open_location(path);
 
         {
             let mut locs = self.locations.write();
@@ -243,6 +294,22 @@ impl NavigationController {
         if let Some(cb) = self.on_location_changed.read().as_ref() {
             cb(pane, vm);
         }
+    }
+
+    fn load_location_for_pane(&self, pane: PaneId, path: PathBuf, emit_callback: bool) {
+        let vm = self.open_location(path);
+        self.locations_v2.write().insert(pane, Arc::clone(&vm));
+
+        if emit_callback {
+            if let Some(cb) = self.on_pane_location_changed.read().as_ref() {
+                cb(pane, vm);
+            }
+        }
+    }
+
+    fn open_location(&self, path: PathBuf) -> Arc<InMemoryLocationViewModel> {
+        let opts = self.open_options.read().clone();
+        InMemoryLocationViewModel::open_live(path, opts)
     }
 }
 
@@ -385,6 +452,58 @@ mod tests {
         assert!(
             last_pane1.lock().expect("lock").is_none(),
             "pane 1 history must not change when pane 0 navigates"
+        );
+    }
+
+    #[test]
+    fn navigate_pane_stores_location_by_pane_id() {
+        let tmp = tempfile::TempDir::new().expect("temp dir should create");
+        let path = tmp
+            .path()
+            .canonicalize()
+            .expect("temp dir path should canonicalize");
+
+        let ctrl = NavigationController::new(&[]);
+        ctrl.navigate_pane(PaneId(7), path.clone());
+
+        let vm = ctrl
+            .location_for_pane(PaneId(7))
+            .expect("pane location should exist");
+        assert_eq!(vm.location(), path.as_path());
+    }
+
+    #[test]
+    fn pane_location_callback_fires_and_no_push_suppresses_callback() {
+        let dir_a = tempfile::TempDir::new().expect("temp dir should create");
+        let dir_b = tempfile::TempDir::new().expect("temp dir should create");
+        let a = dir_a
+            .path()
+            .canonicalize()
+            .expect("temp dir path should canonicalize");
+        let b = dir_b
+            .path()
+            .canonicalize()
+            .expect("temp dir path should canonicalize");
+
+        let ctrl = NavigationController::new(&[]);
+        let seen: StdArc<StdMutex<Vec<(PaneId, PathBuf)>>> = StdArc::new(StdMutex::new(Vec::new()));
+        let seen_clone = StdArc::clone(&seen);
+        ctrl.on_pane_location_changed(move |pane, vm| {
+            seen_clone
+                .lock()
+                .expect("seen mutex should not poison")
+                .push((pane, vm.location().to_path_buf()));
+        });
+
+        ctrl.navigate_pane(PaneId(9), a.clone());
+        ctrl.navigate_pane_no_push(PaneId(9), b.clone());
+
+        let seen = seen.lock().expect("seen mutex should not poison").clone();
+        assert_eq!(seen, vec![(PaneId(9), a)]);
+        assert_eq!(
+            ctrl.location_for_pane(PaneId(9))
+                .map(|vm| vm.location().to_path_buf()),
+            Some(b)
         );
     }
 }

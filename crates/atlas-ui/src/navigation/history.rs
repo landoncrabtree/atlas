@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Maintains a current location and two ordered stacks (back and forward).
 /// Pushing a new path clears the forward stack.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BackForwardStack {
     back: Vec<PathBuf>,
     current: Option<PathBuf>,
