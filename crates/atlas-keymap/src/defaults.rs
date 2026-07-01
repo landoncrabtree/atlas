@@ -164,6 +164,17 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         p("j", ("Global", "ops::TogglePanel")),
         ps("f2", ("Pane", "rename::OpenBulk")),
         p("\\", ("Global", "workspace::ToggleDualPane")),
+        // ── Remote / connect ─────────────────────────────────────────────
+        //
+        // Cmd+K on macOS (matching Finder's ⌘K "Connect to Server"),
+        // Ctrl+Alt+K on Linux/Windows to avoid stomping Ctrl+K, which
+        // browsers and editors overwhelmingly reserve for "focus search".
+        match platform {
+            PrettyPlatform::Mac => b("cmd-k", "Global", "remote::Connect"),
+            PrettyPlatform::Linux | PrettyPlatform::Windows => {
+                b("ctrl-alt-k", "Global", "remote::Connect")
+            }
+        },
     ]
 }
 
@@ -322,6 +333,16 @@ pub fn default_actions() -> Vec<ActionMeta> {
             Some("Add a second pane, or close it if one already exists.".into()),
             &["Global"]
         ),
+        action!(
+            "remote::Connect",
+            "Connect to Server",
+            Some(
+                "Open the connect-to-server modal to attach a remote filesystem \
+                 (SFTP, S3, WebDAV, FTP) to the focused pane."
+                    .into()
+            ),
+            &["Global"]
+        ),
     ]
 }
 
@@ -435,8 +456,30 @@ mod tests {
             "tab::CyclePrev",
             "tab::CycleNext",
             "tab::Reopen",
+            "remote::Connect",
         ] {
             assert!(action_ids.contains(id), "missing ActionMeta for {id:?}");
+        }
+    }
+
+    #[test]
+    fn test_remote_connect_binding_per_platform() {
+        for (platform, expected_seq) in [
+            (PrettyPlatform::Mac, "cmd-k"),
+            (PrettyPlatform::Linux, "ctrl-alt-k"),
+            (PrettyPlatform::Windows, "ctrl-alt-k"),
+        ] {
+            let bindings = default_bindings_for(platform);
+            let hit = bindings
+                .iter()
+                .find(|b| b.action.as_str() == "remote::Connect")
+                .expect("remote::Connect must have a default binding");
+            assert_eq!(
+                hit.sequence.display(),
+                expected_seq,
+                "{platform:?}: remote::Connect should bind to {expected_seq}",
+            );
+            assert_eq!(hit.context, "Global");
         }
     }
 }

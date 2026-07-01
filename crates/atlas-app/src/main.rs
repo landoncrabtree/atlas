@@ -1220,6 +1220,15 @@ fn build_dispatcher(
         });
     }
 
+    // ── Remote / connect (Cmd+K) — stub, real modal lands in phase 2.2 ────
+    {
+        let s = Arc::clone(shell);
+        d.register("remote::Connect", move || {
+            let focused = s.focused_pane_id();
+            s.open_connect_modal(focused);
+        });
+    }
+
     tracing::info!(handlers = d.handler_count(), "keymap dispatcher ready");
     d
 }

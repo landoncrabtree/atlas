@@ -1088,6 +1088,21 @@ impl AppShell {
         self.workspace.read().focused
     }
 
+    /// Stub entry point for the "Connect to Server" modal.
+    ///
+    /// The real modal (SFTP/S3/WebDAV/FTP host + credential entry) is
+    /// implemented in a follow-up phase (see the `connect-modal-ui` and
+    /// `connect-controller` todos in the phase 2 plan). For now this exists
+    /// so the `remote::Connect` keymap action has a landing pad and the
+    /// dispatcher can be wired end-to-end.
+    #[allow(clippy::unused_self)] // `pane_id` is intentionally unused until the modal lands.
+    pub fn open_connect_modal(&self, pane_id: PaneId) {
+        tracing::info!(
+            pane = ?pane_id,
+            "remote::Connect: modal not yet implemented — phase 2.2"
+        );
+    }
+
     /// Set focus to the given pane.
     ///
     /// This is a hot-path called from every mouse click on a row: we take

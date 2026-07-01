@@ -402,3 +402,9 @@ action = "rename::OpenBulk"
 context = "Global"
 key = "ctrl-\\"
 action = "workspace::ToggleDualPane"
+
+# [Global] Connect to Server
+[[bindings]]
+context = "Global"
+key = "ctrl-alt-k"
+action = "remote::Connect"
