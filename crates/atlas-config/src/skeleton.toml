@@ -48,6 +48,11 @@ show_status_bar = true
 # Show the breadcrumb path navigation bar above the file list.
 show_breadcrumbs = true
 
+# Show the bottom shortcut footer (the strip that advertises
+# `⌘C Copy · ⌘X Cut · ⌘V Paste …`). Set `false` to reclaim the space —
+# your keybinds keep working, they just aren't advertised.
+show_shortcuts = true
+
 # Enable UI animations and transitions.
 animations = true
 
@@ -73,6 +78,16 @@ default_sort_key = "name"
 
 # Default sort direction: "asc" (A → Z) or "desc" (Z → A).
 default_sort_order = "asc"
+
+# [view.details]
+# Per-column-kind widths for the Details view, in logical pixels. Written
+# automatically when you drag the header divider between columns; the keys
+# match the on-screen column identifiers.
+# [view.details.column_widths]
+# name = 320.0
+# size = 90.0
+# modified = 160.0
+# kind = 90.0
 
 [navigation]
 # Number of visited locations to keep in the back/forward history.

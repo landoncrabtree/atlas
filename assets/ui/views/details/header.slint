@@ -5,6 +5,9 @@ export component Header {
     in property <[ColumnSpec]> columns: [];
 
     callback header-clicked(int);
+    /// Emitted continuously while the user drags the resize handle to the
+    /// right of column `i`. The `float` payload is the new proposed width
+    /// for column `i` in logical pixels — Rust clamps to min/max.
     callback header-resize(int, float);
 
     height: 28px;
@@ -25,10 +28,16 @@ export component Header {
             for col[i] in root.columns : Rectangle {
                 width: col.width;
                 horizontal-stretch: 0;
-                clip: true;
+                // NOTE: no `clip: true` here — a clipped ancestor would
+                // truncate the `resize-ta` TouchArea's hit region (see
+                // Slint's hit-testing docs). The column's text uses
+                // its own overflow modes to avoid visual overlap.
 
                 col-ta := TouchArea {
-                    width: parent.width - 4px;
+                    // Leave the last 8 px of the column free for the resize
+                    // handle so header-click (sort toggle) and drag don't
+                    // fight for the same pixel column.
+                    width: parent.width - 8px;
                     clicked => { root.header-clicked(i); }
                 }
 
@@ -44,6 +53,7 @@ export component Header {
                         vertical-alignment: center;
                         font-size: 10px;
                         font-weight: 600;
+                        overflow: elide;
                     }
 
                     if col.sort-dir != 0 : Text {
@@ -54,10 +64,61 @@ export component Header {
                     }
                 }
 
+                // Drag handle for live column resize. Occupies the last
+                // 8 px of the column (fully inside `parent.width` so no
+                // ancestor `clip` can hide it). The `col-resize` cursor
+                // advertises the interaction on hover.
+                //
+                // Per design/whitespace rules the divider is invisible by
+                // default; a subtle 1-px accent hairline surfaces only
+                // while hovering / dragging so the user knows where the
+                // grab zone is.
+                //
+                // During a drag we PIN the TouchArea's x to
+                // `initial-width - 8px` (its original position at press
+                // time) so it doesn't chase the column edge as
+                // `parent.width` grows in response to the user's drag.
+                // If the TouchArea moved with the column edge, `mouse-x`
+                // (relative to the shifted TouchArea) would cancel out
+                // the drag delta and no resize would ever be emitted.
                 resize-ta := TouchArea {
-                    x: parent.width - 4px;
-                    width: 4px;
+                    // Capture the column's width at press-time so drag deltas
+                    // don't compound as `col.width` changes each frame.
+                    property <length> initial-width: 0px;
+
+                    x: self.pressed
+                        ? (self.initial-width - 8px)
+                        : (parent.width - 8px);
+                    width: 8px;
                     mouse-cursor: col-resize;
+
+                    pointer-event(pe) => {
+                        if pe.kind == PointerEventKind.down {
+                            self.initial-width = parent.width;
+                        }
+                    }
+
+                    moved => {
+                        if self.pressed {
+                            root.header-resize(
+                                i,
+                                (self.initial-width + (self.mouse-x - self.pressed-x)) / 1px,
+                            );
+                        }
+                    }
+
+                    Rectangle {
+                        // Hairline sits at the RIGHT edge of the resize
+                        // handle (i.e. the visible column boundary).
+                        x: parent.width - 1px;
+                        width: 1px;
+                        height: parent.height * 0.6;
+                        y: (parent.height - self.height) / 2;
+                        background: parent.has-hover || parent.pressed
+                            ? Theme.accent
+                            : transparent;
+                        animate background { duration: Theme.motion-quick; easing: ease-out; }
+                    }
                 }
             }
         }

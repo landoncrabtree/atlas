@@ -328,6 +328,48 @@ impl GridController {
             .request(path, DEFAULT_TARGET_DIM, cell_index);
     }
 
+    /// Toggle the selected state of the focused cell (Space).
+    pub fn toggle_focused(self: &Arc<Self>) {
+        let focused = self.focused.load(Ordering::Relaxed);
+        if focused == NO_FOCUS {
+            return;
+        }
+        let len = self.entries.read().len();
+        if focused >= len {
+            return;
+        }
+        {
+            let mut sel = self.selection.write();
+            sel.resize(len);
+            sel.toggle(focused);
+        }
+        self.push_selection_to_ui();
+    }
+
+    /// Select every cell in the grid (Cmd+A / Ctrl+A).
+    pub fn select_all(self: &Arc<Self>) {
+        let len = self.entries.read().len();
+        if len == 0 {
+            return;
+        }
+        {
+            let mut sel = self.selection.write();
+            sel.resize(len);
+            sel.mask.fill(true);
+            sel.anchor = Some(0);
+        }
+        self.push_selection_to_ui();
+    }
+
+    /// Clear all selection (Shift+Cmd+A / Shift+Ctrl+A).
+    pub fn deselect_all(self: &Arc<Self>) {
+        {
+            let mut sel = self.selection.write();
+            sel.clear();
+        }
+        self.push_selection_to_ui();
+    }
+
     fn stop_subscription(&self) {
         let state = self.subscription.lock().take();
         if let Some(SubscriptionState { handle, stop_tx }) = state {
@@ -495,8 +537,14 @@ pub(crate) fn grid_move(
     let current_row = (current / cols) as isize;
     let current_col = (current % cols) as isize;
     let row_count = len.div_ceil(cols) as isize;
-    let new_row = (current_row + delta_row).clamp(0, row_count - 1);
-    let new_col = (current_col + delta_col).clamp(0, (cols as isize) - 1);
+    // Saturating math so callers can pass isize::MIN/MAX for jump-to-top /
+    // jump-to-bottom without overflowing.
+    let new_row = current_row
+        .saturating_add(delta_row)
+        .clamp(0, row_count - 1);
+    let new_col = current_col
+        .saturating_add(delta_col)
+        .clamp(0, (cols as isize) - 1);
     let candidate = (new_row as usize) * cols + new_col as usize;
     candidate.min(len - 1)
 }

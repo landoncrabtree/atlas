@@ -1,11 +1,13 @@
 import { Theme } from "theme.slint";
 import { Titlebar } from "components/titlebar.slint";
 import { Pane } from "components/pane.slint";
-import { StatusBar } from "components/status-bar.slint";
+// StatusBar was moved per-pane (see components/pane.slint → PaneStatusBar).
+// The whole-window component is no longer used from atlas.slint.
 import { ShortcutFooter, ShortcutHint } from "components/shortcut-footer.slint";
 import { CommandPalette, PaletteEntry } from "components/command-palette.slint";
 import { SearchPanel, SearchRow } from "components/search-panel.slint";
 import { OpsPanel, OpRow } from "components/ops-panel.slint";
+import { OperationProgress } from "components/operation-progress.slint";
 import { BulkRenameModal, RenamePreview } from "components/bulk-rename.slint";
 import { TabEntry } from "components/tab-bar.slint";
 import { EntryRowItem, ColumnSpec } from "views/details/column.slint";
@@ -99,6 +101,8 @@ export component AtlasWindow inherits Window {
     // ── Chrome visibility toggles (wired from config `ui.show_*`) ─────────────
     in property <bool> show-status-bar: true;
     in property <bool> show-breadcrumbs: true;
+    /// Show the bottom shortcut-footer strip. Wired from `ui.show_shortcuts`.
+    in property <bool> show-shortcut-footer: true;
 
     /// Resize handles for every internal split node; pushed alongside `panes`.
     in property <[SplitHandle]> split-handles;
@@ -139,6 +143,17 @@ export component AtlasWindow inherits Window {
 
     in property <[[MillerColData]]> panes-miller-columns: [];
     in property <[int]> panes-miller-focused-col: [];
+
+    // ── Per-pane status bar (folder/file counts, size, free-space) ───────
+    //
+    // Each entry indexed by DFS position mirrors `panes[i]`. Pushed by
+    // `AppShell::push_pane_status_to_slint`; consumed by every `Pane`
+    // instance's own PaneStatusBar. Empty defaults leave the chips blank
+    // until the first vm event fires.
+    in property <[int]> panes-status-folder-count: [];
+    in property <[int]> panes-status-file-count: [];
+    in property <[string]> panes-status-total-size-text: [];
+    in property <[string]> panes-status-free-space-text: [];
 
     // ── Status bar ───────────────────────────────────────────────────────────
 
@@ -210,6 +225,23 @@ export component AtlasWindow inherits Window {
     /// Operation rows shown in the ops tray.
     in property <[OpRow]> ops-rows: [];
 
+    // ── Progress modal (Finder-style, per-foreground-op) ──────────────────
+    //
+    // Pushed by `OpsController::push_modal_state` when an op has been
+    // running for more than 250ms. Trivial fast ops never surface here.
+    // The modal has two dismissal paths:
+    //   `op-modal-cancel`     — aborts the op via the cancellation token.
+    //   `op-modal-background` — hides the modal; op keeps running in the
+    //                            Cmd+J operations panel.
+    // Click-outside, Escape, and Enter all route to Background.
+    in property <bool> op-modal-visible: false;
+    in property <string> op-modal-title: "";
+    in property <string> op-modal-subtitle: "";
+    in property <string> op-modal-detail: "";
+    in property <string> op-modal-icon: "";
+    in property <float> op-modal-progress: 0.0;
+    in property <bool> op-modal-indeterminate: false;
+
     // ── Global callbacks ──────────────────────────────────────────────────────
 
     callback palette-query-changed(string);
@@ -254,6 +286,7 @@ export component AtlasWindow inherits Window {
     callback ctx-copy();
     callback ctx-cut();
     callback ctx-paste();
+    callback ctx-duplicate();
     callback ctx-rename();
     callback ctx-trash();
     callback ctx-reveal();
@@ -265,8 +298,14 @@ export component AtlasWindow inherits Window {
     callback ops-dismiss(int);
     /// Hide the ops panel (rows are retained on the Rust side).
     callback ops-close();
+    /// Drop every terminal row from the ops panel (Clear-completed button).
+    callback ops-clear-completed();
     /// Toggle the ops panel open/closed (Ctrl/Cmd+J).
     callback toggle-ops-panel();
+    /// Modal `Cancel` — aborts the current foreground op.
+    callback op-modal-cancel();
+    /// Modal `Background` — hides the modal, op keeps running in the panel.
+    callback op-modal-background();
     /// Trigger deletion (to trash) of the current pane's selection.
     callback fs-delete();
     /// Trigger rename of the focused entry (F2 by default).
@@ -518,43 +557,47 @@ export component AtlasWindow inherits Window {
         }
         Menu {
             MenuItem {
-                title: "Open";
+                title: "▸  Open";
                 activated => { root.ctx-open(); }
             }
             MenuItem {
-                title: "Open With…";
+                title: "⇱  Open With…";
                 activated => { root.ctx-open-with(); }
             }
             MenuSeparator {}
             MenuItem {
-                title: "Copy";
+                title: "⌘  Copy";
                 activated => { root.ctx-copy(); }
             }
             MenuItem {
-                title: "Cut";
+                title: "✂  Cut";
                 activated => { root.ctx-cut(); }
             }
             MenuItem {
-                title: "Paste";
+                title: "⎘  Paste";
                 enabled: root.context-menu-has-clipboard;
                 activated => { root.ctx-paste(); }
             }
+            MenuItem {
+                title: "⧉  Duplicate";
+                activated => { root.ctx-duplicate(); }
+            }
             MenuSeparator {}
             MenuItem {
-                title: "Rename";
+                title: "✎  Rename";
                 activated => { root.ctx-rename(); }
             }
             MenuItem {
-                title: "Move to Trash";
+                title: "⌫  Move to Trash";
                 activated => { root.ctx-trash(); }
             }
             MenuSeparator {}
             MenuItem {
-                title: "Show in Finder";
+                title: "⌕  Show in Finder";
                 activated => { root.ctx-reveal(); }
             }
             MenuItem {
-                title: "Get Info";
+                title: "ⓘ  Get Info";
                 activated => { root.ctx-get-info(); }
             }
         }
@@ -578,7 +621,7 @@ export component AtlasWindow inherits Window {
         // as soon as the last modal closes (Slint's `changed` handler only
         // works on properties in the current element, so we mirror the
         // root properties into a local one first).
-        property <bool> any-modal-visible: root.palette-visible || root.search-panel-visible || root.bulk-rename-visible;
+        property <bool> any-modal-visible: root.palette-visible || root.search-panel-visible || root.bulk-rename-visible || root.op-modal-visible;
         changed any-modal-visible => {
             if !any-modal-visible { self.focus(); }
         }
@@ -613,6 +656,14 @@ export component AtlasWindow inherits Window {
                 if palette-visible      { root.palette-dismiss();      return accept; }
                 if search-panel-visible { root.search-close();         return accept; }
                 if bulk-rename-visible  { root.bulk-rename-cancel();   return accept; }
+                if op-modal-visible     { root.op-modal-background();  return accept; }
+            }
+
+            // Enter defaults to "Background" for the progress modal so a
+            // reflex Return keystroke never cancels an in-flight op.
+            if op-modal-visible && (event.text == Key.Return || event.text == "\n") {
+                root.op-modal-background();
+                return accept;
             }
 
             // Tab cycles pane focus when a workspace has 2+ panes. Handled
@@ -666,7 +717,7 @@ export component AtlasWindow inherits Window {
         // in the AddressBar TextInput consumes 'j'/'k'/'h'/'l' before the
         // dispatcher ever sees them.
         key-pressed(event) => {
-            if palette-visible || search-panel-visible || bulk-rename-visible {
+            if palette-visible || search-panel-visible || bulk-rename-visible || op-modal-visible {
                 return reject;
             }
             // Gate vim letters on the vim-mode flag so users who don't want
@@ -688,9 +739,12 @@ export component AtlasWindow inherits Window {
         VerticalLayout {
             spacing: 0px;
 
-            Titlebar {
-                location: panes.length > 0 ? panes[focus-index].path : "";
-            }
+            // NOTE(whitespace-fix): the previous custom `Titlebar { … }` here
+            // was a 36-px empty band that duplicated the OS-native title
+            // bar (traffic lights + window title). It caused a large gap
+            // between the macOS titlebar and the pane's address bar.
+            // Since we don't set `no-frame: true`, the OS always draws its
+            // own titlebar; ours added no content. Removed cross-platform.
 
             // ── Pane container ────────────────────────────────────────────────
             // All panes are absolutely positioned within this Rectangle; their
@@ -744,6 +798,14 @@ export component AtlasWindow inherits Window {
 
                     miller-columns: panes-miller-columns[i];
                     miller-focused-col: panes-miller-focused-col[i];
+
+                    // Per-pane status bar (renders inside the pane frame,
+                    // gated on `ui.show_status_bar` via `show-status-bar`).
+                    show-status-bar: root.show-status-bar;
+                    status-folder-count: panes-status-folder-count[i];
+                    status-file-count: panes-status-file-count[i];
+                    status-total-size-text: panes-status-total-size-text[i];
+                    status-free-space-text: panes-status-free-space-text[i];
 
                     // Unified callbacks — all route through pane.id.
                     address-submitted(p) => { root.address-submitted(pane.id, p); }
@@ -847,17 +909,13 @@ export component AtlasWindow inherits Window {
                 }
             }
 
-            if root.show-status-bar : StatusBar {
-                total-entries: root.total-entries;
-                folder-count: root.folder-count;
-                file-count: root.file-count;
-                total-size-text: root.total-size-text;
-                selected-entries: root.selected-entries;
-                selected-size-text: root.selected-size-text;
-                free-space-text: root.free-space-text;
-            }
+            // Window-level StatusBar was removed in favour of a per-pane
+            // status bar rendered inside each Pane's frame (see pane.slint
+            // → PaneStatusBar). The `show-status-bar` root property is now
+            // forwarded per-pane so `ui.show_status_bar = false` still
+            // hides every pane's status bar.
 
-            ShortcutFooter { hints: root.shortcut-hints; }
+            if root.show-shortcut-footer : ShortcutFooter { hints: root.shortcut-hints; }
         }
 
         // File-operations tray — auto-shown by Rust when ops are queued.
@@ -870,6 +928,26 @@ export component AtlasWindow inherits Window {
             cancel(i) => { root.ops-cancel(i); }
             dismiss(i) => { root.ops-dismiss(i); }
             close => { root.ops-close(); }
+            clear-completed => { root.ops-clear-completed(); }
+        }
+
+        // Foreground progress modal — surfaces only for ops that outlive
+        // the ~250ms defer in the OpsController. Click-outside, Escape,
+        // and Enter all route to Background (op continues in the panel).
+        OperationProgress {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            visible-modal: root.op-modal-visible;
+            title-text: root.op-modal-title;
+            subtitle-text: root.op-modal-subtitle;
+            detail-text: root.op-modal-detail;
+            icon-glyph: root.op-modal-icon;
+            progress: root.op-modal-progress;
+            indeterminate: root.op-modal-indeterminate;
+            cancel => { root.op-modal-cancel(); }
+            send-to-background => { root.op-modal-background(); }
         }
 
         CommandPalette {

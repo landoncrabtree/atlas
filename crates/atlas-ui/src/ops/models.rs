@@ -16,6 +16,18 @@ pub struct OpRow {
     pub title: String,
     /// Human-readable status string.
     pub status: String,
+    /// Kind label (`"Copy"`, `"Move"`, `"Trash"`, …) — mirrors the
+    /// [`atlas_ops::OpKindDescriptor::kind`] field. Used by the modal to
+    /// pick a glyph and heading, and by the panel for the kind badge.
+    pub kind: String,
+    /// Human-readable source summary (`"3 items"` / `"/Users/x/file.txt"`).
+    /// Empty for operations that don't have a natural source (mkdir).
+    pub source_summary: String,
+    /// Human-readable destination directory (`"/Users/x/Downloads"`).
+    /// Empty for operations that operate in-place (rename, mkdir, trash).
+    pub dest_summary: String,
+    /// ETA string (`""` while unknown, `"15s"`, `"1m 20s"`, `"2h 5m"`).
+    pub eta: String,
     /// Completion fraction in `[0.0, 1.0]`.
     pub progress: f32,
     /// Total logical items involved in the operation.
@@ -42,6 +54,10 @@ impl OpRow {
             id: SharedString::from(self.id.to_string().as_str()),
             title: SharedString::from(self.title.as_str()),
             status: SharedString::from(self.status.as_str()),
+            kind: SharedString::from(self.kind.as_str()),
+            source_summary: SharedString::from(self.source_summary.as_str()),
+            dest_summary: SharedString::from(self.dest_summary.as_str()),
+            eta: SharedString::from(self.eta.as_str()),
             progress: self.progress,
             items_total: self.items_total.min(i32::MAX as u64) as i32,
             items_done: self.items_done.min(i32::MAX as u64) as i32,
@@ -72,6 +88,7 @@ mod tests {
             current_path: String::new(),
             is_terminal: false,
             is_error: false,
+            ..OpRow::default()
         };
         assert!((row.progress - 0.5).abs() < f32::EPSILON);
         assert_eq!(row.items_done, 5);

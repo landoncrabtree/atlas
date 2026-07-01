@@ -12,6 +12,77 @@ import { EntryRowItem, ColumnSpec } from "../views/details/column.slint";
 import { TreeView, TreeNode } from "../views/tree/tree-view.slint";
 import { MetadataFields } from "../views/gallery/gallery-metadata.slint";
 
+// Placeholder for future plugin surface (git branch chip, k8s context,
+// devcontainer badge, etc.). Sits on the right side of each pane's
+// status bar and reserves horizontal space so the layout is stable
+// once real plugins land.
+// TODO(plugins): replace with a real plugin-driven `for chip in chips: …`
+// once the plugin runtime lands (v0.4+). For now it's an invisible
+// spacer that just claims 0px on the right — the flex fill in the
+// status bar keeps counts on the left and free-space in the middle.
+component PluginChips {
+    // Intentionally empty. Kept as its own component so the pane status
+    // bar's layout survives the plugin wire-up without churn.
+}
+
+// Bottom-of-pane status bar. Shows folder/file counts, cumulative size,
+// and free-space for the pane's volume. Styled to match the deprecated
+// window-level StatusBar (`Theme.panel-bg`, muted caption, 24px tall).
+// Reserves height even when every string is empty so the pane layout
+// doesn't jump when a new pane first opens.
+component PaneStatusBar {
+    in property <int> folder-count: 0;
+    in property <int> file-count: 0;
+    in property <string> total-size-text: "";
+    in property <string> free-space-text: "";
+
+    height: Theme.statusbar-h;
+
+    pure function primary-text() -> string {
+        folder-count + " folders, " + file-count + " files"
+            + (total-size-text != "" ? " · " + total-size-text : "")
+    }
+
+    Rectangle {
+        background: Theme.panel-bg;
+
+        // Top border only — mirrors the global StatusBar look.
+        Rectangle {
+            x: 0px; y: 0px;
+            height: 1px;
+            width: parent.width;
+            background: Theme.border;
+        }
+
+        HorizontalLayout {
+            padding-left: Theme.space-4;
+            padding-right: Theme.space-4;
+            spacing: Theme.space-4;
+
+            Text {
+                text: primary-text();
+                color: Theme.fg-muted;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            if free-space-text != "" : Text {
+                text: free-space-text;
+                color: Theme.fg-faint;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+
+            // Reserved right-hand region for future plugin chips (git
+            // branch, k8s context, etc.). Empty for now; keeps the
+            // layout stable when the plugin runtime lands.
+            PluginChips {}
+        }
+    }
+}
+
 // A single pane: address bar + breadcrumbs + tab bar + content view.
 //
 // `pane-id` is the stable semantic identifier (matches the Rust `PaneId`);
@@ -25,6 +96,10 @@ export component Pane {
     /// When true, the breadcrumb strip below the address bar is rendered. When
     /// false, it is hidden entirely (wired from `ui.show_breadcrumbs`).
     in property <bool> show-breadcrumbs: true;
+    /// When true, the per-pane status bar is rendered at the bottom of the
+    /// pane frame (wired from `ui.show_status_bar`). Layout height is
+    /// reclaimed when hidden.
+    in property <bool> show-status-bar: true;
     /// When true, a 2-px accent inset border is rendered to indicate this pane
     /// is a valid drop destination for the current drag operation.
     in property <bool> drag-target: false;
@@ -64,6 +139,18 @@ export component Pane {
 
     in property <[MillerColData]> miller-columns: [];
     in property <int> miller-focused-col: 0;
+
+    // ── Per-pane status bar data ─────────────────────────────────────────
+    /// Number of directories in the pane's current listing.
+    in property <int> status-folder-count: 0;
+    /// Number of non-directory entries in the pane's current listing.
+    in property <int> status-file-count: 0;
+    /// Cumulative bytes of the visible files, pre-formatted by Rust
+    /// (e.g. `"1.7 MiB"`). Empty until the first fs event fires.
+    in property <string> status-total-size-text: "";
+    /// Free/total space on the pane's volume, pre-formatted by Rust
+    /// (e.g. `"590 GB free of 926 GB"`). Empty when unavailable.
+    in property <string> status-free-space-text: "";
 
     callback address-submitted(string);
     callback address-cancelled();
@@ -226,6 +313,15 @@ export component Pane {
                 if root.view-mode != "Details" && root.view-mode != "Grid" && root.view-mode != "Gallery" && root.view-mode != "Miller" && root.view-mode != "Tree" : EmptyView {
                     view-mode: root.view-mode;
                     vertical-stretch: 1;
+                }
+
+                // Per-pane status bar — pinned to the bottom of the pane
+                // frame (inside the border), gated on `ui.show_status_bar`.
+                if root.show-status-bar : PaneStatusBar {
+                    folder-count: root.status-folder-count;
+                    file-count: root.status-file-count;
+                    total-size-text: root.status-total-size-text;
+                    free-space-text: root.status-free-space-text;
                 }
         }
 

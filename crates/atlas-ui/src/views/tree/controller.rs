@@ -250,7 +250,9 @@ impl TreeController {
         } else {
             current as isize
         };
-        let next = (current_i + delta).clamp(0, (visible_len as isize) - 1) as usize;
+        let next = current_i
+            .saturating_add(delta)
+            .clamp(0, (visible_len as isize) - 1) as usize;
         self.focused.store(next, Ordering::Relaxed);
         self.push_visible_nodes_to_ui();
     }

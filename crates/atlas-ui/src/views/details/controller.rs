@@ -218,6 +218,54 @@ impl DetailsController {
         self.apply_sort(kind, order);
     }
 
+    /// Apply a drag-resize delta to the column at `col_index`, clamping to
+    /// the per-kind min/max range from [`super::columns::min_max_width_for`].
+    ///
+    /// Returns `Some((kind, clamped_width))` so callers can persist the new
+    /// width to config. Returns `None` when `col_index` is out of range or
+    /// the clamped width matches the current width (no-op).
+    pub fn set_column_width(
+        self: &Arc<Self>,
+        col_index: usize,
+        proposed_width: f32,
+    ) -> Option<(ColumnKind, f32)> {
+        if !proposed_width.is_finite() {
+            return None;
+        }
+        let (kind, new_width) = {
+            let mut columns = self.columns.write();
+            let column = columns.get_mut(col_index)?;
+            let (min, max) = super::columns::min_max_width_for(column.kind);
+            let clamped = proposed_width.clamp(min, max);
+            if (column.width_px - clamped).abs() < 0.5 {
+                return None;
+            }
+            column.width_px = clamped;
+            (column.kind, clamped)
+        };
+        self.push_columns_to_ui();
+        Some((kind, new_width))
+    }
+
+    /// Replace the current column set (called from the shell after loading
+    /// persisted widths from config on startup). Column order is preserved;
+    /// only the width_px field is overlaid where a matching kind exists in
+    /// the provided map.
+    pub fn apply_persisted_widths(self: &Arc<Self>, widths: &std::collections::HashMap<String, f32>) {
+        {
+            let mut columns = self.columns.write();
+            for column in columns.iter_mut() {
+                if let Some(&raw) = widths.get(column.kind.as_str()) {
+                    let (min, max) = super::columns::min_max_width_for(column.kind);
+                    if raw.is_finite() {
+                        column.width_px = raw.clamp(min, max);
+                    }
+                }
+            }
+        }
+        self.push_columns_to_ui();
+    }
+
     /// Update the selection model for a clicked row.
     pub fn select_index(self: &Arc<Self>, index: usize, ctrl: bool, shift: bool) {
         let len = self.entries.read().len();
@@ -292,13 +340,17 @@ impl DetailsController {
         } else {
             current as i64
         };
-        let next = (current_i64 + delta).clamp(0, (len as i64) - 1) as usize;
+        let next = current_i64
+            .saturating_add(delta)
+            .clamp(0, (len as i64) - 1) as usize;
         self.focused.store(next, Ordering::Relaxed);
         self.push_selection_to_ui();
     }
 
     /// Move focus by `delta` AND single-select the new focused row —
-    /// keyboard-navigation parity with left-click.
+    /// keyboard-navigation parity with left-click. Uses saturating math
+    /// so callers can pass `i64::MIN` / `i64::MAX` for jump-to-top /
+    /// jump-to-bottom without overflowing.
     pub fn move_and_select(self: &Arc<Self>, delta: i64) {
         let len = self.entries.read().len();
         if len == 0 {
@@ -310,7 +362,9 @@ impl DetailsController {
         } else {
             current as i64
         };
-        let next = (current_i64 + delta).clamp(0, (len as i64) - 1) as usize;
+        let next = current_i64
+            .saturating_add(delta)
+            .clamp(0, (len as i64) - 1) as usize;
         {
             let mut selection = self.selection.write();
             selection.resize(len);
@@ -334,7 +388,9 @@ impl DetailsController {
         } else {
             current as i64
         };
-        let next = (current_i64 + delta).clamp(0, (len as i64) - 1) as usize;
+        let next = current_i64
+            .saturating_add(delta)
+            .clamp(0, (len as i64) - 1) as usize;
         let anchor = self.selection.read().anchor.unwrap_or(next);
         {
             let mut selection = self.selection.write();
@@ -342,6 +398,51 @@ impl DetailsController {
             selection.select_range(anchor, next);
         }
         self.focused.store(next, Ordering::Relaxed);
+        self.push_selection_to_ui();
+    }
+
+    /// Toggle the selected state of the currently focused row. Bound by
+    /// default to `space` in the Pane context — the standard "mark"
+    /// idiom in file managers (nnn, ranger, yazi, Total Commander).
+    pub fn toggle_focused(self: &Arc<Self>) {
+        let focused = self.focused.load(Ordering::Relaxed);
+        if focused == NO_FOCUS {
+            return;
+        }
+        let len = self.entries.read().len();
+        if focused >= len {
+            return;
+        }
+        {
+            let mut selection = self.selection.write();
+            selection.resize(len);
+            selection.toggle(focused);
+        }
+        self.push_selection_to_ui();
+    }
+
+    /// Select every entry in the current directory. Bound to Cmd+A on
+    /// macOS, Ctrl+A on Linux/Windows.
+    pub fn select_all(self: &Arc<Self>) {
+        let len = self.entries.read().len();
+        if len == 0 {
+            return;
+        }
+        {
+            let mut selection = self.selection.write();
+            selection.resize(len);
+            selection.mask.fill(true);
+            selection.anchor = Some(0);
+        }
+        self.push_selection_to_ui();
+    }
+
+    /// Clear all selection state. Bound to Shift+Cmd+A / Shift+Ctrl+A.
+    pub fn deselect_all(self: &Arc<Self>) {
+        {
+            let mut selection = self.selection.write();
+            selection.clear();
+        }
         self.push_selection_to_ui();
     }
 

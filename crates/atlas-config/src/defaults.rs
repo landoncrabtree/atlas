@@ -1,8 +1,8 @@
 //! Default values for every configuration struct.
 
 use super::schema::{
-    Density, General, Indexer, Navigation, Search, SortKey, SortOrder, Thumbnails, Ui, View,
-    ViewMode,
+    Density, DetailsView, General, Indexer, Navigation, Search, SortKey, SortOrder, Thumbnails,
+    Ui, View, ViewMode,
 };
 
 impl Default for General {
@@ -27,6 +27,7 @@ impl Default for Ui {
             density: Density::Comfortable,
             show_status_bar: true,
             show_breadcrumbs: true,
+            show_shortcuts: true,
             animations: true,
             active_pane_border_px: 2.0,
         }
@@ -42,6 +43,7 @@ impl Default for View {
             dirs_first: true,
             default_sort_key: SortKey::Name,
             default_sort_order: SortOrder::Asc,
+            details: DetailsView::default(),
         }
     }
 }

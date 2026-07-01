@@ -44,5 +44,18 @@ open = "5"
 tempfile = "3"
 serial_test = "3"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Used by `platform::titlebar_theme` to tint the OS title bar via
+# `[NSApp setAppearance:]`. Both crates are already transitively pulled in
+# by winit (via the Slint backend), so this adds no compile-time weight.
+objc2 = "0.5"
+objc2-foundation = "0.2"
+objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSAppearance", "NSResponder"] }
+
+[target.'cfg(windows)'.dependencies]
+# Used by `platform::titlebar_theme` to switch the Win32 title bar between
+# light and dark via `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)`.
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }
+
 [build-dependencies]
 slint-build.workspace = true

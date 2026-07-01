@@ -8,6 +8,6 @@ pub mod columns;
 pub mod controller;
 pub mod format;
 
-pub use columns::{ColumnKind, ColumnSpec};
+pub use columns::{min_max_width_for, ColumnKind, ColumnSpec};
 pub use controller::{DetailsController, Selection};
 pub use format::{format_relative_time, format_size};

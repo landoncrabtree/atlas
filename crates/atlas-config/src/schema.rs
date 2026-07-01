@@ -3,7 +3,7 @@
 //! Every struct carries `#[serde(default)]` so partial TOML files are accepted
 //! and missing fields fall back to their [`Default`] implementations.
 
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 // ── Top-level ──────────────────────────────────────────────────────────────
 
@@ -69,6 +69,10 @@ pub struct Ui {
     pub show_status_bar: bool,
     /// Show the breadcrumb path navigation above the file list.
     pub show_breadcrumbs: bool,
+    /// Show the bottom shortcut-footer strip (e.g. `⌘C Copy · ⌘X Cut · …`).
+    /// When `false`, the whole footer is hidden. Rebindings still take
+    /// effect; the hint chips just aren't advertised.
+    pub show_shortcuts: bool,
     /// Enable animations and transitions.
     pub animations: bool,
     /// Border thickness (in logical pixels) drawn inside the focused pane so
@@ -126,6 +130,22 @@ pub struct View {
     pub default_sort_key: SortKey,
     /// Default sort direction.
     pub default_sort_order: SortOrder,
+    /// Details-view specific settings.
+    pub details: DetailsView,
+}
+
+/// Details-view specific settings persisted to `[view.details]`.
+///
+/// Currently holds per-column-kind width overrides. Keys are `"name"`,
+/// `"size"`, `"modified"`, `"kind"`, `"extension"` — matching the wire
+/// string emitted by the UI's `ColumnKind::as_str()`. Missing keys fall
+/// back to the built-in default widths.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DetailsView {
+    /// Column width overrides in logical pixels, keyed by column kind.
+    /// Written on quit; read on startup.
+    pub column_widths: HashMap<String, f32>,
 }
 
 /// Available view modes for the file list.

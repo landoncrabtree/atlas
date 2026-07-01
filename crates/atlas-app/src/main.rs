@@ -234,6 +234,7 @@ fn main() -> Result<()> {
     // Wire chrome visibility from config.ui.
     shell.set_status_bar_visible(config.ui.show_status_bar);
     shell.set_breadcrumbs_visible(config.ui.show_breadcrumbs);
+    shell.set_shortcut_footer_visible(config.ui.show_shortcuts);
     // config: reads config.ui.animations
     shell.set_animations_enabled(config.ui.animations);
     // config: reads config.ui.active_pane_border_px
@@ -298,6 +299,11 @@ fn main() -> Result<()> {
         shell.focused_pane_id(),
         config_view_mode(config.view.default_mode),
     );
+
+    // Seed Details-view column widths from `[view.details.column_widths]`
+    // so the user's dragged-column preferences survive restarts.
+    // config: reads config.view.details.column_widths
+    shell.apply_column_widths(&config.view.details.column_widths);
 
     // Push config-driven UI settings into the Slint window.
     shell.set_vim_mode(config.general.vim_mode); // config: reads config.general.vim_mode
@@ -416,21 +422,30 @@ fn main() -> Result<()> {
     // is true. We re-load the config from disk to preserve any concurrent edits
     // the user may have made while Atlas was running.
     // config: writes config.navigation.last_location
+    //         + config.view.details.column_widths (when the user resized any)
     match atlas_config::load() {
         Ok(mut latest) => {
+            let mut needs_save = false;
             if latest.navigation.remember_last_location {
                 if let Some(loc) = shell.pane_location(shell.focused_pane_id()) {
                     latest.navigation.last_location = Some(loc.clone());
-                    if let Err(err) = atlas_config::save(&latest) {
-                        tracing::warn!(%err, "could not persist last_location on quit");
-                    } else {
-                        tracing::info!(?loc, "persisted last_location on quit");
-                    }
+                    needs_save = true;
+                    tracing::info!(?loc, "persisted last_location on quit");
+                }
+            }
+            if let Some(widths) = shell.column_widths_snapshot() {
+                latest.view.details.column_widths = widths;
+                needs_save = true;
+                tracing::info!("persisted view.details.column_widths on quit");
+            }
+            if needs_save {
+                if let Err(err) = atlas_config::save(&latest) {
+                    tracing::warn!(%err, "could not persist config on quit");
                 }
             }
         }
         Err(err) => {
-            tracing::warn!(%err, "could not re-load config to persist last_location");
+            tracing::warn!(%err, "could not re-load config to persist state");
         }
     }
 
@@ -673,6 +688,7 @@ fn spawn_config_event_thread(
                         // ── Chrome visibility ─────────────────────────────
                         shell.set_status_bar_visible(cfg.ui.show_status_bar);
                         shell.set_breadcrumbs_visible(cfg.ui.show_breadcrumbs);
+                        shell.set_shortcut_footer_visible(cfg.ui.show_shortcuts);
                         shell.set_animations_enabled(cfg.ui.animations);
                         shell.set_active_pane_border_px(cfg.ui.active_pane_border_px);
                         shell.set_vim_mode(cfg.general.vim_mode);
@@ -725,10 +741,14 @@ fn build_dispatcher(
     // ── File-list navigation (arrow keys + vim hjkl) ─────────────────────
     //
     // Route by view mode so hjkl / arrows work in every view (details,
-    // grid, gallery, miller, tree). Details/Grid update the selection
-    // to match focus (Finder/Explorer parity — keyboard nav "picks" the
-    // row just like a click); Gallery/Tree/Miller focus one at a time by
-    // design so plain move_focus is fine.
+    // grid, gallery, miller, tree). Nav is **focus-only** in every view:
+    // moving the cursor updates the focused-index but leaves the existing
+    // selection alone. This is the terminal-file-manager convention
+    // (yazi / nnn / ranger / Total Commander) and lets the user build a
+    // multi-selection by arrow-navigating + pressing Space per row.
+    //
+    // Left-click still single-selects (Finder/Explorer parity), Shift+arrow
+    // extends the range from the anchor, and Cmd+A selects everything.
     {
         let s = Arc::clone(shell);
         d.register("pane::MoveDown", move || {
@@ -736,8 +756,8 @@ fn build_dispatcher(
             let mode = s.pane_view_mode(id);
             let Some(ctrl) = s.pane_by_id(id) else { return };
             match mode {
-                atlas_ui::models::ViewMode::Details => ctrl.details.move_and_select(1_i64),
-                atlas_ui::models::ViewMode::Grid => ctrl.grid.move_and_select(1_isize, 0),
+                atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(1_i64),
+                atlas_ui::models::ViewMode::Grid => ctrl.grid.move_focus(1_isize, 0),
                 atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(1_isize),
                 atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(1_isize),
                 atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(1_isize),
@@ -751,8 +771,8 @@ fn build_dispatcher(
             let mode = s.pane_view_mode(id);
             let Some(ctrl) = s.pane_by_id(id) else { return };
             match mode {
-                atlas_ui::models::ViewMode::Details => ctrl.details.move_and_select(-1_i64),
-                atlas_ui::models::ViewMode::Grid => ctrl.grid.move_and_select(-1_isize, 0),
+                atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(-1_i64),
+                atlas_ui::models::ViewMode::Grid => ctrl.grid.move_focus(-1_isize, 0),
                 atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(-1_isize),
                 atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(-1_isize),
                 atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(-1_isize),
@@ -791,6 +811,99 @@ fn build_dispatcher(
                 atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(-1_isize),
                 atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(-1_isize),
             }
+        });
+    }
+    // ── Multi-select actions (Space toggle, Cmd+A select all) ────────────
+    //
+    // Space = mark/unmark the focused entry, matching the "mark" idiom
+    // from Total Commander / nnn / ranger / yazi. Cmd+A / Ctrl+A selects
+    // every entry in the pane's directory; Shift+Cmd+A clears the
+    // selection. These are only defined for Details/Grid — the
+    // single-focus views (Gallery/Tree/Miller) have no concept of a
+    // multi-selection.
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::ToggleSelection", move || {
+            let id = s.focused_pane_id();
+            let mode = s.pane_view_mode(id);
+            let Some(ctrl) = s.pane_by_id(id) else { return };
+            match mode {
+                atlas_ui::models::ViewMode::Details => ctrl.details.toggle_focused(),
+                atlas_ui::models::ViewMode::Grid => ctrl.grid.toggle_focused(),
+                _ => {
+                    tracing::debug!(?mode, "pane::ToggleSelection: not supported in this view");
+                }
+            }
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::SelectAll", move || {
+            let id = s.focused_pane_id();
+            let mode = s.pane_view_mode(id);
+            let Some(ctrl) = s.pane_by_id(id) else { return };
+            match mode {
+                atlas_ui::models::ViewMode::Details => ctrl.details.select_all(),
+                atlas_ui::models::ViewMode::Grid => ctrl.grid.select_all(),
+                _ => {
+                    tracing::debug!(?mode, "pane::SelectAll: not supported in this view");
+                }
+            }
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::DeselectAll", move || {
+            let id = s.focused_pane_id();
+            let mode = s.pane_view_mode(id);
+            let Some(ctrl) = s.pane_by_id(id) else { return };
+            match mode {
+                atlas_ui::models::ViewMode::Details => ctrl.details.deselect_all(),
+                atlas_ui::models::ViewMode::Grid => ctrl.grid.deselect_all(),
+                _ => {
+                    tracing::debug!(?mode, "pane::DeselectAll: not supported in this view");
+                }
+            }
+        });
+    }
+    // ── Vim g g / shift-g (jump to top / bottom of the list) ─────────────
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::MoveToTop", move || {
+            let id = s.focused_pane_id();
+            let mode = s.pane_view_mode(id);
+            let Some(ctrl) = s.pane_by_id(id) else { return };
+            // Passing i64::MIN / isize::MIN makes clamp saturate at 0.
+            match mode {
+                atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(i64::MIN),
+                atlas_ui::models::ViewMode::Grid => ctrl.grid.move_focus(isize::MIN, 0),
+                atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(isize::MIN),
+                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(isize::MIN),
+                atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(isize::MIN),
+            }
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::MoveToBottom", move || {
+            let id = s.focused_pane_id();
+            let mode = s.pane_view_mode(id);
+            let Some(ctrl) = s.pane_by_id(id) else { return };
+            match mode {
+                atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(i64::MAX),
+                atlas_ui::models::ViewMode::Grid => ctrl.grid.move_focus(isize::MAX, 0),
+                atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(isize::MAX),
+                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(isize::MAX),
+                atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(isize::MAX),
+            }
+        });
+    }
+    // ── Search-in-place (vim `/` — deferred; today is a no-op stub) ──────
+    {
+        d.register("pane::SearchInPlace", move || {
+            tracing::info!(
+                "pane::SearchInPlace: incremental in-list filter not implemented yet (v0.3); use Cmd+F / search::Toggle for now"
+            );
         });
     }
 
@@ -996,6 +1109,22 @@ fn build_dispatcher(
                 return;
             };
             s.clipboard().paste(dest);
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("fs::Duplicate", move || {
+            // Duplicate every currently-selected entry (or the focused
+            // entry if nothing is explicitly selected). Uses the ops
+            // queue's RenameWithSuffix policy to append " (copy)".
+            let id = s.focused_pane_id();
+            let mut paths = s.selected_paths(id);
+            if paths.is_empty() {
+                if let Some(p) = s.focused_entry(id) {
+                    paths.push(p);
+                }
+            }
+            s.duplicate_paths(paths);
         });
     }
     {

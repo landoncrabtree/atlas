@@ -23,6 +23,7 @@ use crate::{
 const MAX_RESULTS: usize = 200;
 
 type DispatchCallback = dyn Fn(&str) + Send + Sync;
+type PathConfirmCallback = dyn Fn(PathBuf) + Send + Sync;
 
 /// Orchestrates the command palette: mode switching, fuzzy query dispatch,
 /// result caching, and selection movement.
@@ -36,6 +37,7 @@ pub struct PaletteController {
     current_items: Mutex<Vec<PaletteItem>>,
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
     on_dispatch: RwLock<Option<Box<DispatchCallback>>>,
+    on_path_confirm: RwLock<Option<Box<PathConfirmCallback>>>,
 }
 
 impl PaletteController {
@@ -52,6 +54,7 @@ impl PaletteController {
             current_items: Mutex::new(Vec::new()),
             actions,
             on_dispatch: RwLock::new(None),
+            on_path_confirm: RwLock::new(None),
         })
     }
 
@@ -77,6 +80,19 @@ impl PaletteController {
     /// Register a callback invoked when an action item is confirmed.
     pub fn set_on_dispatch(&self, callback: impl Fn(&str) + Send + Sync + 'static) {
         *self.on_dispatch.write() = Some(Box::new(callback));
+    }
+
+    /// Register a callback invoked when a `Path`-kind item is confirmed.
+    ///
+    /// The callback owns the "open this path" decision — typically wired
+    /// to `AppShell::view_path(focused_pane_id, path)` so directories
+    /// navigate the focused pane while files hand off to the OS default
+    /// application (the same fs::View unification used by Enter and
+    /// double-click).  When unset, the palette falls back to dispatching
+    /// [`UiAction::Navigate`] on pane 0, which is the pre-goto-view
+    /// behaviour and only works for directories.
+    pub fn set_on_path_confirm(&self, callback: impl Fn(PathBuf) + Send + Sync + 'static) {
+        *self.on_path_confirm.write() = Some(Box::new(callback));
     }
 
     /// Open the palette with the source at `source_index`.
@@ -150,10 +166,22 @@ impl PaletteController {
                     .dispatch(UiAction::PaletteConfirm(item.id.clone()));
             }
             PaletteItemKind::Path => {
-                self.actions.lock().dispatch(UiAction::Navigate {
-                    pane: 0,
-                    path: PathBuf::from(item.id),
-                });
+                let path = PathBuf::from(item.id);
+                // Prefer the fs::View-aware callback (folders navigate,
+                // files open in the OS default app). Fall back to a plain
+                // Navigate dispatch — which only makes sense for
+                // directories — when no callback is registered.
+                if let Some(callback) = self.on_path_confirm.read().as_ref() {
+                    callback(path);
+                } else {
+                    tracing::debug!(
+                        "palette path confirm without on_path_confirm callback; \
+                         falling back to UiAction::Navigate (files will not open)"
+                    );
+                    self.actions
+                        .lock()
+                        .dispatch(UiAction::Navigate { pane: 0, path });
+                }
             }
         }
     }
@@ -284,5 +312,124 @@ mod tests {
         assert_eq!(controller.model.lock().selected, 1);
         controller.move_selection(-100);
         assert_eq!(controller.model.lock().selected, 0);
+    }
+
+    /// When the palette confirms a `Path`-kind item, it MUST route through
+    /// the registered `on_path_confirm` callback (which shell wires to
+    /// `AppShell::view_path`, so files open in the OS default app). It
+    /// must NOT emit `UiAction::Navigate` in that case, because Navigate
+    /// on a file path is a no-op that appears to hang.
+    #[test]
+    fn path_confirm_routes_through_callback_not_navigate() {
+        use crate::palette::source::PaletteItemKind;
+        use std::sync::atomic::AtomicBool;
+
+        struct RecordingSink {
+            saw_navigate: Arc<AtomicBool>,
+        }
+        impl ActionSink for RecordingSink {
+            fn dispatch(&mut self, action: UiAction) {
+                if matches!(action, UiAction::Navigate { .. }) {
+                    self.saw_navigate.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+
+        let saw_navigate = Arc::new(AtomicBool::new(false));
+        let sink = RecordingSink {
+            saw_navigate: Arc::clone(&saw_navigate),
+        };
+        let controller = PaletteController::new(Arc::new(Mutex::new(Box::new(sink))));
+
+        // Register the fs::View-aware path callback. We also record how
+        // many times it fires and with what path so we can assert on it.
+        let seen_path: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+        {
+            let seen_path = Arc::clone(&seen_path);
+            controller.set_on_path_confirm(move |p| {
+                *seen_path.lock() = Some(p);
+            });
+        }
+
+        controller.visible.store(true, Ordering::Relaxed);
+        *controller.current_items.lock() = vec![PaletteItem {
+            id: String::from("/some/file.txt"),
+            title: String::from("file.txt"),
+            subtitle: String::from("/some"),
+            kind: PaletteItemKind::Path,
+        }];
+        *controller.model.lock() = PaletteModel {
+            visible: true,
+            query: String::new(),
+            results: vec![PaletteResult {
+                title: String::from("file.txt"),
+                subtitle: String::from("/some"),
+                action_id: String::from("/some/file.txt"),
+            }],
+            selected: 0,
+        };
+
+        controller.confirm();
+
+        assert_eq!(
+            seen_path.lock().as_deref(),
+            Some(PathBuf::from("/some/file.txt").as_path()),
+            "on_path_confirm should fire with the exact palette path"
+        );
+        assert!(
+            !saw_navigate.load(Ordering::Relaxed),
+            "confirm() must NOT dispatch UiAction::Navigate when a path callback is set — that would try to cd into files and hang"
+        );
+    }
+
+    /// When no `on_path_confirm` callback is registered, the palette
+    /// falls back to the old Navigate behaviour so directories still
+    /// work in isolation (e.g. in tests that don't wire a full shell).
+    #[test]
+    fn path_confirm_falls_back_to_navigate_without_callback() {
+        use crate::palette::source::PaletteItemKind;
+        use std::sync::atomic::AtomicBool;
+
+        struct RecordingSink {
+            saw_navigate: Arc<AtomicBool>,
+        }
+        impl ActionSink for RecordingSink {
+            fn dispatch(&mut self, action: UiAction) {
+                if matches!(action, UiAction::Navigate { .. }) {
+                    self.saw_navigate.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+
+        let saw_navigate = Arc::new(AtomicBool::new(false));
+        let sink = RecordingSink {
+            saw_navigate: Arc::clone(&saw_navigate),
+        };
+        let controller = PaletteController::new(Arc::new(Mutex::new(Box::new(sink))));
+
+        controller.visible.store(true, Ordering::Relaxed);
+        *controller.current_items.lock() = vec![PaletteItem {
+            id: String::from("/some/dir"),
+            title: String::from("dir"),
+            subtitle: String::from("/some"),
+            kind: PaletteItemKind::Path,
+        }];
+        *controller.model.lock() = PaletteModel {
+            visible: true,
+            query: String::new(),
+            results: vec![PaletteResult {
+                title: String::from("dir"),
+                subtitle: String::from("/some"),
+                action_id: String::from("/some/dir"),
+            }],
+            selected: 0,
+        };
+
+        controller.confirm();
+
+        assert!(
+            saw_navigate.load(Ordering::Relaxed),
+            "confirm() must fall back to Navigate dispatch when no path callback is registered"
+        );
     }
 }

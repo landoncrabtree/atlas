@@ -10,10 +10,10 @@
 //! event loop. The inner `RwLock`s guard the Rust-side model copies.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     env,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
 };
 
 use ahash::AHashMap;
@@ -360,6 +360,25 @@ pub struct PaneRenderCache {
     pub miller_columns: Vec<MillerColumnCache>,
     /// Focused column index within `miller_columns`.
     pub miller_focused_col: i32,
+
+    // ── Per-pane status bar ──────────────────────────────────────────────
+    //
+    // Pre-formatted so the UI-thread push is O(1) and doesn't allocate
+    // through the format machinery on every event-loop tick. Filled in by
+    // `AppShell::refresh_pane_status` from the pane's current entries +
+    // an `fs2::statvfs` call against the pane's cwd. Empty on brand-new
+    // panes until the first vm event fires.
+    /// Number of directories in the pane's current listing.
+    pub status_folder_count: i32,
+    /// Number of non-directory entries in the pane's current listing.
+    pub status_file_count: i32,
+    /// Cumulative bytes of the visible files, formatted (`"1.7 MiB"`).
+    /// Empty when nothing is loaded yet.
+    pub status_total_size_text: String,
+    /// Free / total space on the volume backing the pane's cwd,
+    /// e.g. `"590 GB free of 926 GB"`. Empty when unavailable
+    /// (unmounted volume, no cwd yet).
+    pub status_free_space_text: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -501,6 +520,16 @@ pub struct AppShell {
     /// specific entry the user right-clicked (not the focused entry, which
     /// may differ if the user right-clicked without first selecting).
     context_menu_target: RwLock<Option<(PaneId, PathBuf)>>,
+    /// Per-column-kind width overrides for the Details view, keyed by the
+    /// wire string from [`crate::views::details::ColumnKind::as_str`].
+    /// Updated live as the user drags a column divider; persisted to
+    /// `[view.details.column_widths]` in the user config on quit
+    /// (see [`Self::column_widths_snapshot`] +
+    /// `atlas-app::main::persist_column_widths_on_quit`).
+    column_widths: RwLock<HashMap<String, f32>>,
+    /// `true` once the user has resized any column since app start —
+    /// prevents an unnecessary config write when nothing changed.
+    column_widths_dirty: AtomicBool,
 }
 
 impl AppShell {
@@ -588,10 +617,26 @@ impl AppShell {
                 drag_armed: RwLock::new(None),
                 dragging: RwLock::new(None),
                 context_menu_target: RwLock::new(None),
+                column_widths: RwLock::new(HashMap::new()),
+                column_widths_dirty: AtomicBool::new(false),
             }
         });
 
         shell.wire_callbacks(window);
+
+        // Route goto::Anything (and any other Path-kind palette result)
+        // through fs::View so directories navigate the focused pane and
+        // files hand off to the OS default handler. Uses a weak self so
+        // the callback doesn't extend the shell's lifetime.
+        {
+            let weak = Arc::downgrade(&shell);
+            shell.palette_ctrl.set_on_path_confirm(move |path| {
+                let Some(shell) = weak.upgrade() else { return };
+                let id = shell.focused_pane_id();
+                shell.view_path(id, path);
+            });
+        }
+
         shell
     }
 
@@ -623,6 +668,55 @@ impl AppShell {
     #[must_use]
     pub fn miller_controller(&self) -> Arc<MillerController> {
         Arc::clone(&self.focused_controllers().miller)
+    }
+
+    // ── Details column-width persistence ─────────────────────────────────────
+
+    /// Apply persisted per-column widths (loaded from
+    /// `[view.details.column_widths]` at startup) to every existing pane's
+    /// details controller AND stash them in the in-memory snapshot so the
+    /// same widths are seeded onto any pane created later (via split).
+    pub fn apply_column_widths(self: &Arc<Self>, widths: &HashMap<String, f32>) {
+        if widths.is_empty() {
+            return;
+        }
+        *self.column_widths.write() = widths.clone();
+        let panes = self.panes_ctrl.read();
+        for ctrl in panes.values() {
+            ctrl.details.apply_persisted_widths(widths);
+        }
+    }
+
+    /// Record a user-driven column resize; called from the
+    /// `on_details_header_resize` handler after the details controller
+    /// clamps the proposed width. Also flags the snapshot dirty so quit
+    /// knows whether it has anything worth writing.
+    pub(crate) fn record_column_width(
+        &self,
+        kind: crate::views::details::ColumnKind,
+        clamped_width: f32,
+    ) {
+        self.column_widths
+            .write()
+            .insert(kind.as_str().to_owned(), clamped_width);
+        self.column_widths_dirty
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Snapshot the current per-column width overrides for persistence.
+    ///
+    /// Returns `None` when no column has been resized since app start —
+    /// callers use this as an early-exit signal so untouched sessions
+    /// don't trigger a config rewrite.
+    #[must_use]
+    pub fn column_widths_snapshot(&self) -> Option<HashMap<String, f32>> {
+        if !self
+            .column_widths_dirty
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return None;
+        }
+        Some(self.column_widths.read().clone())
     }
 
     /// Return a clone of the controllers for the currently focused pane,
@@ -697,11 +791,42 @@ impl AppShell {
     }
 
     /// Set focus to the given pane.
+    ///
+    /// This is a hot-path called from every mouse click on a row: we take
+    /// care to avoid a full [`Self::project_workspace_to_slint`] rebuild
+    /// (which would re-emit `panes-details-rows`, resetting `ListView`
+    /// scroll and destroying `TouchArea` double-click state). When the
+    /// requested pane is already focused, we skip work entirely. When
+    /// focus actually shifts, we push only the top-level `focused_pane_id`
+    /// and `focus_index` scalars.
     pub fn set_focused_pane_id(self: &Arc<Self>, id: PaneId) {
-        {
-            self.workspace.write().set_focused(id);
+        let (changed, new_focus_index) = {
+            let mut ws = self.workspace.write();
+            let already = ws.focused == id;
+            if already {
+                (false, 0i32)
+            } else {
+                ws.set_focused(id);
+                let bounds = self.workspace_content_bounds();
+                let rects = ws.layout.layout_rects(bounds);
+                let idx = rects
+                    .iter()
+                    .position(|(pid, _)| *pid == id)
+                    .unwrap_or(0) as i32;
+                (true, idx)
+            }
+        };
+        if !changed {
+            return;
         }
-        self.project_workspace_to_slint();
+        let focused_id_i32 = id.0 as i32;
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_focused_pane_id(focused_id_i32);
+                window.set_focus_index(new_focus_index);
+            }
+        });
     }
 
     /// Force the root FocusScope to re-grab keyboard focus by bumping the
@@ -742,33 +867,57 @@ impl AppShell {
     /// Set the active-pane border thickness (in logical pixels). Bound to
     /// `config.ui.active_pane_border_px`.
     pub fn set_active_pane_border_px(&self, px: f32) {
-        if let Some(window) = self.window.upgrade() {
-            window.set_active_pane_border_px(px);
-        }
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_active_pane_border_px(px);
+            }
+        });
     }
 
     /// Show or hide the bottom status bar. Bound to `ui.show_status_bar`.
     pub fn set_status_bar_visible(&self, visible: bool) {
-        if let Some(window) = self.window.upgrade() {
-            window.set_show_status_bar(visible);
-        }
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_show_status_bar(visible);
+            }
+        });
     }
 
     /// Show or hide the breadcrumb strip in every pane. Bound to
     /// `ui.show_breadcrumbs`.
     pub fn set_breadcrumbs_visible(&self, visible: bool) {
-        if let Some(window) = self.window.upgrade() {
-            window.set_show_breadcrumbs(visible);
-        }
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_show_breadcrumbs(visible);
+            }
+        });
+    }
+
+    /// Show or hide the bottom shortcut-footer strip (Marta/NC-style
+    /// key hints). Bound to `ui.show_shortcuts`. Rebindings still work;
+    /// only the hint chips are hidden.
+    pub fn set_shortcut_footer_visible(&self, visible: bool) {
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_show_shortcut_footer(visible);
+            }
+        });
     }
 
     /// Enable or disable UI animations globally. When `false`, every
     /// `animate {}` block in Slint collapses to a 0ms transition. Bound to
     /// `ui.animations`.
     pub fn set_animations_enabled(&self, enabled: bool) {
-        if let Some(window) = self.window.upgrade() {
-            window.set_theme_animations(enabled);
-        }
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_theme_animations(enabled);
+            }
+        });
     }
 
     /// Replace the shortcut-footer hints. Each entry is a pre-formatted
@@ -889,6 +1038,15 @@ impl AppShell {
         );
         self.panes_ctrl.write().insert(new_id, new_ctrl);
 
+        // Seed the new pane's details controller with the persisted column
+        // widths so a fresh split doesn't reset back to defaults.
+        let widths_snapshot = self.column_widths.read().clone();
+        if !widths_snapshot.is_empty() {
+            if let Some(c) = self.pane_by_id(new_id) {
+                c.details.apply_persisted_widths(&widths_snapshot);
+            }
+        }
+
         // Navigate the new pane to the inherited location.
         self.navigation.navigate_pane(new_id, new_location);
         self.project_workspace_to_slint();
@@ -968,19 +1126,23 @@ impl AppShell {
             .unwrap_or(Rect::from_size(1440.0, 900.0))
     }
 
-    /// The workspace content area: window bounds minus the titlebar, toolbar,
-    /// status bar, and shortcut footer.  This is the rectangle that the pane
+    /// The workspace content area: window bounds minus the titlebar,
+    /// toolbar, and shortcut footer.  This is the rectangle that the pane
     /// container fills and that `layout_rects` must be called against.
     ///
     /// The constant offsets below match the fixed pixel heights used in
-    /// `atlas.slint` (toolbar 32 px, status 24 px, footer 24 px).  Adjust
-    /// if those values ever change.
+    /// `atlas.slint` (toolbar 32 px, footer 26 px).  Adjust if those
+    /// values ever change. Since v0.2.2 the window-level status bar was
+    /// replaced by a per-pane status bar drawn inside each pane's own
+    /// frame (see `components/pane.slint` → `PaneStatusBar`), so it no
+    /// longer eats any of this bounds calculation.
     fn workspace_content_bounds(&self) -> Rect {
         let wb = self.window_bounds();
-        // Toolbar (32 px) + status bar (24 px) + shortcut footer (24 px).
+        // Toolbar (32 px) + shortcut footer (26 px).
         // Titlebar is drawn by the OS and already excluded from logical pixels.
+        // Per-pane status bar height is inside each pane's rect, not here.
         const TOP_CHROME: f32 = 32.0;
-        const BOTTOM_CHROME: f32 = 24.0 + 24.0;
+        const BOTTOM_CHROME: f32 = 26.0;
         let height = (wb.height - TOP_CHROME - BOTTOM_CHROME).max(1.0);
         Rect {
             x: 0.0,
@@ -1364,6 +1526,23 @@ impl AppShell {
             if let Err(err) = open::that(&path) {
                 tracing::warn!(?path, %err, "fs::View: OS open failed");
             }
+        }
+    }
+
+    /// Duplicate one or more paths in place — copies each source into its
+    /// own parent directory, letting the ops queue's `RenameWithSuffix`
+    /// policy generate `foo (copy).ext` / `foo (copy 2).ext` names
+    /// (Finder convention). If `paths` is empty, this is a no-op.
+    ///
+    /// Ops-queue based, so the copy runs off the UI thread and shows
+    /// progress in the bottom ops panel.
+    pub fn duplicate_paths(&self, paths: Vec<PathBuf>) {
+        for source in paths {
+            let Some(parent) = source.parent().map(Path::to_path_buf) else {
+                tracing::warn!(?source, "fs::Duplicate: source has no parent, skipping");
+                continue;
+            };
+            self.ops.submit_copy(vec![source], parent);
         }
     }
 
@@ -1798,16 +1977,27 @@ impl AppShell {
 
         self.project_workspace_to_slint();
         self.refresh_status();
+        // Per-pane status chips render inside each pane's frame — see
+        // pane.slint's PaneStatusBar. The initial fill here matches what
+        // the vm-subscribe watcher will refresh on every future change.
+        self.refresh_pane_status(pane_id);
 
         // Spawn a lightweight watcher that re-computes status whenever the vm
         // emits an event, then exits when the vm subscription channel closes.
+        // Uses `refresh_pane_status` so only *this* pane's chips are
+        // recomputed on a per-pane fs event; the whole-window status bar
+        // (deprecated behind `ui.show_status_bar`) still receives the
+        // cascaded update via `refresh_status` when the pane is focused.
         let shell_bg = Arc::clone(self);
         let events = vm_for_status.subscribe();
         std::thread::Builder::new()
             .name(format!("atlas-status-{pane_id:?}"))
             .spawn(move || {
                 while let Ok(_ev) = events.recv() {
-                    shell_bg.refresh_status();
+                    shell_bg.refresh_pane_status(pane_id);
+                    if pane_id == shell_bg.focused_pane_id() {
+                        shell_bg.refresh_status();
+                    }
                 }
             })
             .ok();
@@ -1883,6 +2073,12 @@ impl AppShell {
         // The FocusScope in atlas.slint dispatches these when no modal or
         // text input has focus (arrow keys / Enter / Backspace / vim hjkl).
         // Route to the focused pane's *current view* — details/grid/etc.
+        //
+        // Note: keyboard navigation is **focus-only** — it does not touch
+        // the selection. This matches yazi/nnn/ranger/Total Commander,
+        // and lets the user build up a multi-selection by arrow-navigating
+        // and pressing Space per row. See the `pane::MoveDown` handler
+        // in `crates/atlas-app/src/main.rs` for the full rationale.
         {
             let shell = self.clone();
             window.on_pane_move_focus(move |delta| {
@@ -1897,8 +2093,8 @@ impl AppShell {
                     return;
                 };
                 match mode {
-                    ViewMode::Details => ctrl.details.move_and_select(delta as i64),
-                    ViewMode::Grid => ctrl.grid.move_and_select(delta as isize, 0),
+                    ViewMode::Details => ctrl.details.move_focus(delta as i64),
+                    ViewMode::Grid => ctrl.grid.move_focus(delta as isize, 0),
                     ViewMode::Gallery => ctrl.gallery.move_focus(delta as isize),
                     ViewMode::Miller => ctrl.miller.move_focus(delta as isize),
                     ViewMode::Tree => ctrl.tree.move_focus(delta as isize),
@@ -2095,6 +2291,28 @@ impl AppShell {
                     c.details.header_clicked(column_index as usize);
                 }
                 shell.bump_refocus_tick();
+            });
+        }
+        // Drag on a column header divider → set the new width on the details
+        // controller (clamps to per-kind min/max) and record the change so
+        // it can be persisted to `[view.details.column_widths]` on quit.
+        {
+            let shell = self.clone();
+            window.on_details_header_resize(move |pane_id, column_index, new_width_px| {
+                let id = PaneId(pane_id as u32);
+                let Some(c) = shell.pane_by_id(id) else { return };
+                if let Some((kind, clamped_width)) =
+                    c.details.set_column_width(column_index as usize, new_width_px)
+                {
+                    tracing::trace!(
+                        pane = pane_id,
+                        column = column_index,
+                        requested = new_width_px,
+                        applied = clamped_width,
+                        "details column resized"
+                    );
+                    shell.record_column_width(kind, clamped_width);
+                }
             });
         }
         // Right-click on a details row → record the target entry and open
@@ -2342,6 +2560,20 @@ impl AppShell {
         }
         {
             let shell = self.clone();
+            window.on_ctx_duplicate(move || {
+                // Duplicate every currently-selected entry (or the single
+                // right-clicked target when nothing else is selected). The
+                // right-click handler that opened this menu already
+                // single-selects the pointed-at row, so `selected_paths`
+                // is always non-empty when this fires.
+                let Some((id, target)) = shell.context_menu_target() else { return };
+                let selected = shell.selected_paths(id);
+                let paths = if selected.is_empty() { vec![target] } else { selected };
+                shell.duplicate_paths(paths);
+            });
+        }
+        {
+            let shell = self.clone();
             window.on_ctx_rename(move || {
                 if let Some(window) = shell.window.upgrade() {
                     window.invoke_fs_rename();
@@ -2413,8 +2645,27 @@ impl AppShell {
         }
         {
             let ops = Arc::clone(&self.ops);
+            window.on_ops_clear_completed(move || {
+                tracing::debug!("ops-clear-completed from UI");
+                ops.clear_completed();
+            });
+        }
+        {
+            let ops = Arc::clone(&self.ops);
             window.on_toggle_ops_panel(move || {
                 ops.toggle_visible();
+            });
+        }
+        {
+            let ops = Arc::clone(&self.ops);
+            window.on_op_modal_cancel(move || {
+                ops.cancel_current_foreground();
+            });
+        }
+        {
+            let ops = Arc::clone(&self.ops);
+            window.on_op_modal_background(move || {
+                ops.background_current_foreground();
             });
         }
 
@@ -2740,9 +2991,23 @@ impl AppShell {
     // ── Fine-grained cache publishers ────────────────────────────────────
     //
     // Each publisher stores its value into the per-pane render cache and
-    // then triggers one push of every panes-* Slint array in DFS order.  The
-    // pushes are idempotent, so multiple back-to-back publishes coalesce
-    // safely on the Slint event loop.
+    // then triggers a push to Slint. There are two flavours of push:
+    //
+    // * `push_pane_data_to_slint` — full rebuild of every `panes-*` nested
+    //   `VecModel`. Necessary when the entries list changes (navigation),
+    //   because virtualised views (`ListView`, grid, etc.) key their child
+    //   instances off the row-model reference.
+    // * `push_pane_selection_to_slint` — only refreshes the selection /
+    //   focused-index arrays. Called by selection-only publishers so a
+    //   click or Space press does NOT re-emit `panes-details-rows`, which
+    //   would (a) recreate every row's `TouchArea` and eat the second
+    //   click of a double-click, and (b) reset `ListView.viewport-y` to 0
+    //   — visible to the user as the scroll bouncing back to the top.
+    //
+    // Any publisher that mutates entries / thumbnails / column specs /
+    // tree nodes / miller columns / gallery images MUST call the full
+    // push. Anything mutating only selection or focus state calls the
+    // selection push.
 
     fn with_cache<F>(&self, id: PaneId, apply: F)
     where
@@ -2766,21 +3031,29 @@ impl AppShell {
     }
 
     /// Publish the Details view selection mask for pane `id`.
+    ///
+    /// Selection-only: does **not** re-emit `panes-details-rows`.  See the
+    /// module comment above `with_cache` for why this matters (double-click
+    /// detection + `ListView` scroll-position preservation).
     pub fn publish_details_selected_mask(self: &Arc<Self>, id: PaneId, mask: Vec<bool>) {
         self.with_cache(id, |c| c.details_selected_mask = mask);
-        self.push_pane_data_to_slint();
+        self.push_pane_selection_to_slint();
     }
 
     /// Publish the Details view selection anchor for pane `id`.
+    ///
+    /// Selection-only push — see [`Self::publish_details_selected_mask`].
     pub fn publish_details_selected_anchor(self: &Arc<Self>, id: PaneId, anchor: i32) {
         self.with_cache(id, |c| c.details_selected_anchor = anchor);
-        self.push_pane_data_to_slint();
+        self.push_pane_selection_to_slint();
     }
 
     /// Publish the Details view focused-row index for pane `id`.
+    ///
+    /// Selection-only push — see [`Self::publish_details_selected_mask`].
     pub fn publish_details_focused_index(self: &Arc<Self>, id: PaneId, focus: i32) {
         self.with_cache(id, |c| c.details_focused_index = focus);
-        self.push_pane_data_to_slint();
+        self.push_pane_selection_to_slint();
     }
 
     /// Publish the Grid view thumbnails for pane `id`.
@@ -2800,15 +3073,19 @@ impl AppShell {
     }
 
     /// Publish the Grid view selection mask for pane `id`.
+    ///
+    /// Selection-only push — see [`Self::publish_details_selected_mask`].
     pub fn publish_grid_selected_mask(self: &Arc<Self>, id: PaneId, mask: Vec<bool>) {
         self.with_cache(id, |c| c.grid_selected_mask = mask);
-        self.push_pane_data_to_slint();
+        self.push_pane_selection_to_slint();
     }
 
     /// Publish the Grid view focused-cell index for pane `id`.
+    ///
+    /// Selection-only push — see [`Self::publish_details_selected_mask`].
     pub fn publish_grid_focused_index(self: &Arc<Self>, id: PaneId, focus: i32) {
         self.with_cache(id, |c| c.grid_focused_index = focus);
-        self.push_pane_data_to_slint();
+        self.push_pane_selection_to_slint();
     }
 
     /// Publish the Gallery strip thumbnails for pane `id`.
@@ -2838,9 +3115,11 @@ impl AppShell {
     }
 
     /// Publish the Gallery focused index for pane `id`.
+    ///
+    /// Selection-only push — see [`Self::publish_details_selected_mask`].
     pub fn publish_gallery_focused_index(self: &Arc<Self>, id: PaneId, focus: i32) {
         self.with_cache(id, |c| c.gallery_focused_index = focus);
-        self.push_pane_data_to_slint();
+        self.push_pane_selection_to_slint();
     }
 
     /// Publish the Gallery metadata sidebar for pane `id`.
@@ -2860,15 +3139,19 @@ impl AppShell {
     }
 
     /// Publish the Tree view focused index for pane `id`.
+    ///
+    /// Selection-only push — see [`Self::publish_details_selected_mask`].
     pub fn publish_tree_focused_index(self: &Arc<Self>, id: PaneId, focus: i32) {
         self.with_cache(id, |c| c.tree_focused_index = focus);
-        self.push_pane_data_to_slint();
+        self.push_pane_selection_to_slint();
     }
 
     /// Publish the Tree view selected index for pane `id`.
+    ///
+    /// Selection-only push — see [`Self::publish_details_selected_mask`].
     pub fn publish_tree_selected_index(self: &Arc<Self>, id: PaneId, selected: i32) {
         self.with_cache(id, |c| c.tree_selected_index = selected);
-        self.push_pane_data_to_slint();
+        self.push_pane_selection_to_slint();
     }
 
     /// Publish the Miller columns snapshot for pane `id`.
@@ -2882,9 +3165,11 @@ impl AppShell {
     }
 
     /// Publish the Miller focused-column index for pane `id`.
+    ///
+    /// Selection-only push — see [`Self::publish_details_selected_mask`].
     pub fn publish_miller_focused_col(self: &Arc<Self>, id: PaneId, focused: i32) {
         self.with_cache(id, |c| c.miller_focused_col = focused);
-        self.push_pane_data_to_slint();
+        self.push_pane_selection_to_slint();
     }
 
     /// Rebuild every `panes-*` nested [`VecModel`] from the current cache in
@@ -3075,6 +3360,109 @@ impl AppShell {
         });
     }
 
+    /// Push only the per-pane selection / focused-index arrays to Slint,
+    /// leaving the heavy row / column / thumbnail / tree / miller / gallery
+    /// arrays untouched.
+    ///
+    /// **Why this matters.** Slint's `ListView` (and, by extension, the
+    /// Grid/Tree/Gallery virtualised containers) key their child instances
+    /// off the *identity* of the row model. Replacing
+    /// `panes-details-rows` with a fresh `VecModel` — even if the contents
+    /// are identical — destroys every `EntryRow` instance and re-creates
+    /// it from scratch. Two user-visible bugs fall out of that:
+    ///
+    /// 1. `TouchArea.double-clicked` never fires. The `clicked` handler
+    ///    on the first click runs `set_focused_pane_id → publish_details_selected_mask`
+    ///    which used to re-emit `panes-details-rows`; the second click
+    ///    then lands on a *new* TouchArea instance whose internal
+    ///    double-click timer has just been born and therefore has no
+    ///    "previous click" to pair with.
+    /// 2. `ListView.viewport-y` snaps back to `0`. Any click on a row
+    ///    scrolled below the initial viewport would bounce the list back
+    ///    to the top.
+    ///
+    /// Both problems disappear once selection updates stop touching the
+    /// entries model — hence this dedicated push.
+    fn push_pane_selection_to_slint(self: &Arc<Self>) {
+        let leaves = self.workspace.read().layout.all_leaves();
+        let snapshots: Vec<PaneRenderCache> = {
+            let cache = self.pane_cache.read();
+            leaves
+                .iter()
+                .map(|id| cache.get(id).cloned().unwrap_or_default())
+                .collect()
+        };
+
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+
+            // Details selection / focus.
+            let d_mask: Vec<ModelRc<bool>> = snapshots
+                .iter()
+                .map(|s| ModelRc::new(VecModel::from(s.details_selected_mask.clone())))
+                .collect();
+            window.set_panes_details_selected_mask(ModelRc::new(VecModel::from(d_mask)));
+
+            let d_anchor: Vec<i32> = snapshots.iter().map(|s| s.details_selected_anchor).collect();
+            window.set_panes_details_selected_anchor(ModelRc::new(VecModel::from(d_anchor)));
+
+            let d_focus: Vec<i32> = snapshots.iter().map(|s| s.details_focused_index).collect();
+            window.set_panes_details_focused_index(ModelRc::new(VecModel::from(d_focus)));
+
+            // Grid selection / focus.
+            let g_mask: Vec<ModelRc<bool>> = snapshots
+                .iter()
+                .map(|s| ModelRc::new(VecModel::from(s.grid_selected_mask.clone())))
+                .collect();
+            window.set_panes_grid_selected_mask(ModelRc::new(VecModel::from(g_mask)));
+
+            let g_focus: Vec<i32> = snapshots.iter().map(|s| s.grid_focused_index).collect();
+            window.set_panes_grid_focused_index(ModelRc::new(VecModel::from(g_focus)));
+
+            // Gallery focus.
+            let gal_focus: Vec<i32> = snapshots.iter().map(|s| s.gallery_focused_index).collect();
+            window.set_panes_gallery_focused_index(ModelRc::new(VecModel::from(gal_focus)));
+
+            // Tree focus / selection.
+            let t_focus: Vec<i32> = snapshots.iter().map(|s| s.tree_focused_index).collect();
+            window.set_panes_tree_focused_index(ModelRc::new(VecModel::from(t_focus)));
+
+            let t_sel: Vec<i32> = snapshots.iter().map(|s| s.tree_selected_index).collect();
+            window.set_panes_tree_selected_index(ModelRc::new(VecModel::from(t_sel)));
+
+            // Miller focused column.
+            let m_focus: Vec<i32> = snapshots.iter().map(|s| s.miller_focused_col).collect();
+            window.set_panes_miller_focused_col(ModelRc::new(VecModel::from(m_focus)));
+
+            // Per-pane status bar — kept parallel-length with `panes` so
+            // Slint's `panes-status-*[i]` indexing is always valid, even
+            // before the first `refresh_pane_status` fires for a newly
+            // opened pane.
+            let s_folders: Vec<i32> =
+                snapshots.iter().map(|s| s.status_folder_count).collect();
+            window.set_panes_status_folder_count(ModelRc::new(VecModel::from(s_folders)));
+
+            let s_files: Vec<i32> =
+                snapshots.iter().map(|s| s.status_file_count).collect();
+            window.set_panes_status_file_count(ModelRc::new(VecModel::from(s_files)));
+
+            let s_total: Vec<SharedString> = snapshots
+                .iter()
+                .map(|s| SharedString::from(s.status_total_size_text.as_str()))
+                .collect();
+            window.set_panes_status_total_size_text(ModelRc::new(VecModel::from(s_total)));
+
+            let s_free: Vec<SharedString> = snapshots
+                .iter()
+                .map(|s| SharedString::from(s.status_free_space_text.as_str()))
+                .collect();
+            window.set_panes_status_free_space_text(ModelRc::new(VecModel::from(s_free)));
+        });
+    }
+
     /// Update palette state.
     pub fn set_palette(self: &Arc<Self>, model: PaletteModel) {
         *self.palette.write() = model.clone();
@@ -3117,6 +3505,13 @@ impl AppShell {
     ///
     /// Cheap to call — walks the in-memory entry snapshot. Invoked whenever
     /// the location changes or the entry list updates.
+    ///
+    /// Note: since the status bar migrated per-pane
+    /// ([`Self::refresh_pane_status`]), this global refresh mostly keeps
+    /// the deprecated whole-window `StatusBar` component's data current
+    /// while it remains gated behind `ui.show_status_bar = true`. It
+    /// also cascades to per-pane status for every live pane so the
+    /// per-pane chips stay in sync when any focus/selection changes.
     pub fn refresh_status(self: &Arc<Self>) {
         let id = self.focused_pane_id();
         let vm = self.vms.read().get(&id).cloned();
@@ -3147,6 +3542,91 @@ impl AppShell {
             indexer_state: existing.indexer_state,
         };
         self.set_status(model);
+
+        // Cascade to every live pane so per-pane status chips reflect the
+        // latest snapshot for their own directory (not just the focused one).
+        let pane_ids: Vec<PaneId> = self.vms.read().keys().copied().collect();
+        for pane_id in pane_ids {
+            self.refresh_pane_status(pane_id);
+        }
+    }
+
+    /// Recompute the per-pane status chips (folder/file counts, total
+    /// size, free-space text) for pane `id` and push into the render
+    /// cache. Cheap — walks the pane's in-memory entry snapshot and does
+    /// one `statvfs` call.
+    ///
+    /// The plugin-chip area on the right is intentionally left empty
+    /// for now; see the `PluginChips` placeholder in `pane.slint`
+    /// (TODO(plugins)).
+    pub fn refresh_pane_status(self: &Arc<Self>, id: PaneId) {
+        let vm = self.vms.read().get(&id).cloned();
+        let Some(vm) = vm else {
+            return;
+        };
+        let entries = vm.entries();
+        let mut folders = 0i32;
+        let mut files = 0i32;
+        let mut total_bytes: u64 = 0;
+        for e in &entries {
+            match e.kind {
+                atlas_fs::EntryKind::Dir => folders += 1,
+                _ => {
+                    files += 1;
+                    total_bytes += e.metadata.size;
+                }
+            }
+        }
+        let total_size_text = crate::format_size(total_bytes);
+        let free_text = free_space_text_for(vm.location()).unwrap_or_default();
+
+        self.with_cache(id, |c| {
+            c.status_folder_count = folders;
+            c.status_file_count = files;
+            c.status_total_size_text = total_size_text;
+            c.status_free_space_text = free_text;
+        });
+        self.push_pane_status_to_slint();
+    }
+
+    /// Push only the per-pane status-bar arrays to Slint, leaving the
+    /// heavy view arrays untouched. Called by [`Self::refresh_pane_status`]
+    /// so a fs-watcher tick doesn't invalidate `ListView` scroll position
+    /// or `TouchArea` double-click state.
+    fn push_pane_status_to_slint(self: &Arc<Self>) {
+        let leaves = self.workspace.read().layout.all_leaves();
+        let snapshots: Vec<PaneRenderCache> = {
+            let cache = self.pane_cache.read();
+            leaves
+                .iter()
+                .map(|id| cache.get(id).cloned().unwrap_or_default())
+                .collect()
+        };
+
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+
+            let folders: Vec<i32> = snapshots.iter().map(|s| s.status_folder_count).collect();
+            window.set_panes_status_folder_count(ModelRc::new(VecModel::from(folders)));
+
+            let files: Vec<i32> = snapshots.iter().map(|s| s.status_file_count).collect();
+            window.set_panes_status_file_count(ModelRc::new(VecModel::from(files)));
+
+            let size_text: Vec<SharedString> = snapshots
+                .iter()
+                .map(|s| SharedString::from(s.status_total_size_text.as_str()))
+                .collect();
+            window.set_panes_status_total_size_text(ModelRc::new(VecModel::from(size_text)));
+
+            let free_text: Vec<SharedString> = snapshots
+                .iter()
+                .map(|s| SharedString::from(s.status_free_space_text.as_str()))
+                .collect();
+            window.set_panes_status_free_space_text(ModelRc::new(VecModel::from(free_text)));
+        });
     }
 
     /// Apply a theme mode (convenience wrapper over [`Self::apply_theme`]).
@@ -3230,6 +3710,12 @@ impl AppShell {
 
             window.set_dark(tokens.mode.is_dark());
         });
+        // Tint the OS-native title bar (macOS NSApp appearance / Windows
+        // DWM immersive-dark-mode) so the traffic-light chrome matches
+        // Atlas's active theme mode. Safe to call from any thread — the
+        // implementation marshals platform calls onto the main thread
+        // internally. Linux is a no-op.
+        crate::platform::titlebar_theme::apply_native_titlebar_theme(tokens.mode);
     }
 }
 

@@ -272,6 +272,12 @@ pub fn default_actions() -> Vec<ActionMeta> {
             Some("Paste files from the clipboard into the focused pane's directory.".into()),
             &["Pane"]
         ),
+        action!(
+            "fs::Duplicate",
+            "Duplicate",
+            Some("Copy the focused entry into the same directory with a `(copy)` suffix.".into()),
+            &["Pane"]
+        ),
         // ── Pane split / close ────────────────────────────────────────────────
         action!("pane::SplitRight", "Split Pane Right", None, &["Global"]),
         action!("pane::SplitDown", "Split Pane Down", None, &["Global"]),

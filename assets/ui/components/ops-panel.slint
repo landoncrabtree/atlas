@@ -1,9 +1,22 @@
 import { Theme } from "../theme.slint";
 
+// Row model consumed by the ops panel *and* the progress modal. Mirrors
+// [`atlas_ui::ops::models::OpRow`] — keep the two in sync.
 export struct OpRow {
     id: string,
     title: string,
     status: string,
+    // Kind label ("Copy", "Move", "Trash", ...). Used for the small kind
+    // badge in each panel row.
+    kind: string,
+    // Human-readable source summary ("3 items" or "/Users/x/file.txt").
+    // Empty when the op has no natural source (mkdir).
+    source-summary: string,
+    // Human-readable destination directory. Empty for in-place ops.
+    dest-summary: string,
+    // ETA string ("15s", "1m 30s", ""). Empty until a meaningful estimate
+    // is available.
+    eta: string,
     progress: float,
     items-total: int,
     items-done: int,
@@ -14,6 +27,14 @@ export struct OpRow {
     is-error: bool,
 }
 
+// Redesigned file-operations panel: one row per queued/running/terminal
+// op with a source→dest chip, ETA, cancel or dismiss control, plus an
+// empty-state placeholder and a Clear-completed button in the header.
+//
+// The panel is a docked bottom tray; it is toggled open with Cmd/Ctrl+J
+// via the parent window's `toggle-ops-panel` callback. Ops that finish
+// fast enough to never surface the progress modal still land here, so
+// the user always has a place to review recent activity.
 export component OpsPanel inherits Rectangle {
     in property <bool> visible-panel;
     in property <[OpRow]> rows;
@@ -21,6 +42,11 @@ export component OpsPanel inherits Rectangle {
     callback cancel(int);
     callback dismiss(int);
     callback close();
+    callback clear-completed();
+
+    // Derived counters: keep the header live without extra Rust round-trips.
+    property <int> active-count: rows.length; // approximate; refined below
+    property <int> completed-count: 0;
 
     if visible-panel : Rectangle {
         background: Theme.panel-bg-elevated;
@@ -28,27 +54,68 @@ export component OpsPanel inherits Rectangle {
         VerticalLayout {
             spacing: 0px;
 
+            // Top border separates the panel from the shortcut footer / status bar.
             Rectangle {
                 height: 1px;
                 background: Theme.border;
             }
 
+            // ── Header ──────────────────────────────────────────────────────
             Rectangle {
-                height: 32px;
+                height: 34px;
                 background: Theme.panel-bg-elevated;
 
                 HorizontalLayout {
                     padding-left: Theme.space-4;
-                    padding-right: Theme.space-4;
+                    padding-right: Theme.space-2;
+                    spacing: Theme.space-2;
                     alignment: center;
 
                     Text {
-                        text: "Operations (" + rows.length + ")";
+                        text: "Operations";
                         color: Theme.fg;
-                        font-size: 15px;
+                        font-size: 13px;
                         font-weight: 600;
                         vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: rows.length == 0
+                            ? ""
+                            : "(" + rows.length + ")";
+                        color: Theme.fg-muted;
+                        font-size: 12px;
+                        vertical-alignment: center;
                         horizontal-stretch: 1;
+                    }
+
+                    // Clear-completed pill — only shown when there is at
+                    // least one terminal row. The Rust side clears every
+                    // row whose `is-terminal` is true.
+                    clear-btn := Rectangle {
+                        visible: rows.length > 0;
+                        width: 108px;
+                        height: 22px;
+                        border-radius: Theme.radius-xs;
+                        border-width: 1px;
+                        border-color: clear-ta.has-hover ? Theme.border-strong : Theme.border;
+                        background: clear-ta.has-hover ? Theme.hover-bg : transparent;
+                        animate background { duration: Theme.motion-fast; easing: ease-out; }
+
+                        clear-ta := TouchArea {
+                            width: 100%; height: 100%;
+                            clicked => { root.clear-completed(); }
+                        }
+
+                        Text {
+                            text: "Clear completed";
+                            color: Theme.fg-muted;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: parent.width;
+                            height: parent.height;
+                        }
                     }
 
                     header-close := TouchArea {
@@ -68,25 +135,52 @@ export component OpsPanel inherits Rectangle {
                                 vertical-alignment: center;
                                 width: parent.width;
                                 height: parent.height;
-                                font-size: 13px;
+                                font-size: 14px;
                             }
                         }
                     }
                 }
             }
 
+            Rectangle { height: 1px; background: Theme.border; }
+
+            // ── Row list (or empty state) ───────────────────────────────────
             Rectangle {
-                height: 168px;
+                height: 180px;
                 background: Theme.panel-bg-elevated;
                 clip: true;
 
-                VerticalLayout {
+                if rows.length == 0 : Rectangle {
+                    width: 100%;
+                    height: 100%;
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: Theme.space-1;
+
+                        Text {
+                            text: "No operations running";
+                            color: Theme.fg-muted;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "Copy, move, trash, and rename activity will appear here.";
+                            color: Theme.fg-faint;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                if rows.length > 0 : VerticalLayout {
                     spacing: 0px;
 
                     for row[i] in rows : row-bg := Rectangle {
-                        height: 44px;
+                        height: 46px;
                         background: row-ta.has-hover ? Theme.hover-bg : Theme.panel-bg-elevated;
-                        opacity: row.is-terminal ? 0.8 : 1.0;
+                        opacity: row.is-terminal ? 0.6 : 1.0;
+                        animate opacity { duration: Theme.motion-quick; easing: ease-out; }
 
                         Rectangle {
                             y: parent.height - 1px;
@@ -107,16 +201,44 @@ export component OpsPanel inherits Rectangle {
                             spacing: Theme.space-2;
                             alignment: center;
 
+                            // Kind badge — a small pill giving the operation kind at a glance.
+                            Rectangle {
+                                width: 52px;
+                                height: 20px;
+                                border-radius: Theme.radius-xs;
+                                background: row.is-error
+                                    ? Theme.error.with-alpha(0.15)
+                                    : Theme.accent-soft;
+
+                                Text {
+                                    text: row.kind;
+                                    color: row.is-error ? Theme.error : Theme.accent;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    width: parent.width;
+                                    height: parent.height;
+                                }
+                            }
+
+                            // Middle: source → dest, progress bar, footer.
                             VerticalLayout {
                                 horizontal-stretch: 1;
                                 spacing: 2px;
                                 alignment: center;
 
                                 HorizontalLayout {
-                                    spacing: Theme.space-2;
+                                    spacing: Theme.space-1;
 
                                     Text {
-                                        text: row.title;
+                                        text: row.source-summary == "" && row.dest-summary == ""
+                                            ? row.title
+                                            : (row.source-summary == ""
+                                                ? row.dest-summary
+                                                : (row.dest-summary == ""
+                                                    ? row.source-summary
+                                                    : row.source-summary + "  →  " + row.dest-summary));
                                         color: row.is-error ? Theme.error : Theme.fg;
                                         font-size: 12px;
                                         overflow: elide;
@@ -125,7 +247,7 @@ export component OpsPanel inherits Rectangle {
                                     }
 
                                     Text {
-                                        text: row.status;
+                                        text: row.is-terminal ? row.status : row.eta;
                                         color: row.is-error ? Theme.error : Theme.fg-muted;
                                         font-size: 11px;
                                         vertical-alignment: center;
@@ -141,24 +263,32 @@ export component OpsPanel inherits Rectangle {
                                         x: 0px;
                                         height: 4px;
                                         border-radius: Theme.radius-xs;
-                                        width: parent.width * row.progress;
+                                        width: parent.width * clamp(row.progress, 0.0, 1.0);
                                         background: row.is-error ? Theme.error : Theme.accent;
+                                        animate width { duration: Theme.motion-fast; easing: ease-out; }
                                     }
                                 }
 
                                 Text {
-                                    text: row.bytes-done == "" && row.bytes-total == ""
-                                        ? (row.current-path == "" ? "" : row.current-path)
-                                        : row.bytes-done + " / " + row.bytes-total + (row.current-path == "" ? "" : "  " + row.current-path);
-                                    color: Theme.fg-muted;
+                                    text: row.bytes-total == "0 B" || row.bytes-total == ""
+                                        ? (row.items-total > 0
+                                            ? (row.items-done + " of " + row.items-total + " items"
+                                                + (row.current-path == "" ? "" : "  ·  " + row.current-path))
+                                            : row.current-path)
+                                        : row.bytes-done + " of " + row.bytes-total
+                                            + (row.current-path == "" ? "" : "  ·  " + row.current-path);
+                                    color: Theme.fg-faint;
                                     font-size: 10px;
                                     overflow: elide;
                                 }
                             }
 
+                            // Trailing action button — Cancel while running,
+                            // Dismiss when terminal. Hidden until row hover
+                            // (progressive disclosure).
                             if row.is-terminal : dismiss-ta := TouchArea {
-                                width: 24px;
-                                height: 24px;
+                                width: 26px;
+                                height: 26px;
                                 visible: row-ta.has-hover;
                                 clicked => { root.dismiss(i); }
 
@@ -174,14 +304,14 @@ export component OpsPanel inherits Rectangle {
                                         vertical-alignment: center;
                                         width: parent.width;
                                         height: parent.height;
-                                        font-size: 13px;
+                                        font-size: 14px;
                                     }
                                 }
                             }
 
                             if !row.is-terminal : cancel-ta := TouchArea {
-                                width: 24px;
-                                height: 24px;
+                                width: 26px;
+                                height: 26px;
                                 visible: row-ta.has-hover;
                                 clicked => { root.cancel(i); }
 

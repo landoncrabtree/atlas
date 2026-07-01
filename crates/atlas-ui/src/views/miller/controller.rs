@@ -192,7 +192,9 @@ impl MillerController {
             return;
         }
         let current_i = if current == usize::MAX { 0 } else { current };
-        let next = (current_i as isize + delta).clamp(0, (len as isize) - 1) as usize;
+        let next = (current_i as isize)
+            .saturating_add(delta)
+            .clamp(0, (len as isize) - 1) as usize;
         {
             let cols = self.columns.read();
             if let Some(sub) = cols.get(focused_col) {

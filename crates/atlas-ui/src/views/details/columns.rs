@@ -65,6 +65,23 @@ impl ColumnSpec {
     }
 }
 
+/// Return the (min, max) allowed width in logical pixels for a column of
+/// the given kind. Prevents users from dragging a column to unusable size
+/// or growing it past the reasonable viewport.
+///
+/// Numbers chosen so the Name column can always show at least a full
+/// short filename with icon, and the metadata columns fit their default
+/// text with a modest label margin.
+#[must_use]
+pub fn min_max_width_for(kind: ColumnKind) -> (f32, f32) {
+    match kind {
+        ColumnKind::Name => (120.0, 1200.0),
+        ColumnKind::Size | ColumnKind::Kind => (60.0, 400.0),
+        ColumnKind::Modified => (80.0, 400.0),
+        ColumnKind::Extension => (60.0, 400.0),
+    }
+}
+
 /// Return the default column layout for the Details view.
 #[must_use]
 pub fn default_columns() -> Vec<ColumnSpec> {
@@ -118,5 +135,27 @@ mod tests {
         assert_eq!(ColumnKind::Modified.as_str(), "modified");
         assert_eq!(ColumnKind::Kind.as_str(), "kind");
         assert_eq!(ColumnKind::Extension.as_str(), "extension");
+    }
+
+    #[test]
+    fn min_max_width_bounds_are_sane() {
+        for kind in [
+            ColumnKind::Name,
+            ColumnKind::Size,
+            ColumnKind::Modified,
+            ColumnKind::Kind,
+            ColumnKind::Extension,
+        ] {
+            let (min, max) = min_max_width_for(kind);
+            assert!(min > 0.0);
+            assert!(max > min);
+        }
+    }
+
+    #[test]
+    fn name_column_has_wider_minimum_than_metadata_columns() {
+        let (name_min, _) = min_max_width_for(ColumnKind::Name);
+        let (size_min, _) = min_max_width_for(ColumnKind::Size);
+        assert!(name_min > size_min);
     }
 }

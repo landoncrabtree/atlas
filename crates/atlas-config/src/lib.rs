@@ -22,8 +22,8 @@ pub mod watcher;
 // ── Re-exports ──────────────────────────────────────────────────────────────
 
 pub use schema::{
-    Bookmark, Config, Density, General, Indexer, Navigation, Search, SortKey, SortOrder,
-    Thumbnails, Ui, View, ViewMode,
+    Bookmark, Config, Density, DetailsView, General, Indexer, Navigation, Search, SortKey,
+    SortOrder, Thumbnails, Ui, View, ViewMode,
 };
 
 pub use load::{load, load_from_file, load_from_str};
