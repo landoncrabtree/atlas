@@ -123,6 +123,7 @@ fn main() -> Result<()> {
     // to edit. We only write when the file is missing; hot-reload will pick up
     // subsequent user edits automatically.
     seed_config_if_missing();
+    seed_keymap_if_missing();
 
     let config = atlas_config::load().unwrap_or_default();
     let theme_id = config.ui.theme.clone();
@@ -136,7 +137,9 @@ fn main() -> Result<()> {
     // hint the WM can ignore, so on macOS we sometimes open at min-width
     // (720). Explicitly set 1440x900 which is comfortable for dual-pane +
     // Miller. Users can resize freely afterwards; we don't auto-grow.
-    window.window().set_size(slint::PhysicalSize::new(1440, 900));
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(1440, 900));
     let nav = NavigationController::with_config(&config);
     let search_ctrl = SearchController::new();
 
@@ -266,6 +269,30 @@ fn seed_config_if_missing() {
         return;
     }
     tracing::info!(path = %path.display(), "seeded default config.toml");
+}
+
+/// Write the default keymap to the platform keymap path when the file does
+/// not exist yet.  Logs but does not fail if writing is impossible.
+///
+/// Mirrors [`seed_config_if_missing`].  The keymap path resolves to
+/// `~/.config/atlas/keymaps/default.toml` (or `$XDG_CONFIG_HOME/atlas/…` /
+/// `%APPDATA%\Atlas\keymaps\default.toml`).
+fn seed_keymap_if_missing() {
+    let path = match atlas_config::keymap_file_path() {
+        Ok(p) => p,
+        Err(err) => {
+            tracing::warn!(%err, "could not resolve keymap file path");
+            return;
+        }
+    };
+    if path.exists() {
+        return;
+    }
+    if let Err(err) = atlas_keymap::write_default_keymap_to(&path) {
+        tracing::warn!(%err, path = %path.display(), "could not seed default keymap");
+        return;
+    }
+    tracing::info!(path = %path.display(), "seeded default keymap");
 }
 
 /// Convert `atlas_config::ViewMode` into the UI-side `atlas_ui::models::ViewMode`.
@@ -522,6 +549,107 @@ fn build_dispatcher(
         let s = Arc::clone(shell);
         d.register(id, move || {
             s.set_view_mode(s.focused_pane(), mode);
+        });
+    }
+
+    // ── Pane split / close (Phase-0 stubs; upgraded in Phase 3/4) ────────
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::SplitRight", move || {
+            s.split_focused_or_toggle_dual();
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::SplitDown", move || {
+            // TODO(phase4): differentiate vertical split direction.
+            tracing::warn!("pane::SplitDown: direction not yet differentiated; falling back to SplitRight behaviour");
+            s.split_focused_or_toggle_dual();
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::Close", move || {
+            s.close_focused_pane();
+        });
+    }
+
+    // ── Pane focus (Phase-0 stubs; replaced by focus_direction in Phase 3) ─
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::FocusLeft", move || {
+            if s.is_dual_pane() {
+                s.set_focused_pane(0);
+            }
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::FocusRight", move || {
+            if s.is_dual_pane() {
+                s.set_focused_pane(1);
+            }
+        });
+    }
+    {
+        // TODO(phase3): no-op until N-pane grid layout lands.
+        d.register("pane::FocusUp", || {
+            tracing::debug!("pane::FocusUp: no-op until N-pane grid layout lands (Phase 3)");
+        });
+    }
+    {
+        // TODO(phase3): no-op until N-pane grid layout lands.
+        d.register("pane::FocusDown", || {
+            tracing::debug!("pane::FocusDown: no-op until N-pane grid layout lands (Phase 3)");
+        });
+    }
+
+    // ── View cycle (Cmd+Shift+E) ──────────────────────────────────────────
+    {
+        use atlas_ui::models::ViewMode;
+        // Phase-0 stub: track cycle state locally since AppShell does not yet
+        // expose a pane_view_mode() accessor.  Will be replaced in Phase 3.
+        let modes = Arc::new(std::sync::Mutex::new([ViewMode::Details; 2]));
+        let s = Arc::clone(shell);
+        d.register("view::Cycle", move || {
+            let pane = s.focused_pane();
+            let idx = pane.min(1);
+            let mut guard = match modes.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let next = match guard[idx] {
+                ViewMode::Details => ViewMode::Grid,
+                ViewMode::Grid => ViewMode::Gallery,
+                ViewMode::Gallery => ViewMode::Miller,
+                ViewMode::Miller => ViewMode::Tree,
+                ViewMode::Tree => ViewMode::Details,
+            };
+            guard[idx] = next;
+            drop(guard);
+            s.set_view_mode(pane, next);
+        });
+    }
+
+    // ── Tab cycle (Cmd+Shift+[ / Cmd+Shift+]) ─────────────────────────────
+    {
+        let s = Arc::clone(shell);
+        d.register("tab::CyclePrev", move || {
+            s.cycle_tab(s.focused_pane(), -1);
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("tab::CycleNext", move || {
+            s.cycle_tab(s.focused_pane(), 1);
+        });
+    }
+
+    // ── Reopen closed tab ─────────────────────────────────────────────────
+    {
+        // TODO(v0.3): needs a closed-tabs stack on AppShell.
+        d.register("tab::Reopen", || {
+            tracing::warn!("tab::Reopen: not yet implemented (requires closed-tabs stack — v0.3)");
         });
     }
 

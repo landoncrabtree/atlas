@@ -27,4 +27,6 @@ pub use binding::Binding;
 pub use chord::{Chord, ChordSequence, Key, Modifiers, NamedKey};
 pub use dispatcher::Dispatcher;
 pub use keymap::{Keymap, ResolveResult};
-pub use loader::{load_keymap_toml, save_keymap_toml};
+pub use loader::{
+    default_keymap_toml_string, load_keymap_toml, save_keymap_toml, write_default_keymap_to,
+};

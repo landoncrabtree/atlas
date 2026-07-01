@@ -15,6 +15,8 @@
 //! action = ""
 //! ```
 
+use std::path::Path;
+
 use atlas_core::Result;
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +77,66 @@ pub fn save_keymap_toml(bindings: &[Binding]) -> Result<String> {
     let file = KeymapFile { bindings: entries };
     toml::to_string_pretty(&file)
         .map_err(|error| anyhow::anyhow!("keymap TOML serialization error: {error}").into())
+}
+
+/// Render all default bindings as a heavily-commented TOML string.
+///
+/// The output matches the schema accepted by [`load_keymap_toml`] and serves
+/// as documentation for users who want to customise their keymap.  Every entry
+/// is annotated with its human-readable action title.
+///
+/// The string is also the authoritative content written by
+/// [`write_default_keymap_to`] and checked in at `assets/keymaps/default.toml`.
+pub fn default_keymap_toml_string() -> String {
+    use crate::defaults::{default_actions, default_bindings};
+    use std::collections::HashMap;
+
+    let actions = default_actions();
+    let title_map: HashMap<&str, &str> = actions
+        .iter()
+        .map(|a| (a.id.as_str(), a.title.as_str()))
+        .collect();
+
+    let mut out = String::with_capacity(4096);
+    out.push_str("# Atlas default keymap.\n");
+    out.push_str("# Copy this file to override defaults; add new [[bindings]] entries or\n");
+    out.push_str("# suppress a default by setting its `action` to an empty string.\n");
+    out.push_str("#\n");
+    out.push_str("# Modifier aliases: cmd|meta|super|win, alt|option|opt, ctrl|control, shift.\n");
+    out.push_str("# Cross-platform note: `cmd` maps to Cmd on macOS, Ctrl on Linux/Windows.\n");
+
+    for binding in &default_bindings() {
+        out.push('\n');
+        let title = title_map
+            .get(binding.action.as_str())
+            .copied()
+            .unwrap_or(binding.action.as_str());
+        out.push_str(&format!("# [{}] {}\n", binding.context, title));
+        out.push_str("[[bindings]]\n");
+        out.push_str(&format!("context = {:?}\n", binding.context));
+        out.push_str(&format!("key = {:?}\n", binding.sequence.display()));
+        out.push_str(&format!("action = {:?}\n", binding.action.as_str()));
+    }
+
+    out
+}
+
+/// Write the resolved default keymap to `path` as a heavily-commented TOML
+/// file.
+///
+/// The file is suitable for users to copy and customise.  If the parent
+/// directory does not exist it is created automatically.
+///
+/// # Errors
+///
+/// Returns an [`std::io::Error`] if the parent directory cannot be created or
+/// the file cannot be written.
+pub fn write_default_keymap_to(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = default_keymap_toml_string();
+    std::fs::write(path, content)
 }
 
 #[cfg(test)]
@@ -147,5 +209,60 @@ action = ""
 "#;
         let bindings = load_keymap_toml(toml).unwrap();
         assert!(bindings[0].is_suppression());
+    }
+
+    /// Verifies that [`default_keymap_toml_string`] round-trips through the
+    /// loader without errors and that every default binding appears in the
+    /// parsed output.
+    #[test]
+    fn test_default_keymap_toml_round_trips() {
+        use crate::defaults::default_bindings;
+        let toml = default_keymap_toml_string();
+        let loaded = load_keymap_toml(&toml).expect("default keymap TOML must be valid");
+        let expected = default_bindings();
+        assert_eq!(
+            loaded.len(),
+            expected.len(),
+            "round-tripped binding count mismatch"
+        );
+        for (got, want) in loaded.iter().zip(expected.iter()) {
+            assert_eq!(got.sequence, want.sequence, "sequence mismatch");
+            assert_eq!(got.context, want.context, "context mismatch");
+            assert_eq!(got.action, want.action, "action mismatch");
+        }
+    }
+
+    /// Ensures the checked-in `assets/keymaps/default.toml` matches the
+    /// output of [`default_keymap_toml_string`] byte-for-byte.
+    ///
+    /// If this test fails, regenerate the file by running:
+    /// ```text
+    /// cargo test -p atlas-keymap -- --ignored regen_default_keymap
+    /// ```
+    #[test]
+    fn test_checked_in_default_toml_matches_emitter() {
+        let expected = default_keymap_toml_string();
+        let checked_in = include_str!("../../../assets/keymaps/default.toml");
+        assert_eq!(
+            expected.as_str(),
+            checked_in,
+            "assets/keymaps/default.toml is stale — regenerate it by running \
+             `cargo test -p atlas-keymap -- --ignored regen_default_keymap`"
+        );
+    }
+
+    /// Helper to regenerate `assets/keymaps/default.toml` in-tree.
+    ///
+    /// Run with: `cargo test -p atlas-keymap -- --ignored regen_default_keymap`
+    #[test]
+    #[ignore]
+    fn regen_default_keymap() {
+        let content = default_keymap_toml_string();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/keymaps/default.toml");
+        std::fs::write(&path, &content)
+            .unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
+        // Use tracing instead of eprintln to satisfy workspace lint rules.
+        let _ = path; // suppress unused warning in non-test builds
     }
 }

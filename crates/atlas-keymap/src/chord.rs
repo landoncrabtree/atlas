@@ -485,4 +485,100 @@ mod tests {
         assert!(chord.modifiers.cmd && chord.modifiers.shift);
         assert_eq!(chord.key, Key::Char('p'));
     }
+
+    // ── Modifier alias round-trip tests ──────────────────────────────────────
+
+    /// `cmd`, `meta`, `super`, and `win` all map to the same [`Modifiers::cmd`]
+    /// field.  The canonical serialised form is always `"cmd"`.
+    ///
+    /// Cross-platform note: `cmd` routes to the Command key on macOS and to
+    /// Ctrl on Linux/Windows at dispatch time; the keymap stores it uniformly as
+    /// `cmd` so that a single default binding table works on every platform.
+    #[test]
+    fn test_cmd_alias_round_trip() {
+        for alias in ["cmd-p", "meta-p", "super-p", "win-p"] {
+            let chord =
+                Chord::from_str(alias).unwrap_or_else(|e| panic!("failed to parse {alias:?}: {e}"));
+            assert!(
+                chord.modifiers.cmd,
+                "expected cmd modifier for alias {alias:?}"
+            );
+            assert!(!chord.modifiers.ctrl);
+            assert!(!chord.modifiers.alt);
+            assert_eq!(chord.key, Key::Char('p'));
+            assert_eq!(
+                chord.display(),
+                "cmd-p",
+                "canonical form must be 'cmd-p' for alias {alias:?}"
+            );
+        }
+    }
+
+    /// All four `cmd`-family aliases produce identical [`Chord`] values.
+    #[test]
+    fn test_cmd_aliases_are_equivalent() {
+        let canonical = Chord::from_str("cmd-p").unwrap();
+        assert_eq!(canonical, Chord::from_str("meta-p").unwrap());
+        assert_eq!(canonical, Chord::from_str("super-p").unwrap());
+        assert_eq!(canonical, Chord::from_str("win-p").unwrap());
+    }
+
+    /// `alt`, `option`, and `opt` all map to [`Modifiers::alt`]; canonical
+    /// serialised form is `"alt"`.
+    #[test]
+    fn test_alt_alias_round_trip() {
+        for alias in ["alt-a", "option-a", "opt-a"] {
+            let chord =
+                Chord::from_str(alias).unwrap_or_else(|e| panic!("failed to parse {alias:?}: {e}"));
+            assert!(
+                chord.modifiers.alt,
+                "expected alt modifier for alias {alias:?}"
+            );
+            assert!(!chord.modifiers.cmd);
+            assert_eq!(chord.key, Key::Char('a'));
+            assert_eq!(
+                chord.display(),
+                "alt-a",
+                "canonical form must be 'alt-a' for alias {alias:?}"
+            );
+        }
+    }
+
+    /// All three `alt`-family aliases produce identical [`Chord`] values.
+    #[test]
+    fn test_alt_aliases_are_equivalent() {
+        let canonical = Chord::from_str("alt-a").unwrap();
+        assert_eq!(canonical, Chord::from_str("option-a").unwrap());
+        assert_eq!(canonical, Chord::from_str("opt-a").unwrap());
+    }
+
+    /// `ctrl` and `control` both map to [`Modifiers::ctrl`]; canonical
+    /// serialised form is `"ctrl"`.
+    #[test]
+    fn test_ctrl_alias_round_trip() {
+        for alias in ["ctrl-x", "control-x"] {
+            let chord =
+                Chord::from_str(alias).unwrap_or_else(|e| panic!("failed to parse {alias:?}: {e}"));
+            assert!(
+                chord.modifiers.ctrl,
+                "expected ctrl modifier for alias {alias:?}"
+            );
+            assert!(!chord.modifiers.cmd);
+            assert_eq!(chord.key, Key::Char('x'));
+            assert_eq!(
+                chord.display(),
+                "ctrl-x",
+                "canonical form must be 'ctrl-x' for alias {alias:?}"
+            );
+        }
+    }
+
+    /// `ctrl` and `control` produce identical [`Chord`] values.
+    #[test]
+    fn test_ctrl_aliases_are_equivalent() {
+        assert_eq!(
+            Chord::from_str("ctrl-x").unwrap(),
+            Chord::from_str("control-x").unwrap()
+        );
+    }
 }

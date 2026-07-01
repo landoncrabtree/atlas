@@ -71,6 +71,22 @@ pub fn default_bindings() -> Vec<Binding> {
         b("cmd-c", "Pane", "fs::CopyToClipboard"),
         b("cmd-x", "Pane", "fs::CutToClipboard"),
         b("cmd-v", "Pane", "fs::PasteFromClipboard"),
+        // ── Pane split / close ────────────────────────────────────────────────
+        b("cmd-d", "Global", "pane::SplitRight"),
+        b("cmd-shift-d", "Global", "pane::SplitDown"),
+        b("cmd-shift-w", "Global", "pane::Close"),
+        // ── Pane focus (vim-style) ─────────────────────────────────────────
+        b("ctrl-h", "Pane", "pane::FocusLeft"),
+        b("ctrl-j", "Pane", "pane::FocusDown"),
+        b("ctrl-k", "Pane", "pane::FocusUp"),
+        b("ctrl-l", "Pane", "pane::FocusRight"),
+        // ── View cycle ───────────────────────────────────────────────────────
+        b("cmd-shift-e", "Pane", "view::Cycle"),
+        // ── Tab cycle ────────────────────────────────────────────────────────
+        b("cmd-shift-[", "Pane", "tab::CyclePrev"),
+        b("cmd-shift-]", "Pane", "tab::CycleNext"),
+        // tab::Reopen supersedes tab::ReopenClosed on cmd-shift-t (last wins).
+        b("cmd-shift-t", "Global", "tab::Reopen"),
     ]
 }
 
@@ -151,6 +167,21 @@ pub fn default_actions() -> Vec<ActionMeta> {
             None,
             &["Pane"]
         ),
+        // ── Pane split / close ────────────────────────────────────────────────
+        action!("pane::SplitRight", "Split Pane Right", None, &["Global"]),
+        action!("pane::SplitDown", "Split Pane Down", None, &["Global"]),
+        action!("pane::Close", "Close Pane", None, &["Global"]),
+        // ── Pane focus (vim-style) ─────────────────────────────────────────
+        action!("pane::FocusLeft", "Focus Left Pane", None, &["Pane"]),
+        action!("pane::FocusDown", "Focus Below Pane", None, &["Pane"]),
+        action!("pane::FocusUp", "Focus Above Pane", None, &["Pane"]),
+        action!("pane::FocusRight", "Focus Right Pane", None, &["Pane"]),
+        // ── View cycle ───────────────────────────────────────────────────────
+        action!("view::Cycle", "Cycle View Mode", None, &["Pane"]),
+        // ── Tab cycle / reopen ────────────────────────────────────────────────
+        action!("tab::CyclePrev", "Previous Tab", None, &["Pane"]),
+        action!("tab::CycleNext", "Next Tab", None, &["Pane"]),
+        action!("tab::Reopen", "Reopen Closed Tab", None, &["Global"]),
     ]
 }
 
@@ -177,6 +208,48 @@ mod tests {
                 "binding action {:?} has no corresponding ActionMeta",
                 binding.action
             );
+        }
+    }
+
+    #[test]
+    fn test_new_pane_bindings_present() {
+        let bindings = default_bindings();
+        let action_set: HashSet<&str> = bindings.iter().map(|b| b.action.as_str()).collect();
+        for id in [
+            "pane::SplitRight",
+            "pane::SplitDown",
+            "pane::Close",
+            "pane::FocusLeft",
+            "pane::FocusDown",
+            "pane::FocusUp",
+            "pane::FocusRight",
+            "view::Cycle",
+            "tab::CyclePrev",
+            "tab::CycleNext",
+            "tab::Reopen",
+        ] {
+            assert!(action_set.contains(id), "missing binding for {id:?}");
+        }
+    }
+
+    #[test]
+    fn test_new_actions_in_default_actions() {
+        let actions = default_actions();
+        let action_ids: HashSet<&str> = actions.iter().map(|a| a.id.as_str()).collect();
+        for id in [
+            "pane::SplitRight",
+            "pane::SplitDown",
+            "pane::Close",
+            "pane::FocusLeft",
+            "pane::FocusDown",
+            "pane::FocusUp",
+            "pane::FocusRight",
+            "view::Cycle",
+            "tab::CyclePrev",
+            "tab::CycleNext",
+            "tab::Reopen",
+        ] {
+            assert!(action_ids.contains(id), "missing ActionMeta for {id:?}");
         }
     }
 }
