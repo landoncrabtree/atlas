@@ -71,6 +71,7 @@ pub struct GalleryController {
 impl GalleryController {
     /// Construct a new controller for `pane`.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pane: usize,
         window: slint::Weak<AtlasWindow>,
@@ -78,6 +79,8 @@ impl GalleryController {
         cache: Arc<SqliteCache>,
         worker_count: usize,
         max_cache_bytes: u64,
+        thumbs_enabled: bool,
+        max_file_bytes: u64,
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak: &std::sync::Weak<Self>| {
             let weak_ctrl = weak.clone();
@@ -91,6 +94,8 @@ impl GalleryController {
                 }),
                 worker_count,
                 max_cache_bytes,
+                thumbs_enabled,
+                max_file_bytes,
             );
 
             Self {
@@ -687,6 +692,8 @@ mod tests {
             cache,
             0,
             500 * 1024 * 1024,
+            true,
+            u64::MAX,
         )
     }
 

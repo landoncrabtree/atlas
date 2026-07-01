@@ -160,6 +160,13 @@ fn main() -> Result<()> {
     let thumb_worker_count = config.thumbnails.generation_threads.unwrap_or(0);
     // 0 means "use num_cpus" inside ThumbRequester
     let thumb_max_cache_bytes = (config.thumbnails.cache_max_size_mb as u64).max(1) * 1024 * 1024;
+    // config: reads config.thumbnails.enabled + generate_for_size_up_to_mb
+    let thumbs_enabled = config.thumbnails.enabled;
+    let thumb_max_file_bytes = if config.thumbnails.generate_for_size_up_to_mb > 0 {
+        (config.thumbnails.generate_for_size_up_to_mb as u64) * 1024 * 1024
+    } else {
+        0
+    };
 
     let shell: Arc<AppShell> = AppShell::new(
         &window,
@@ -168,6 +175,8 @@ fn main() -> Result<()> {
         Arc::clone(&search_ctrl),
         thumb_worker_count,
         thumb_max_cache_bytes,
+        thumbs_enabled,
+        thumb_max_file_bytes,
     );
 
     let loader = ThemeLoader::new();
@@ -178,7 +187,14 @@ fn main() -> Result<()> {
                 .expect("built-in atlas-dark must always load")
         });
 
-    shell.apply_theme(&themes_arc.load());
+    // Push config-driven typography onto the theme so users can override
+    // fonts + size without hand-authoring a full theme TOML.
+    // config: reads config.ui.{font_family,font_size,monospace_font_family}
+    {
+        let mut overlaid = (**themes_arc.load()).clone();
+        apply_font_overrides(&mut overlaid, &config.ui);
+        shell.apply_theme(&overlaid);
+    }
     spawn_theme_event_thread(Arc::clone(&shell), Arc::clone(&themes_arc), theme_events);
 
     // Start the config hot-reload watcher so users can edit config.toml and
@@ -261,12 +277,6 @@ fn main() -> Result<()> {
     //
     // TODO(config-sweep): search.default_globs_exclude — needs to be threaded into
     //   the UnifiedRequest FileFilter; tracked in gap-search-globs-exclude.
-    //
-    // TODO(config-sweep): thumbnails.enabled — requires Option<Generator> in
-    //   ThumbRequester to skip generation; tracked in gap-thumbs-enabled.
-    //
-    // TODO(config-sweep): thumbnails.generate_for_size_up_to_mb — requires a file
-    //   size guard in the generator worker; tracked in gap-thumbs-size-limit.
     //
     // TODO(config-sweep): bookmarks palette source — add a BookmarksSource
     //   alongside the existing action/goto sources; tracked in gap-bookmarks-palette.
@@ -494,7 +504,10 @@ fn spawn_config_event_thread(
                                 Ok(tokens) => {
                                     last_theme = cfg.ui.theme.clone();
                                     themes_arc.store(Arc::new(tokens));
-                                    shell.apply_theme(&themes_arc.load());
+                                    let mut overlaid =
+                                        (**themes_arc.load()).clone();
+                                    apply_font_overrides(&mut overlaid, &cfg.ui);
+                                    shell.apply_theme(&overlaid);
                                     tracing::info!(theme = %cfg.ui.theme, "config reload: theme updated");
                                 }
                                 Err(err) => {
@@ -505,6 +518,12 @@ fn spawn_config_event_thread(
                                     );
                                 }
                             }
+                        } else {
+                            // Theme id unchanged but font/size may have changed;
+                            // re-apply overlay so users see the new typography.
+                            let mut overlaid = (**themes_arc.load()).clone();
+                            apply_font_overrides(&mut overlaid, &cfg.ui);
+                            shell.apply_theme(&overlaid);
                         }
 
                         // ── Start path / search scope ─────────────────────
@@ -725,4 +744,24 @@ fn spawn_theme_event_thread(
             }
         })
         .expect("failed to spawn atlas-theme-events thread");
+}
+
+/// Overlay user-configured typography onto the resolved theme tokens.
+///
+/// Empty strings and non-positive sizes are treated as "unset" and leave the
+/// theme's own defaults in place; any populated field wins. This gives users
+/// a clean escape hatch for fonts without maintaining a full custom theme
+/// TOML. Applied both at startup and whenever `config.toml` hot-reloads.
+///
+/// config: reads config.ui.{font_family, monospace_font_family, font_size}
+fn apply_font_overrides(tokens: &mut ThemeTokens, ui: &atlas_config::Ui) {
+    if !ui.font_family.trim().is_empty() {
+        tokens.typography.font_family = ui.font_family.clone();
+    }
+    if !ui.monospace_font_family.trim().is_empty() {
+        tokens.typography.monospace_family = ui.monospace_font_family.clone();
+    }
+    if ui.font_size > 0.0 && ui.font_size.is_finite() {
+        tokens.typography.font_size_pt = ui.font_size;
+    }
 }

@@ -80,6 +80,10 @@ pub struct ThumbRequester {
     stop: Arc<AtomicBool>,
     drain_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
     window: slint::Weak<AtlasWindow>,
+    /// Whether thumbnail generation is enabled at all (config: thumbnails.enabled).
+    enabled: bool,
+    /// Skip requests for files above this size (config: thumbnails.generate_for_size_up_to_mb).
+    max_file_bytes: u64,
 }
 
 impl ThumbRequester {
@@ -90,12 +94,15 @@ impl ThumbRequester {
     /// `num_cpus` clamped to 4.  `max_cache_bytes` caps the LRU eviction
     /// target (config: `thumbnails.cache_max_size_mb`).
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cache: Arc<SqliteCache>,
         pane: usize,
         window: slint::Weak<AtlasWindow>,
         worker_count: usize,
         max_cache_bytes: u64,
+        enabled: bool,
+        max_file_bytes: u64,
     ) -> Arc<Self> {
         // config: reads config.thumbnails.generation_threads
         let workers = if worker_count == 0 {
@@ -122,6 +129,8 @@ impl ThumbRequester {
             stop: Arc::clone(&stop),
             drain_handle: Mutex::new(None),
             window,
+            enabled,
+            max_file_bytes,
         });
 
         requester.start_drain_thread();
@@ -155,8 +164,20 @@ impl ThumbRequester {
     /// new `cell_index` is recorded; no extra generator request is made.
     /// Non-thumbnailable paths are silently ignored.
     pub fn request(&self, path: PathBuf, target_dim: u32, cell_index: usize) {
+        // config: reads config.thumbnails.enabled
+        if !self.enabled {
+            return;
+        }
         if !can_thumbnail(&path) {
             return;
+        }
+        // config: reads config.thumbnails.generate_for_size_up_to_mb
+        if self.max_file_bytes > 0 {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if meta.len() > self.max_file_bytes {
+                    return;
+                }
+            }
         }
 
         let key: ThumbKey = (path.clone(), target_dim);

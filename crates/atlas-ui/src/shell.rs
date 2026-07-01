@@ -278,6 +278,7 @@ pub struct PaneControllers {
     pub gallery: Arc<crate::views::gallery::GalleryController>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_pane_controllers(
     pane_id: PaneId,
     slint_index: usize,
@@ -286,6 +287,8 @@ fn build_pane_controllers(
     thumb_cache: Arc<atlas_thumbs::SqliteCache>,
     thumb_worker_count: usize,
     thumb_max_cache_bytes: u64,
+    thumbs_enabled: bool,
+    thumb_max_file_bytes: u64,
 ) -> PaneControllers {
     let details = DetailsController::new(slint_index, window.as_weak(), Arc::clone(&actions));
     let grid = GridController::new(
@@ -295,6 +298,8 @@ fn build_pane_controllers(
         Arc::clone(&thumb_cache),
         thumb_worker_count,
         thumb_max_cache_bytes,
+        thumbs_enabled,
+        thumb_max_file_bytes,
     );
     let gallery = GalleryController::new(
         slint_index,
@@ -303,6 +308,8 @@ fn build_pane_controllers(
         Arc::clone(&thumb_cache),
         thumb_worker_count,
         thumb_max_cache_bytes,
+        thumbs_enabled,
+        thumb_max_file_bytes,
     );
     let tree = TreeController::new(slint_index, Arc::clone(&actions));
     tree.attach_window(window.as_weak());
@@ -386,6 +393,11 @@ pub struct AppShell {
     thumb_worker_count: usize,
     /// Thumbnail cache byte cap (config: thumbnails.cache_max_size_mb).
     thumb_max_cache_bytes: u64,
+    /// Whether thumbnail generation is enabled at all (config: thumbnails.enabled).
+    thumbs_enabled: bool,
+    /// Skip thumbnail generation for files above this byte cap
+    /// (config: thumbnails.generate_for_size_up_to_mb).
+    thumb_max_file_bytes: u64,
     /// Recently-closed tabs per pane, newest first. Bounded to 20 entries per pane.
     closed_tabs: RwLock<AHashMap<PaneId, VecDeque<TabModel>>>,
     /// Armed drag state (between pointer-down and the 4-px promotion threshold).
@@ -401,6 +413,7 @@ impl AppShell {
     /// thumbnail requester created for each pane; pass `0` / `500 * 1024 * 1024`
     /// for defaults.  See config fields `thumbnails.generation_threads` and
     /// `thumbnails.cache_max_size_mb`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         window: &AtlasWindow,
         actions: impl ActionSink,
@@ -408,6 +421,8 @@ impl AppShell {
         search: Arc<SearchController>,
         thumb_worker_count: usize,
         thumb_max_cache_bytes: u64,
+        thumbs_enabled: bool,
+        thumb_max_file_bytes: u64,
     ) -> Arc<Self> {
         let actions: Arc<Mutex<Box<dyn ActionSink>>> = Arc::new(Mutex::new(Box::new(actions)));
         let thumb_cache = Arc::new(
@@ -429,6 +444,8 @@ impl AppShell {
                 Arc::clone(&thumb_cache),
                 thumb_worker_count,
                 thumb_max_cache_bytes,
+                thumbs_enabled,
+                thumb_max_file_bytes,
             ),
         );
 
@@ -458,6 +475,8 @@ impl AppShell {
             thumb_cache,
             thumb_worker_count,
             thumb_max_cache_bytes,
+            thumbs_enabled,
+            thumb_max_file_bytes,
             closed_tabs: RwLock::new(AHashMap::default()),
             drag_armed: RwLock::new(None),
             dragging: RwLock::new(None),
@@ -610,6 +629,8 @@ impl AppShell {
             Arc::clone(&self.thumb_cache),
             self.thumb_worker_count,
             self.thumb_max_cache_bytes,
+            self.thumbs_enabled,
+            self.thumb_max_file_bytes,
         );
         self.panes_ctrl.write().insert(new_id, new_ctrl);
 

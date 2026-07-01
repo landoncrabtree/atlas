@@ -81,6 +81,10 @@ pub struct GalleryThumbRequester {
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
     drain_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Whether thumbnail generation is enabled (config: thumbnails.enabled).
+    enabled: bool,
+    /// Skip requests above this size (config: thumbnails.generate_for_size_up_to_mb).
+    max_file_bytes: u64,
 }
 
 impl GalleryThumbRequester {
@@ -91,12 +95,15 @@ impl GalleryThumbRequester {
     /// `num_cpus` clamped to 4.  `max_cache_bytes` caps LRU eviction
     /// (config: `thumbnails.cache_max_size_mb`).
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cache: Arc<SqliteCache>,
         thread_name: String,
         on_result: Arc<dyn Fn(GalleryThumbEvent) + Send + Sync>,
         worker_count: usize,
         max_cache_bytes: u64,
+        enabled: bool,
+        max_file_bytes: u64,
     ) -> Arc<Self> {
         // config: reads config.thumbnails.generation_threads
         let workers = if worker_count == 0 {
@@ -117,6 +124,8 @@ impl GalleryThumbRequester {
             shared,
             stop,
             drain_handle: Mutex::new(None),
+            enabled,
+            max_file_bytes,
         });
         requester.start_drain_thread(thread_name, on_result);
         requester
@@ -130,8 +139,20 @@ impl GalleryThumbRequester {
 
     /// Request a thumbnail for `path`.
     pub fn request(&self, path: PathBuf, target_dim: u32, target: GalleryThumbTarget) {
+        // config: reads config.thumbnails.enabled
+        if !self.enabled {
+            return;
+        }
         if !can_thumbnail(&path) {
             return;
+        }
+        // config: reads config.thumbnails.generate_for_size_up_to_mb
+        if self.max_file_bytes > 0 {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if meta.len() > self.max_file_bytes {
+                    return;
+                }
+            }
         }
 
         let key = (path.clone(), target_dim);
