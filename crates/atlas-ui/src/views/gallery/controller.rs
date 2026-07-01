@@ -177,16 +177,22 @@ impl GalleryController {
         if focused == NO_FOCUS {
             return;
         }
-        let entries = self.entries.read();
-        let Some(entry) = entries.get(focused) else {
-            return;
+        // Extract the path under a short-lived read lock so we don't hold
+        // the lock while dispatching (Navigate re-enters set_location which
+        // needs the write lock; parking_lot is non-reentrant → deadlock).
+        let target = {
+            let entries = self.entries.read();
+            entries
+                .get(focused)
+                .filter(|entry| entry.kind.is_dir())
+                .map(|entry| entry.path.clone())
         };
-        if entry.kind.is_dir() {
+        if let Some(path) = target {
             self.actions
                 .lock()
                 .dispatch(crate::actions::UiAction::Navigate {
                     pane: self.pane,
-                    path: entry.path.clone(),
+                    path,
                 });
         }
     }

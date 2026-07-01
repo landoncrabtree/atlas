@@ -44,15 +44,15 @@ pub struct ThemeLoader {
 impl ThemeLoader {
     /// Construct a loader using the platform default user themes directory.
     ///
-    /// Honors the `ATLAS_THEMES_DIR` environment variable as an override.
+    /// Honors the `ATLAS_THEMES_DIR` environment variable as an override,
+    /// otherwise defers to [`atlas_config::themes_dir`] which returns
+    /// `~/.config/atlas/themes` on Unix and `%APPDATA%\Atlas\themes` on
+    /// Windows.
     pub fn new() -> Self {
         let dir = std::env::var("ATLAS_THEMES_DIR")
             .ok()
             .map(PathBuf::from)
-            .or_else(|| {
-                directories::ProjectDirs::from("dev", "atlas", "atlas")
-                    .map(|dirs| dirs.config_dir().join("themes"))
-            })
+            .or_else(|| atlas_config::themes_dir().ok())
             .unwrap_or_else(|| PathBuf::from("themes"));
         Self {
             user_themes_dir: dir,

@@ -210,7 +210,15 @@ impl TreeController {
             return;
         };
         let path = PathBuf::from(row.node_id.as_str());
-        if self.nodes.read().get(&path).is_some_and(|n| n.is_dir) {
+        // Take an owned copy of the is_dir flag under a short-lived read lock
+        // so we don't hold `self.nodes` while dispatching (Navigate re-enters
+        // set_root which needs a write lock → parking_lot deadlock).
+        let is_dir = self
+            .nodes
+            .read()
+            .get(&path)
+            .is_some_and(|n| n.is_dir);
+        if is_dir {
             self.actions.lock().dispatch(UiAction::Navigate {
                 pane: self.pane,
                 path,

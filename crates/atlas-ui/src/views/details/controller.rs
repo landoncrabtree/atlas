@@ -250,15 +250,23 @@ impl DetailsController {
             return;
         }
 
-        let entries = self.entries.read();
-        let Some(entry) = entries.get(focused_index) else {
-            return;
+        // Extract the target under a short-lived read lock so we don't hold
+        // the lock while dispatching. Dispatch may synchronously trigger
+        // `set_location`, which needs the corresponding write lock —
+        // parking_lot::RwLock is non-reentrant, so holding a read across the
+        // dispatch would deadlock the UI thread.
+        let target = {
+            let entries = self.entries.read();
+            entries
+                .get(focused_index)
+                .filter(|entry| entry.kind.is_dir())
+                .map(|entry| entry.path.clone())
         };
 
-        if entry.kind.is_dir() {
+        if let Some(path) = target {
             self.actions.lock().dispatch(UiAction::Navigate {
                 pane: self.pane,
-                path: entry.path.clone(),
+                path,
             });
         }
     }
