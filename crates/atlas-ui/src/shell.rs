@@ -28,10 +28,12 @@ use crate::{
     navigation::NavigationController,
     ops::OpsController,
     palette::{ActionsSource, GotoPathsSource, PaletteController, WalkerPathIndex},
+    rename::BulkRenameController,
     search::SearchController,
     theme::{ThemeMode, ThemeTokens},
     theming::defaults,
     views::details::DetailsController,
+    views::gallery::GalleryController,
     views::grid::GridController,
     views::miller::MillerController,
     views::tree::TreeController,
@@ -131,10 +133,13 @@ pub struct AppShell {
     details0: Arc<DetailsController>,
     search: Arc<SearchController>,
     grid0: Arc<GridController>,
+    gallery0: Arc<GalleryController>,
     tree0: Arc<TreeController>,
     miller0: Arc<MillerController>,
     /// File-operations queue controller.
     ops: Arc<OpsController>,
+    /// Bulk rename modal controller.
+    bulk_rename: Arc<BulkRenameController>,
     /// Current location view model for pane 0 (updated on navigation).
     ///
     /// Stored so that [`AppShell::selected_paths`] and
@@ -159,7 +164,14 @@ impl AppShell {
                 .unwrap_or_else(|error| panic!("failed to open thumbnail cache: {error}")),
         );
         let details0 = DetailsController::new(0, window.as_weak(), Arc::clone(&actions));
-        let grid0 = GridController::new(0, window.as_weak(), Arc::clone(&actions), thumb_cache);
+        let grid0 = GridController::new(
+            0,
+            window.as_weak(),
+            Arc::clone(&actions),
+            Arc::clone(&thumb_cache),
+        );
+        let gallery0 =
+            GalleryController::new(0, window.as_weak(), Arc::clone(&actions), thumb_cache);
         let tree0 = TreeController::new(0, Arc::clone(&actions));
         tree0.attach_window(window.as_weak());
         let miller0 = MillerController::new(Arc::clone(&actions));
@@ -168,6 +180,8 @@ impl AppShell {
         search.set_action_sink(Arc::clone(&actions));
         let ops = OpsController::new();
         ops.attach_window(window.as_weak());
+        let bulk_rename = BulkRenameController::new(Arc::clone(&ops), Arc::clone(&actions));
+        bulk_rename.attach_window(window.as_weak());
         let shell = Arc::new(Self {
             window: window.as_weak(),
             workspace: RwLock::new(WorkspaceModel::new_default()),
@@ -179,9 +193,11 @@ impl AppShell {
             details0,
             search,
             grid0,
+            gallery0,
             tree0,
             miller0,
             ops,
+            bulk_rename,
             pane0_vm: RwLock::new(None),
             pane1_vm: RwLock::new(None),
         });
@@ -201,6 +217,12 @@ impl AppShell {
     #[must_use]
     pub fn grid_controller(&self) -> Arc<GridController> {
         Arc::clone(&self.grid0)
+    }
+
+    /// Return the pane-0 gallery controller.
+    #[must_use]
+    pub fn gallery_controller(&self) -> Arc<GalleryController> {
+        Arc::clone(&self.gallery0)
     }
 
     /// Return the pane-0 tree controller.
@@ -237,6 +259,12 @@ impl AppShell {
     #[must_use]
     pub fn ops(&self) -> Arc<OpsController> {
         Arc::clone(&self.ops)
+    }
+
+    /// Return the bulk-rename modal controller.
+    #[must_use]
+    pub fn bulk_rename(&self) -> Arc<BulkRenameController> {
+        Arc::clone(&self.bulk_rename)
     }
 
     /// Return the index of the pane that currently has keyboard focus.
@@ -342,7 +370,8 @@ impl AppShell {
                 // Set typed location on view controllers.
                 let vm_typed: Arc<dyn LocationViewModel> = vm;
                 shell.details0.set_location(Arc::clone(&vm_typed));
-                shell.grid0.set_location(vm_typed);
+                shell.grid0.set_location(Arc::clone(&vm_typed));
+                shell.gallery0.set_location(vm_typed);
                 shell.tree0.set_root(path.clone());
                 shell.miller0.set_root(path.clone());
                 shell.search.set_scope(Some(path.clone()));
@@ -568,6 +597,38 @@ impl AppShell {
             let grid = Arc::clone(&self.grid0);
             window.on_pane0_grid_columns_changed(move |cols| {
                 grid.set_columns(cols as usize);
+            });
+        }
+
+        // Gallery callbacks — pane 0
+        {
+            let gallery = Arc::clone(&self.gallery0);
+            window.on_pane0_gallery_entry_clicked(move |index| {
+                gallery.entry_clicked(index as usize);
+            });
+        }
+        {
+            let gallery = Arc::clone(&self.gallery0);
+            window.on_pane0_gallery_strip_visible(move |index| {
+                gallery.strip_visible(index as usize);
+            });
+        }
+        {
+            let gallery = Arc::clone(&self.gallery0);
+            window.on_pane0_gallery_preview_visible(move |index| {
+                gallery.preview_visible(index as usize);
+            });
+        }
+        {
+            let gallery = Arc::clone(&self.gallery0);
+            window.on_pane0_gallery_prev_image(move || {
+                gallery.prev_image();
+            });
+        }
+        {
+            let gallery = Arc::clone(&self.gallery0);
+            window.on_pane0_gallery_next_image(move || {
+                gallery.next_image();
             });
         }
 
@@ -797,6 +858,58 @@ impl AppShell {
                 let path = location.join(&name);
                 tracing::info!(path = %path.display(), "fs::Mkdir (F7)");
                 shell.ops.submit_mkdir(path);
+            });
+        }
+
+        // ── Bulk-rename callbacks ─────────────────────────────────────────────
+        // Cmd/Ctrl+Shift+F2 → open-bulk-rename → open with current selection.
+        {
+            let shell = Arc::clone(self);
+            window.on_open_bulk_rename(move || {
+                let focused = shell.focused_pane();
+                let paths = shell.selected_paths(focused);
+                tracing::info!(
+                    pane = focused,
+                    count = paths.len(),
+                    "bulk rename: opening modal (Cmd/Ctrl+Shift+F2)"
+                );
+                shell.bulk_rename.open(paths);
+            });
+        }
+        {
+            let bulk_rename = Arc::clone(&self.bulk_rename);
+            window.on_bulk_rename_pattern_changed(move |q| {
+                bulk_rename.set_pattern(q.to_string());
+            });
+        }
+        {
+            let bulk_rename = Arc::clone(&self.bulk_rename);
+            window.on_bulk_rename_replacement_changed(move |q| {
+                bulk_rename.set_replacement(q.to_string());
+            });
+        }
+        {
+            let bulk_rename = Arc::clone(&self.bulk_rename);
+            window.on_bulk_rename_toggle_regex(move || {
+                bulk_rename.toggle_regex();
+            });
+        }
+        {
+            let bulk_rename = Arc::clone(&self.bulk_rename);
+            window.on_bulk_rename_toggle_case(move || {
+                bulk_rename.toggle_case_insensitive();
+            });
+        }
+        {
+            let bulk_rename = Arc::clone(&self.bulk_rename);
+            window.on_bulk_rename_confirm(move || {
+                bulk_rename.confirm();
+            });
+        }
+        {
+            let bulk_rename = Arc::clone(&self.bulk_rename);
+            window.on_bulk_rename_cancel(move || {
+                bulk_rename.close();
             });
         }
     }

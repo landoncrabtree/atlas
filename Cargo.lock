@@ -703,6 +703,7 @@ dependencies = [
  "nucleo",
  "num_cpus",
  "parking_lot",
+ "regex",
  "serde",
  "serial_test",
  "slint",

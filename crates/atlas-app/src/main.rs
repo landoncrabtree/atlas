@@ -59,6 +59,14 @@ impl ActionSink for AtlasActionSink {
             | UiAction::ToggleOpsPanel => {
                 tracing::debug!(?action, "fs op action (handled by AppShell directly)");
             }
+            // Bulk-rename actions are wired directly in AppShell::wire_callbacks.
+            // The variants exist for future atlas-keymap integration.
+            UiAction::OpenBulkRename
+            | UiAction::BulkRenameQuery(_)
+            | UiAction::BulkRenameConfirm { .. }
+            | UiAction::BulkRenameClose => {
+                tracing::debug!(?action, "bulk rename action (handled by AppShell directly)");
+            }
             _ => {
                 tracing::info!(?action, "ui action");
             }

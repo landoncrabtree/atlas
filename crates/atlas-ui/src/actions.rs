@@ -122,6 +122,33 @@ pub enum UiAction {
         /// Path to the file being opened.
         path: PathBuf,
     },
+
+    // ── Bulk rename ───────────────────────────────────────────────────────────
+    //
+    // These variants mirror the atlas-keymap action string `"fs::BulkRename"`.
+    // The current implementation handles them directly in [`AppShell`]; the
+    // variants exist for future atlas-keymap integration so that chord
+    // sequences can be translated to typed `UiAction` values.
+    /// Open the bulk-rename modal with the current pane's selection.
+    ///
+    /// Dispatched when `Cmd/Ctrl+Shift+F2` is pressed.  Handled directly by
+    /// [`AppShell`] which calls [`BulkRenameController::open`].
+    OpenBulkRename,
+
+    /// User changed the find query in the bulk-rename modal.
+    BulkRenameQuery(String),
+
+    /// User confirmed the bulk-rename operation.
+    ///
+    /// `rename_count` is the number of renames that were submitted to the ops
+    /// queue.
+    BulkRenameConfirm {
+        /// Number of rename operations submitted.
+        rename_count: usize,
+    },
+
+    /// User dismissed the bulk-rename modal.
+    BulkRenameClose,
 }
 
 /// Consumer of UI actions.

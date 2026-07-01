@@ -16,6 +16,7 @@ pub mod models;
 pub mod navigation;
 pub mod ops;
 pub mod palette;
+pub mod rename;
 pub mod search;
 pub mod shell;
 pub mod theme;
@@ -26,6 +27,7 @@ pub use views::details::ColumnSpec as DetailsColumnSpec;
 pub use views::details::{
     format_relative_time, format_size, ColumnKind, DetailsController, Selection,
 };
+pub use views::gallery::GalleryController;
 pub use views::grid::GridController;
 pub use views::miller::MillerController;
 pub use views::tree::TreeController;
