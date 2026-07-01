@@ -1,0 +1,240 @@
+//! Integration tests for the OpenDAL SFTP backend against the
+//! paramiko-based mock server in `tools/mock-servers/sftp_server.py`.
+//!
+//! Run with `cargo test -p atlas-remote --test sftp -- --nocapture`.
+//! Set `MOCK_SERVERS_SKIP=1` to skip.
+
+mod common;
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{bail, Result};
+use atlas_core::{BackendKind, Location, RemoteUri};
+use atlas_fs::{LocationViewModel, OpenOptions, ViewModelEvent};
+use atlas_remote::{backend::open, Credentials, OpenDalLocationViewModel};
+
+use common::MockSftpServer;
+
+/// Wait until `is_loaded()` flips or we hit the deadline.
+fn wait_loaded(vm: &Arc<dyn LocationViewModel>, timeout: Duration) -> Result<()> {
+    let sub = vm.subscribe();
+    let deadline = Instant::now() + timeout;
+    while !vm.is_loaded() {
+        if Instant::now() >= deadline {
+            bail!("view model never reported Loaded within {:?}", timeout);
+        }
+        let _ = sub.recv_timeout(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+fn open_vm(uri: RemoteUri, creds: Credentials) -> Result<Arc<OpenDalLocationViewModel>> {
+    Ok(OpenDalLocationViewModel::open_live(
+        uri,
+        BackendKind::Sftp,
+        creds,
+        OpenOptions::default(),
+    )?)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connect_anon() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    let uri = server.uri("atlas");
+    let creds = Credentials::SshKey(server.client_key(), None);
+
+    let vm = open(
+        &Location::Remote(uri, BackendKind::Sftp),
+        creds,
+        OpenOptions::default(),
+    )?;
+    wait_loaded(&vm, Duration::from_secs(15))?;
+    // Empty root; the assertion is just that listing didn't error.
+    assert!(vm.is_loaded());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connect_with_pinned_key() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_with_pinned_key("atlas")?;
+    let uri = server.uri("atlas");
+
+    // Right key ⇒ success.
+    let vm = open_vm(uri.clone(), Credentials::SshKey(server.client_key(), None))?;
+    // Force any first-op error by explicitly stat-ing the root.
+    vm.stat(".").await.expect("stat . with pinned key");
+
+    // Wrong key ⇒ error, not panic.
+    let bad_dir = tempfile::TempDir::new()?;
+    let bad_key = common::generate_ssh_keypair(bad_dir.path())?;
+    let bad_vm = open_vm(uri, Credentials::SshKey(bad_key, None))?;
+    let err = bad_vm
+        .stat(".")
+        .await
+        .expect_err("wrong SSH key must fail SFTP auth");
+    // Auth failures surface as PermissionDenied or Unexpected from opendal.
+    assert!(
+        matches!(
+            err.kind(),
+            opendal::ErrorKind::PermissionDenied | opendal::ErrorKind::Unexpected
+        ),
+        "unexpected error kind: {err:?}",
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_directory_returns_children() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+
+    // Seed the server root with foo/, bar.txt (10 bytes), baz.txt (0 bytes).
+    std::fs::create_dir(server.root_dir().join("foo"))?;
+    std::fs::write(server.root_dir().join("bar.txt"), b"0123456789")?;
+    std::fs::write(server.root_dir().join("baz.txt"), b"")?;
+
+    let vm = open(
+        &Location::Remote(server.uri("atlas"), BackendKind::Sftp),
+        Credentials::SshKey(server.client_key(), None),
+        OpenOptions::default(),
+    )?;
+    wait_loaded(&vm, Duration::from_secs(15))?;
+
+    let entries = vm.entries();
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names.len(), 3, "expected 3 entries, got {names:?}");
+    assert!(names.contains(&"foo"));
+    assert!(names.contains(&"bar.txt"));
+    assert!(names.contains(&"baz.txt"));
+
+    // Verify metadata for the sized file.
+    let bar = entries.iter().find(|e| e.name == "bar.txt").expect("bar");
+    assert_eq!(bar.metadata.size, 10);
+    let foo = entries.iter().find(|e| e.name == "foo").expect("foo");
+    assert!(matches!(foo.kind, atlas_fs::EntryKind::Dir));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stat_single_entry() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    std::fs::write(server.root_dir().join("target.bin"), vec![0u8; 42])?;
+
+    let vm = open_vm(
+        server.uri("atlas"),
+        Credentials::SshKey(server.client_key(), None),
+    )?;
+    let meta = vm.stat("target.bin").await?;
+    assert!(meta.mode().is_file());
+    assert_eq!(meta.content_length(), 42);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_file_returns_bytes() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    let payload = b"the quick brown fox jumps over the lazy dog";
+    std::fs::write(server.root_dir().join("payload.txt"), payload)?;
+
+    let vm = open_vm(
+        server.uri("atlas"),
+        Credentials::SshKey(server.client_key(), None),
+    )?;
+    let bytes = vm.read("payload.txt").await?;
+    assert_eq!(bytes, payload);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_file_creates_and_reads_back() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+
+    let vm = open_vm(
+        server.uri("atlas"),
+        Credentials::SshKey(server.client_key(), None),
+    )?;
+    let payload = b"uploaded via opendal";
+    vm.write("uploaded.txt", payload.to_vec()).await?;
+
+    // Verify on-disk.
+    let on_disk = std::fs::read(server.root_dir().join("uploaded.txt"))?;
+    assert_eq!(on_disk, payload);
+    // Verify via SFTP.
+    let back = vm.read("uploaded.txt").await?;
+    assert_eq!(back, payload);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mkdir_creates_directory() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+
+    let vm = open_vm(
+        server.uri("atlas"),
+        Credentials::SshKey(server.client_key(), None),
+    )?;
+    vm.create_dir("newdir").await?;
+    assert!(server.root_dir().join("newdir").is_dir());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rename_moves_file() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    std::fs::write(server.root_dir().join("before.txt"), b"payload")?;
+
+    let vm = open_vm(
+        server.uri("atlas"),
+        Credentials::SshKey(server.client_key(), None),
+    )?;
+    vm.rename("before.txt", "after.txt").await?;
+    assert!(!server.root_dir().join("before.txt").exists());
+    assert!(server.root_dir().join("after.txt").exists());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delete_removes_file() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    std::fs::write(server.root_dir().join("victim.txt"), b"..")?;
+
+    let vm = open_vm(
+        server.uri("atlas"),
+        Credentials::SshKey(server.client_key(), None),
+    )?;
+    vm.delete("victim.txt").await?;
+    assert!(!server.root_dir().join("victim.txt").exists());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disconnect_cleanup_smoke() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    {
+        let vm = open(
+            &Location::Remote(server.uri("atlas"), BackendKind::Sftp),
+            Credentials::SshKey(server.client_key(), None),
+            OpenOptions::default(),
+        )?;
+        wait_loaded(&vm, Duration::from_secs(15))?;
+        // Drop happens at end of scope; no panic expected.
+        let _events = vm.subscribe();
+    }
+    // If we get here without a panic, the Drop path is clean enough.
+    Ok(())
+}
+
+// Import unused ViewModelEvent from atlas_fs to give the compiler a
+// visible reference (used indirectly through subscribe() in the smoke
+// test above).
+const _: fn(&ViewModelEvent) = |_e| {};

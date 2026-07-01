@@ -468,8 +468,17 @@ fn build_sftp(uri: &RemoteUri, credentials: &Credentials) -> Result<Operator, Ba
             detail: "missing host".to_owned(),
         })?;
     let user = uri.username.as_deref().unwrap_or("");
+    // OpenDAL's SFTP backend hands the endpoint string verbatim to the
+    // `openssh` crate's `SessionBuilder::connect(...)`, which only
+    // extracts a port from the `ssh://[user@]host[:port]` form (a
+    // plain `host:port` gets treated as one hostname). Always build
+    // the URI form so tests against non-22 mock servers work.
     let endpoint = if let Some(port) = uri.port {
-        format!("{host}:{port}")
+        if user.is_empty() {
+            format!("ssh://{host}:{port}")
+        } else {
+            format!("ssh://{user}@{host}:{port}")
+        }
     } else {
         host.to_owned()
     };
@@ -477,6 +486,15 @@ fn build_sftp(uri: &RemoteUri, credentials: &Credentials) -> Result<Operator, Ba
         .endpoint(&endpoint)
         .user(user)
         .root(&uri.path);
+    // Escape hatch: integration tests against local mock servers need
+    // to bypass strict known-hosts checking (an ephemeral RSA host key
+    // is generated per test run). Production leaves this at the
+    // OpenDAL default of `strict`.
+    if let Ok(strategy) = std::env::var("ATLAS_SFTP_KNOWN_HOSTS_STRATEGY") {
+        if !strategy.is_empty() {
+            builder = builder.known_hosts_strategy(&strategy);
+        }
+    }
     match credentials {
         Credentials::Password(_) => {
             return Err(BackendError::InvalidCredentials {
@@ -587,6 +605,19 @@ fn build_s3(uri: &RemoteUri, credentials: &Credentials) -> Result<Operator, Back
             detail: "missing bucket (host component of URI)".to_owned(),
         })?;
     let mut builder = S3::default().bucket(bucket).root(&uri.path);
+    // Test / non-AWS endpoints (moto, MinIO, R2, custom gateways) can be
+    // pointed at via `ATLAS_S3_ENDPOINT` / `ATLAS_S3_REGION`. In production
+    // these are unset and OpenDAL uses the real AWS defaults.
+    if let Ok(endpoint) = std::env::var("ATLAS_S3_ENDPOINT") {
+        if !endpoint.is_empty() {
+            builder = builder.endpoint(&endpoint);
+        }
+    }
+    if let Ok(region) = std::env::var("ATLAS_S3_REGION") {
+        if !region.is_empty() {
+            builder = builder.region(&region);
+        }
+    }
     match credentials {
         Credentials::Iam {
             access_key_id,

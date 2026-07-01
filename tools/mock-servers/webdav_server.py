@@ -65,15 +65,28 @@ def _bind_socket(port: int) -> tuple[socket.socket, int]:
     return s, s.getsockname()[1]
 
 
+def _wait_ready(server: cheroot_wsgi.Server, timeout: float = 10.0) -> None:
+    """Poll cheroot until it reports ``ready`` or timeout elapses.
+
+    Cheroot flips ``server.ready`` inside its main ``start()`` loop right
+    after ``bind()`` + ``listen()`` succeed, so this is our sync point.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if getattr(server, "ready", False):
+            return
+        _time.sleep(0.02)
+    raise RuntimeError("cheroot server did not become ready in time")
+
+
 def run_server(port: int, data_dir: Path, user: str, password: str, anon: bool) -> None:
     ensure_data_dir(data_dir)
-    # Bind once ourselves so we can grab the OS-assigned port before
-    # wsgidav starts announcing it.
-    sock, actual_port = _bind_socket(port)
-    sock.close()
 
     app = build_wsgi_app(data_dir, user, password, anon)
-    server = cheroot_wsgi.Server(("127.0.0.1", actual_port), app)
+    # Let cheroot own the bind so we never race with an intermediate close().
+    server = cheroot_wsgi.Server(("127.0.0.1", port), app)
 
     def serve() -> None:
         try:
@@ -83,6 +96,9 @@ def run_server(port: int, data_dir: Path, user: str, password: str, anon: bool) 
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
+
+    _wait_ready(server)
+    actual_port = server.bind_addr[1]
 
     print_ready(actual_port)
     LOG.info("webdav mock listening on 127.0.0.1:%d root=%s anon=%s", actual_port, data_dir, anon)

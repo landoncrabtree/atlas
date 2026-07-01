@@ -335,9 +335,21 @@ pub struct MockSftpServer {
 }
 
 impl MockSftpServer {
+    /// Ensure the process-global env var that tells the OpenDAL SFTP
+    /// backend to auto-accept the mock server's ephemeral host key is
+    /// set. Called from every `start_*` constructor.
+    fn install_sftp_test_env() {
+        // Only set if unset so callers who explicitly want a stricter
+        // policy (e.g. a negative test) can override.
+        if std::env::var_os("ATLAS_SFTP_KNOWN_HOSTS_STRATEGY").is_none() {
+            std::env::set_var("ATLAS_SFTP_KNOWN_HOSTS_STRATEGY", "accept");
+        }
+    }
+
     /// Start the SFTP mock in anonymous mode (accepts any credential
     /// material).
     pub fn start_anon() -> Result<Self> {
+        Self::install_sftp_test_env();
         let data = TempDir::new().context("creating sftp data dir")?;
         let key_dir = TempDir::new().context("creating sftp key dir")?;
         // Generate a keypair so tests can hand OpenDAL a valid key
@@ -358,6 +370,7 @@ impl MockSftpServer {
     /// Start the SFTP mock in pinned-key mode. The client half of the
     /// generated keypair is accessible via [`Self::client_key`].
     pub fn start_with_pinned_key(user: &str) -> Result<Self> {
+        Self::install_sftp_test_env();
         let data = TempDir::new().context("creating sftp data dir")?;
         let key_dir = TempDir::new().context("creating sftp key dir")?;
         generate_ssh_keypair(key_dir.path())?;
@@ -656,7 +669,43 @@ impl MockS3Server {
             credential_ref: None,
         }
     }
+
+    /// Point `build_s3` at this mock via the `ATLAS_S3_ENDPOINT` /
+    /// `ATLAS_S3_REGION` process-global env vars. Idempotent: last writer
+    /// wins, and since every mock uses the same fixed region, cross-test
+    /// contention is limited to the endpoint URL (which is per-instance
+    /// but tests are single-threaded within a binary via cargo's default).
+    pub fn install_s3_test_env(&self) {
+        // SAFETY: std::env::set_var is safe to call, but is not
+        // thread-safe with concurrent reads on some platforms. Cargo runs
+        // test binaries in parallel by default, but each mock lives in a
+        // single binary and OpenDAL only reads these env vars during
+        // `build_s3`.
+        std::env::set_var("ATLAS_S3_ENDPOINT", self.endpoint());
+        std::env::set_var("ATLAS_S3_REGION", Self::REGION);
+    }
+
+    /// Acquire an exclusive lock on the process-global S3 env vars,
+    /// install them for this mock, and return the guard. Callers must
+    /// build the [`opendal::Operator`] (via
+    /// [`atlas_remote::OpenDalLocationViewModel::open_live`] etc.) while
+    /// holding the guard — once the operator exists it snapshots the
+    /// endpoint and the guard can be dropped safely.
+    ///
+    /// This is an async lock (`tokio::sync::Mutex`) so tests can hold
+    /// the guard across `.await` points without tripping clippy's
+    /// `await_holding_lock` lint.
+    pub async fn install_s3_test_env_locked(&self) -> tokio::sync::MutexGuard<'static, ()> {
+        let guard = S3_ENV_LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        self.install_s3_test_env();
+        guard
+    }
 }
+
+static S3_ENV_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 impl Drop for MockS3Server {
     fn drop(&mut self) {
