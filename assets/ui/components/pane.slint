@@ -12,24 +12,18 @@ import { EntryRowItem, ColumnSpec } from "../views/details/column.slint";
 import { TreeView, TreeNode } from "../views/tree/tree-view.slint";
 import { MetadataFields } from "../views/gallery/gallery-metadata.slint";
 
-// Placeholder for future plugin surface (git branch chip, k8s context,
-// devcontainer badge, etc.). Sits on the right side of each pane's
-// status bar and reserves horizontal space so the layout is stable
-// once real plugins land.
-// TODO(plugins): replace with a real plugin-driven `for chip in chips: …`
-// once the plugin runtime lands (v0.4+). For now it's an invisible
-// spacer that just claims 0px on the right — the flex fill in the
-// status bar keeps counts on the left and free-space in the middle.
-component PluginChips {
-    // Intentionally empty. Kept as its own component so the pane status
-    // bar's layout survives the plugin wire-up without churn.
-}
-
 // Bottom-of-pane status bar. Shows folder/file counts, cumulative size,
 // and free-space for the pane's volume. Styled to match the deprecated
 // window-level StatusBar (`Theme.panel-bg`, muted caption, 24px tall).
 // Reserves height even when every string is empty so the pane layout
 // doesn't jump when a new pane first opens.
+//
+// Layout: counts on the LEFT, flex spacer, "N free of M" on the RIGHT
+// hugging `padding-right`. Future plugin chips (git branch, k8s context,
+// devcontainer badge, …) will slot in between the spacer and the
+// free-space text once the plugin runtime lands (v0.4+); until then no
+// placeholder element is instantiated so the free-space chunk truly
+// reaches the pane's right edge.
 component PaneStatusBar {
     in property <int> folder-count: 0;
     in property <int> file-count: 0;
@@ -74,11 +68,6 @@ component PaneStatusBar {
                 font-size: 11px;
                 vertical-alignment: center;
             }
-
-            // Reserved right-hand region for future plugin chips (git
-            // branch, k8s context, etc.). Empty for now; keeps the
-            // layout stable when the plugin runtime lands.
-            PluginChips {}
         }
     }
 }

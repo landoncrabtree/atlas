@@ -530,6 +530,12 @@ pub struct AppShell {
     /// `true` once the user has resized any column since app start —
     /// prevents an unnecessary config write when nothing changed.
     column_widths_dirty: AtomicBool,
+    /// Whether the bottom shortcut-footer strip is currently rendered.
+    /// Kept in sync with the Slint `show-shortcut-footer` property via
+    /// [`Self::set_shortcut_footer_visible`]. Consulted by
+    /// [`Self::workspace_content_bounds`] so panes reclaim the footer's
+    /// 26 px when the user disables `ui.show_shortcuts`.
+    shortcut_footer_visible: AtomicBool,
 }
 
 impl AppShell {
@@ -619,6 +625,7 @@ impl AppShell {
                 context_menu_target: RwLock::new(None),
                 column_widths: RwLock::new(HashMap::new()),
                 column_widths_dirty: AtomicBool::new(false),
+                shortcut_footer_visible: AtomicBool::new(true),
             }
         });
 
@@ -899,13 +906,20 @@ impl AppShell {
     /// Show or hide the bottom shortcut-footer strip (Marta/NC-style
     /// key hints). Bound to `ui.show_shortcuts`. Rebindings still work;
     /// only the hint chips are hidden.
-    pub fn set_shortcut_footer_visible(&self, visible: bool) {
+    ///
+    /// Also re-projects the workspace so panes reclaim (or yield) the
+    /// footer's 26 px of vertical chrome — see
+    /// [`Self::workspace_content_bounds`].
+    pub fn set_shortcut_footer_visible(self: &Arc<Self>, visible: bool) {
+        self.shortcut_footer_visible
+            .store(visible, std::sync::atomic::Ordering::Relaxed);
         let weak = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(window) = weak.upgrade() {
                 window.set_show_shortcut_footer(visible);
             }
         });
+        self.project_workspace_to_slint();
     }
 
     /// Enable or disable UI animations globally. When `false`, every
@@ -1126,24 +1140,39 @@ impl AppShell {
             .unwrap_or(Rect::from_size(1440.0, 900.0))
     }
 
-    /// The workspace content area: window bounds minus the titlebar,
-    /// toolbar, and shortcut footer.  This is the rectangle that the pane
-    /// container fills and that `layout_rects` must be called against.
+    /// The workspace content area: window bounds minus any bottom chrome
+    /// that isn't drawn inside a pane. This is the rectangle that the
+    /// pane container fills and that `layout_rects` must be called
+    /// against.
     ///
-    /// The constant offsets below match the fixed pixel heights used in
-    /// `atlas.slint` (toolbar 32 px, footer 26 px).  Adjust if those
-    /// values ever change. Since v0.2.2 the window-level status bar was
-    /// replaced by a per-pane status bar drawn inside each pane's own
-    /// frame (see `components/pane.slint` → `PaneStatusBar`), so it no
-    /// longer eats any of this bounds calculation.
+    /// Historically this also subtracted a `TOP_CHROME` for the custom
+    /// Titlebar; that Titlebar was deleted in the v0.3 chrome pass
+    /// (macOS/Windows/Linux all rely on the OS-native title bar, which
+    /// is already excluded from the window's logical pixels), so the
+    /// panes now start at `y = 0` in this bounds.
+    ///
+    /// Since v0.2.2 the window-level status bar was replaced by a
+    /// per-pane status bar drawn inside each pane's own frame (see
+    /// `components/pane.slint` → `PaneStatusBar`), so it doesn't eat any
+    /// of this bounds calculation either.
+    ///
+    /// The 26-px shortcut footer is only subtracted when it's actually
+    /// rendered (`ui.show_shortcuts = true`); when the user hides it the
+    /// panes reclaim that height so their status bar sits flush against
+    /// the window's bottom edge.
     fn workspace_content_bounds(&self) -> Rect {
         let wb = self.window_bounds();
-        // Toolbar (32 px) + shortcut footer (26 px).
-        // Titlebar is drawn by the OS and already excluded from logical pixels.
-        // Per-pane status bar height is inside each pane's rect, not here.
-        const TOP_CHROME: f32 = 32.0;
-        const BOTTOM_CHROME: f32 = 26.0;
-        let height = (wb.height - TOP_CHROME - BOTTOM_CHROME).max(1.0);
+        // Height of the ShortcutFooter component in `components/shortcut-footer.slint`.
+        const FOOTER_H: f32 = 26.0;
+        let footer_h = if self
+            .shortcut_footer_visible
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            FOOTER_H
+        } else {
+            0.0
+        };
+        let height = (wb.height - footer_h).max(1.0);
         Rect {
             x: 0.0,
             y: 0.0,
