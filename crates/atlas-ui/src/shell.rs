@@ -16,23 +16,25 @@ use std::{
 };
 
 use atlas_core::path::expand_tilde;
+use atlas_fs::LocationViewModel;
 use atlas_keymap::{defaults::default_actions, ActionRegistry, Keymap};
 use directories::UserDirs;
 use parking_lot::{Mutex, RwLock};
 use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
-use atlas_fs::LocationViewModel;
-
 use crate::{
     actions::{ActionSink, UiAction},
     models::{PaletteModel, PaletteResult, PaneModel, StatusModel, WorkspaceModel},
     navigation::NavigationController,
+    ops::OpsController,
     palette::{ActionsSource, GotoPathsSource, PaletteController, WalkerPathIndex},
     search::SearchController,
     theme::{ThemeMode, ThemeTokens},
     theming::defaults,
     views::details::DetailsController,
     views::grid::GridController,
+    views::miller::MillerController,
+    views::tree::TreeController,
     AtlasWindow, PaletteEntry, TabEntry,
 };
 
@@ -129,6 +131,18 @@ pub struct AppShell {
     details0: Arc<DetailsController>,
     search: Arc<SearchController>,
     grid0: Arc<GridController>,
+    tree0: Arc<TreeController>,
+    miller0: Arc<MillerController>,
+    /// File-operations queue controller.
+    ops: Arc<OpsController>,
+    /// Current location view model for pane 0 (updated on navigation).
+    ///
+    /// Stored so that [`AppShell::selected_paths`] and
+    /// [`AppShell::focused_entry`] can read entry paths on the UI thread
+    /// without reaching into the view controllers.
+    pane0_vm: RwLock<Option<Arc<dyn LocationViewModel>>>,
+    /// Current location view model for pane 1.
+    pane1_vm: RwLock<Option<Arc<dyn LocationViewModel>>>,
 }
 
 impl AppShell {
@@ -146,8 +160,14 @@ impl AppShell {
         );
         let details0 = DetailsController::new(0, window.as_weak(), Arc::clone(&actions));
         let grid0 = GridController::new(0, window.as_weak(), Arc::clone(&actions), thumb_cache);
+        let tree0 = TreeController::new(0, Arc::clone(&actions));
+        tree0.attach_window(window.as_weak());
+        let miller0 = MillerController::new(Arc::clone(&actions));
+        miller0.attach_window(window.as_weak());
         let palette_ctrl = build_palette_controller(window, Arc::clone(&actions));
         search.set_action_sink(Arc::clone(&actions));
+        let ops = OpsController::new();
+        ops.attach_window(window.as_weak());
         let shell = Arc::new(Self {
             window: window.as_weak(),
             workspace: RwLock::new(WorkspaceModel::new_default()),
@@ -159,6 +179,11 @@ impl AppShell {
             details0,
             search,
             grid0,
+            tree0,
+            miller0,
+            ops,
+            pane0_vm: RwLock::new(None),
+            pane1_vm: RwLock::new(None),
         });
 
         shell.wire_callbacks(window);
@@ -176,6 +201,18 @@ impl AppShell {
     #[must_use]
     pub fn grid_controller(&self) -> Arc<GridController> {
         Arc::clone(&self.grid0)
+    }
+
+    /// Return the pane-0 tree controller.
+    #[must_use]
+    pub fn tree_controller(&self) -> Arc<TreeController> {
+        Arc::clone(&self.tree0)
+    }
+
+    /// Return the pane-0 miller columns controller.
+    #[must_use]
+    pub fn miller_controller(&self) -> Arc<MillerController> {
+        Arc::clone(&self.miller0)
     }
 
     /// Return the shared navigation controller.
@@ -196,6 +233,105 @@ impl AppShell {
         Arc::clone(&self.search)
     }
 
+    /// Return the file-operations controller.
+    #[must_use]
+    pub fn ops(&self) -> Arc<OpsController> {
+        Arc::clone(&self.ops)
+    }
+
+    /// Return the index of the pane that currently has keyboard focus.
+    #[must_use]
+    pub fn focused_pane(&self) -> usize {
+        self.workspace.read().focused_pane
+    }
+
+    /// Return the current directory path for `pane`, if available.
+    #[must_use]
+    pub fn pane_location(&self, pane: usize) -> Option<PathBuf> {
+        self.workspace
+            .read()
+            .panes
+            .get(pane)
+            .map(|p| p.location.clone())
+    }
+
+    /// Return the filesystem paths of all selected entries in `pane`.
+    ///
+    /// Reads the selection mask from the Slint window and the entry list from
+    /// the stored location view model. **Must be called on the Slint
+    /// event-loop thread.**
+    ///
+    /// # Caveats
+    ///
+    /// For pane 0, only the Details view selection is read. Grid/Miller/Tree
+    /// selection reading is a TODO once those views expose a unified
+    /// selection API.
+    #[must_use]
+    pub fn selected_paths(&self, pane: usize) -> Vec<PathBuf> {
+        let Some(window) = self.window.upgrade() else {
+            return Vec::new();
+        };
+
+        let mask_model = if pane == 0 {
+            window.get_pane0_details_selected_mask()
+        } else {
+            window.get_pane1_details_selected_mask()
+        };
+
+        let vm_guard = if pane == 0 {
+            self.pane0_vm.read()
+        } else {
+            self.pane1_vm.read()
+        };
+        let Some(ref vm) = *vm_guard else {
+            return Vec::new();
+        };
+        let entries = vm.entries();
+
+        use slint::Model as _;
+        (0..mask_model.row_count())
+            .filter(|&i| mask_model.row_data(i).unwrap_or(false))
+            .filter_map(|i| entries.get(i).map(|e| e.path.clone()))
+            .collect()
+    }
+
+    /// Return the path of the focused (cursor) entry in `pane`, if any.
+    ///
+    /// **Must be called on the Slint event-loop thread.**
+    ///
+    /// # Caveats
+    ///
+    /// Currently reads from the Details view focused index only. Grid/Miller/Tree
+    /// are a TODO.
+    #[must_use]
+    pub fn focused_entry(&self, pane: usize) -> Option<PathBuf> {
+        let Some(window) = self.window.upgrade() else {
+            return None;
+        };
+
+        let focused_idx = if pane == 0 {
+            window.get_pane0_details_focused_index()
+        } else {
+            window.get_pane1_details_focused_index()
+        };
+
+        if focused_idx < 0 {
+            return None;
+        }
+
+        let vm_guard = if pane == 0 {
+            self.pane0_vm.read()
+        } else {
+            self.pane1_vm.read()
+        };
+        let Some(ref vm) = *vm_guard else {
+            return None;
+        };
+        vm.entries()
+            .get(focused_idx as usize)
+            .map(|e| e.path.clone())
+    }
+
     fn register_nav_callbacks(self: &Arc<Self>) {
         let shell_weak = Arc::downgrade(self);
         self.navigation.on_location_changed(move |pane, vm| {
@@ -203,11 +339,19 @@ impl AppShell {
                 return;
             };
             let path = vm.location().to_path_buf();
+            // Coerce to trait object so selected_paths / focused_entry can use it.
+            let vm_dyn: Arc<dyn LocationViewModel> = vm.clone();
             if pane == 0 {
-                let vm: Arc<dyn LocationViewModel> = vm;
-                shell.details0.set_location(Arc::clone(&vm));
-                shell.grid0.set_location(vm);
+                *shell.pane0_vm.write() = Some(vm_dyn);
+                // Set typed location on view controllers.
+                let vm_typed: Arc<dyn LocationViewModel> = vm;
+                shell.details0.set_location(Arc::clone(&vm_typed));
+                shell.grid0.set_location(vm_typed);
+                shell.tree0.set_root(path.clone());
+                shell.miller0.set_root(path.clone());
                 shell.search.set_scope(Some(path.clone()));
+            } else if pane == 1 {
+                *shell.pane1_vm.write() = Some(vm_dyn);
             }
             let new_pane = PaneModel::new(path);
             {
@@ -431,6 +575,46 @@ impl AppShell {
             });
         }
 
+        // Tree callbacks — pane 0
+        {
+            let tree = Arc::clone(&self.tree0);
+            window.on_pane0_tree_row_clicked(move |index, ctrl, shift| {
+                tree.select_index(index as usize, ctrl, shift);
+            });
+        }
+        {
+            let tree = Arc::clone(&self.tree0);
+            window.on_pane0_tree_row_double_clicked(move |index| {
+                tree.select_index(index as usize, false, false);
+                tree.activate_focused();
+            });
+        }
+        {
+            let tree = Arc::clone(&self.tree0);
+            window.on_pane0_tree_chevron_clicked(move |index| {
+                let visible = tree.build_visible_nodes();
+                if let Some(row) = visible.get(index as usize) {
+                    let path = std::path::PathBuf::from(row.node_id.as_str());
+                    tree.toggle(&path);
+                }
+            });
+        }
+
+        // Miller callbacks — pane 0
+        {
+            let miller = Arc::clone(&self.miller0);
+            window.on_pane0_miller_row_clicked(move |col, row| {
+                miller.select_row(col as usize, row as usize);
+            });
+        }
+        {
+            let miller = Arc::clone(&self.miller0);
+            window.on_pane0_miller_row_double_clicked(move |col, row| {
+                miller.select_row(col as usize, row as usize);
+                miller.activate_focused();
+            });
+        }
+
         {
             let actions = Arc::clone(&self.actions);
             let nav = Arc::clone(&self.navigation);
@@ -472,6 +656,153 @@ impl AppShell {
             });
         }
         window.on_pane1_new_tab(dispatch!(self.actions, UiAction::NewTab { pane: 1 }));
+
+        // ── Ops-panel callbacks ───────────────────────────────────────────────
+
+        {
+            let ops = Arc::clone(&self.ops);
+            window.on_ops_cancel(move |index| {
+                tracing::debug!(index, "ops-cancel from UI");
+                ops.cancel_by_index(index as usize);
+            });
+        }
+        {
+            let ops = Arc::clone(&self.ops);
+            window.on_ops_dismiss(move |index| {
+                tracing::debug!(index, "ops-dismiss from UI");
+                ops.dismiss_by_index(index as usize);
+            });
+        }
+        {
+            let ops = Arc::clone(&self.ops);
+            window.on_ops_close(move || {
+                ops.set_visible(false);
+            });
+        }
+        {
+            let ops = Arc::clone(&self.ops);
+            window.on_toggle_ops_panel(move || {
+                ops.toggle_visible();
+            });
+        }
+
+        // ── F-key file-operation callbacks ────────────────────────────────────
+        // These callbacks are triggered from the atlas.slint FocusScope key
+        // handlers (F2, F5, F6, F7, F8) and routed directly to OpsController
+        // rather than through the ActionSink, matching the pattern used by
+        // PaletteController and SearchController.
+
+        {
+            let shell = Arc::clone(self);
+            window.on_fs_copy(move || {
+                let focused = shell.focused_pane();
+                let sources = shell.selected_paths(focused);
+                if sources.is_empty() {
+                    tracing::warn!(pane = focused, "fs::Copy (F5): no selection");
+                    return;
+                }
+                // In dual-pane mode the other pane is the destination.
+                // Single-pane: destination dialog is a post-MVP follow-up.
+                let dual = shell.workspace.read().dual_pane;
+                let other = if dual { Some(1 - focused) } else { None };
+                let dest = other.and_then(|p| shell.pane_location(p));
+                match dest {
+                    Some(dest_dir) => {
+                        tracing::info!(
+                            sources = sources.len(),
+                            dest = %dest_dir.display(),
+                            "fs::Copy (F5)"
+                        );
+                        shell.ops.submit_copy(sources, dest_dir);
+                    }
+                    None => {
+                        tracing::warn!(
+                            "fs::Copy (F5): no destination pane; \
+                             a destination-path dialog is a post-MVP follow-up"
+                        );
+                    }
+                }
+            });
+        }
+        {
+            let shell = Arc::clone(self);
+            window.on_fs_move(move || {
+                let focused = shell.focused_pane();
+                let sources = shell.selected_paths(focused);
+                if sources.is_empty() {
+                    tracing::warn!(pane = focused, "fs::Move (F6): no selection");
+                    return;
+                }
+                let dual = shell.workspace.read().dual_pane;
+                let other = if dual { Some(1 - focused) } else { None };
+                let dest = other.and_then(|p| shell.pane_location(p));
+                match dest {
+                    Some(dest_dir) => {
+                        tracing::info!(
+                            sources = sources.len(),
+                            dest = %dest_dir.display(),
+                            "fs::Move (F6)"
+                        );
+                        shell.ops.submit_move(sources, dest_dir);
+                    }
+                    None => {
+                        tracing::warn!(
+                            "fs::Move (F6): no destination pane; \
+                             a destination-path dialog is a post-MVP follow-up"
+                        );
+                    }
+                }
+            });
+        }
+        {
+            let shell = Arc::clone(self);
+            window.on_fs_delete(move || {
+                let focused = shell.focused_pane();
+                let paths = shell.selected_paths(focused);
+                if paths.is_empty() {
+                    tracing::warn!(pane = focused, "fs::Delete (F8): no selection");
+                    return;
+                }
+                tracing::info!(count = paths.len(), "fs::Delete (F8) → trash");
+                // F8 always sends to trash (non-destructive default).
+                // Shift+F8 for permanent delete is a post-MVP binding.
+                shell.ops.submit_delete(paths, true);
+            });
+        }
+        {
+            let shell = Arc::clone(self);
+            window.on_fs_rename(move || {
+                let focused = shell.focused_pane();
+                // TODO(post-MVP): show an inline rename text-input or modal dialog.
+                // For now we log the focused entry and skip the operation.
+                match shell.focused_entry(focused) {
+                    Some(path) => {
+                        tracing::info!(
+                            path = %path.display(),
+                            "fs::Rename (F2): rename dialog not yet implemented (post-MVP)"
+                        );
+                    }
+                    None => {
+                        tracing::warn!(pane = focused, "fs::Rename (F2): no focused entry");
+                    }
+                }
+            });
+        }
+        {
+            let shell = Arc::clone(self);
+            window.on_fs_mkdir(move || {
+                let focused = shell.focused_pane();
+                let Some(location) = shell.pane_location(focused) else {
+                    tracing::warn!(pane = focused, "fs::Mkdir (F7): no pane location");
+                    return;
+                };
+                // Choose a unique "New Folder" name within the current location.
+                let name = unique_new_folder_name(&location);
+                let path = location.join(&name);
+                tracing::info!(path = %path.display(), "fs::Mkdir (F7)");
+                shell.ops.submit_mkdir(path);
+            });
+        }
     }
 
     /// Update the workspace state and schedule a property push on the event loop.
@@ -606,4 +937,22 @@ impl AppShell {
             window.set_dark(tokens.mode.is_dark());
         });
     }
+}
+
+/// Return a "New Folder" name that does not yet exist in `parent_dir`.
+///
+/// Tries `"New Folder"`, then `"New Folder 2"`, `"New Folder 3"`, … up to 99.
+fn unique_new_folder_name(parent_dir: &Path) -> String {
+    let base = "New Folder";
+    if !parent_dir.join(base).exists() {
+        return base.to_owned();
+    }
+    for n in 2u32..=99 {
+        let candidate = format!("{base} {n}");
+        if !parent_dir.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    // Fallback: very unlikely in practice.
+    base.to_owned()
 }

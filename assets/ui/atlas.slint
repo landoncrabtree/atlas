@@ -4,8 +4,11 @@ import { Workspace } from "components/workspace.slint";
 import { StatusBar } from "components/status-bar.slint";
 import { CommandPalette, PaletteEntry } from "components/command-palette.slint";
 import { SearchPanel, SearchRow } from "components/search-panel.slint";
+import { OpsPanel, OpRow } from "components/ops-panel.slint";
 import { TabEntry } from "components/tab-bar.slint";
 import { EntryRowItem, ColumnSpec } from "views/details/column.slint";
+import { MillerColData, MillerState } from "views/miller/miller-state.slint";
+import { TreeNode } from "views/tree/tree-view.slint";
 
 // Entry-point component for the Atlas application window.
 //
@@ -66,6 +69,11 @@ export component AtlasWindow inherits Window {
     in property <[bool]> pane0-grid-has-thumbs: [];
     in property <[bool]> pane0-grid-selected-mask: [];
     in property <int> pane0-grid-focused-index: -1;
+    in property <[TreeNode]> pane0-tree-nodes: [];
+    in property <int> pane0-tree-focused-index: -1;
+    in property <int> pane0-tree-selected-index: -1;
+    in property <[MillerColData]> pane0-miller-columns: [];
+    in property <int> pane0-miller-focused-col: 0;
 
     in property <string> pane1-path: "";
     in property <[string]> pane1-segments: [];
@@ -81,6 +89,9 @@ export component AtlasWindow inherits Window {
     in property <[bool]> pane1-grid-has-thumbs: [];
     in property <[bool]> pane1-grid-selected-mask: [];
     in property <int> pane1-grid-focused-index: -1;
+    in property <[TreeNode]> pane1-tree-nodes: [];
+    in property <int> pane1-tree-focused-index: -1;
+    in property <int> pane1-tree-selected-index: -1;
 
     in property <int> total-entries: 0;
     in property <int> selected-entries: 0;
@@ -99,6 +110,11 @@ export component AtlasWindow inherits Window {
     in property <int> search-panel-selected: 0;
     in property <string> search-panel-status: "";
 
+    /// Whether the file-operations tray is shown.
+    in property <bool> ops-panel-visible: false;
+    /// Operation rows shown in the ops tray.
+    in property <[OpRow]> ops-rows: [];
+
     callback palette-query-changed(string);
     callback palette-confirm(string);
     callback palette-dismiss();
@@ -107,6 +123,25 @@ export component AtlasWindow inherits Window {
     callback search-close();
     callback toggle-search-panel();
     callback open-search-panel();
+
+    /// Cancel the operation at `index` in `ops-rows`.
+    callback ops-cancel(int);
+    /// Remove a terminal row at `index` from the ops panel.
+    callback ops-dismiss(int);
+    /// Hide the ops panel (rows are retained on the Rust side).
+    callback ops-close();
+    /// Toggle the ops panel open/closed (Ctrl/Cmd+J).
+    callback toggle-ops-panel();
+    /// Trigger copy of the current pane's selection to the other pane (F5).
+    callback fs-copy();
+    /// Trigger move of the current pane's selection to the other pane (F6).
+    callback fs-move();
+    /// Trigger deletion (to trash) of the current pane's selection (F8).
+    callback fs-delete();
+    /// Trigger rename of the focused entry (F2).
+    callback fs-rename();
+    /// Trigger mkdir in the current pane (F7).
+    callback fs-mkdir();
 
     callback pane0-address-submitted(string);
     callback pane0-address-cancelled();
@@ -125,6 +160,11 @@ export component AtlasWindow inherits Window {
     callback pane0-grid-entry-context-menu(int, length, length);
     callback pane0-grid-thumbnail-visible(int);
     callback pane0-grid-columns-changed(int);
+    callback pane0-tree-row-clicked(int, bool, bool);
+    callback pane0-tree-row-double-clicked(int);
+    callback pane0-tree-chevron-clicked(int);
+    callback pane0-miller-row-clicked(int, int);
+    callback pane0-miller-row-double-clicked(int, int);
 
     callback pane1-address-submitted(string);
     callback pane1-address-cancelled();
@@ -143,6 +183,9 @@ export component AtlasWindow inherits Window {
     callback pane1-grid-entry-context-menu(int, length, length);
     callback pane1-grid-thumbnail-visible(int);
     callback pane1-grid-columns-changed(int);
+    callback pane1-tree-row-clicked(int, bool, bool);
+    callback pane1-tree-row-double-clicked(int);
+    callback pane1-tree-chevron-clicked(int);
 
     callback toggle-palette();
     callback open-goto();
@@ -238,6 +281,32 @@ export component AtlasWindow inherits Window {
                 root.open-search-panel();
                 return accept;
             }
+            // Toggle ops panel with Ctrl/Cmd+J.
+            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "j" || event.text == "J") {
+                root.toggle-ops-panel();
+                return accept;
+            }
+            // File-operation F-keys (NC/Midnight Commander convention).
+            if event.text == Key.F2 && !palette-visible {
+                root.fs-rename();
+                return accept;
+            }
+            if event.text == Key.F5 && !palette-visible {
+                root.fs-copy();
+                return accept;
+            }
+            if event.text == Key.F6 && !palette-visible {
+                root.fs-move();
+                return accept;
+            }
+            if event.text == Key.F7 && !palette-visible {
+                root.fs-mkdir();
+                return accept;
+            }
+            if event.text == Key.F8 && !palette-visible {
+                root.fs-delete();
+                return accept;
+            }
             reject;
         }
 
@@ -268,6 +337,11 @@ export component AtlasWindow inherits Window {
                 pane0-grid-has-thumbs: root.pane0-grid-has-thumbs;
                 pane0-grid-selected-mask: root.pane0-grid-selected-mask;
                 pane0-grid-focused-index: root.pane0-grid-focused-index;
+                pane0-tree-nodes: root.pane0-tree-nodes;
+                pane0-tree-focused-index: root.pane0-tree-focused-index;
+                pane0-tree-selected-index: root.pane0-tree-selected-index;
+                pane0-miller-columns: root.pane0-miller-columns;
+                pane0-miller-focused-col: root.pane0-miller-focused-col;
 
                 pane1-path: root.pane1-path;
                 pane1-segments: root.pane1-segments;
@@ -283,6 +357,9 @@ export component AtlasWindow inherits Window {
                 pane1-grid-has-thumbs: root.pane1-grid-has-thumbs;
                 pane1-grid-selected-mask: root.pane1-grid-selected-mask;
                 pane1-grid-focused-index: root.pane1-grid-focused-index;
+                pane1-tree-nodes: root.pane1-tree-nodes;
+                pane1-tree-focused-index: root.pane1-tree-focused-index;
+                pane1-tree-selected-index: root.pane1-tree-selected-index;
 
                 pane0-address-submitted(p) => { root.pane0-address-submitted(p); }
                 pane0-address-cancelled => { root.pane0-address-cancelled(); }
@@ -301,6 +378,11 @@ export component AtlasWindow inherits Window {
                 pane0-grid-entry-context-menu(i, x, y) => { root.pane0-grid-entry-context-menu(i, x, y); }
                 pane0-grid-thumbnail-visible(i) => { root.pane0-grid-thumbnail-visible(i); }
                 pane0-grid-columns-changed(c) => { root.pane0-grid-columns-changed(c); }
+                pane0-tree-row-clicked(i, ctrl, shift) => { root.pane0-tree-row-clicked(i, ctrl, shift); }
+                pane0-tree-row-double-clicked(i) => { root.pane0-tree-row-double-clicked(i); }
+                pane0-tree-chevron-clicked(i) => { root.pane0-tree-chevron-clicked(i); }
+                pane0-miller-row-clicked(col, row) => { root.pane0-miller-row-clicked(col, row); }
+                pane0-miller-row-double-clicked(col, row) => { root.pane0-miller-row-double-clicked(col, row); }
 
                 pane1-address-submitted(p) => { root.pane1-address-submitted(p); }
                 pane1-address-cancelled => { root.pane1-address-cancelled(); }
@@ -319,6 +401,9 @@ export component AtlasWindow inherits Window {
                 pane1-grid-entry-context-menu(i, x, y) => { root.pane1-grid-entry-context-menu(i, x, y); }
                 pane1-grid-thumbnail-visible(i) => { root.pane1-grid-thumbnail-visible(i); }
                 pane1-grid-columns-changed(c) => { root.pane1-grid-columns-changed(c); }
+                pane1-tree-row-clicked(i, ctrl, shift) => { root.pane1-tree-row-clicked(i, ctrl, shift); }
+                pane1-tree-row-double-clicked(i) => { root.pane1-tree-row-double-clicked(i); }
+                pane1-tree-chevron-clicked(i) => { root.pane1-tree-chevron-clicked(i); }
             }
 
             StatusBar {
@@ -328,6 +413,18 @@ export component AtlasWindow inherits Window {
                 sort-by: root.sort-by;
                 indexer-status: root.indexer-status;
             }
+        }
+
+        // File-operations tray — auto-shown by Rust when ops are queued.
+        OpsPanel {
+            x: 0px;
+            y: parent.height - self.height;
+            width: parent.width;
+            visible-panel: root.ops-panel-visible;
+            rows: root.ops-rows;
+            cancel(i) => { root.ops-cancel(i); }
+            dismiss(i) => { root.ops-dismiss(i); }
+            close => { root.ops-close(); }
         }
 
         CommandPalette {

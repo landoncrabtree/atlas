@@ -1,0 +1,106 @@
+// One row in the Tree view.
+//
+// Renders indentation, a chevron (▸/▾) or leaf spacer, kind glyph, and name.
+// Applies selection / focus / hover / hidden visual states.
+//
+// Properties for each tree-node field are passed individually so that
+// tree-view.slint can avoid a circular import (TreeNode is declared there).
+import { Theme } from "../../theme.slint";
+import { EntryRowItem } from "../details/column.slint";
+
+export component TreeRow {
+    in property <EntryRowItem> entry;
+    in property <string> node-name;
+    in property <int> depth: 0;
+    in property <length> indent-per-level: 16px;
+    in property <length> row-height: 24px;
+    in property <bool> is-expandable: false;
+    in property <bool> is-expanded: false;
+    in property <bool> is-loading: false;
+    in property <bool> selected: false;
+    in property <bool> focused: false;
+
+    callback clicked(bool /*ctrl*/, bool /*shift*/);
+    callback double-clicked();
+    callback chevron-clicked();
+
+    height: root.row-height;
+
+    bg := Rectangle {
+        background: root.selected
+            ? Theme.selection-bg
+            : (ta.has-hover ? Theme.panel-bg : transparent);
+        border-width: root.focused && !root.selected ? 1px : 0px;
+        border-color: Theme.accent;
+        opacity: root.entry.is-hidden ? 0.6 : 1.0;
+
+        HorizontalLayout {
+            spacing: 0px;
+
+            // Depth indentation
+            Rectangle {
+                width: root.depth * root.indent-per-level;
+                horizontal-stretch: 0;
+            }
+
+            // Chevron toggle area (always 16 px wide for consistent alignment)
+            chevron-area := Rectangle {
+                width: 16px;
+                horizontal-stretch: 0;
+
+                if root.is-expandable : TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.chevron-clicked(); }
+
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.is-loading ? "⟳"
+                            : (root.is-expanded ? "▾" : "▸");
+                        color: root.selected ? Theme.selection-fg : Theme.fg-muted;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+
+            // Kind icon
+            Text {
+                width: 20px;
+                horizontal-stretch: 0;
+                text: root.entry.kind-icon;
+                color: root.selected ? Theme.selection-fg : Theme.fg-muted;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+
+            // Display name
+            Text {
+                horizontal-stretch: 1;
+                text: root.node-name + (root.entry.is-symlink ? " →" : "");
+                color: root.entry.is-broken-symlink
+                    ? Theme.error
+                    : (root.selected
+                        ? Theme.selection-fg
+                        : (root.entry.is-hidden ? Theme.fg-muted : Theme.fg));
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        ta := TouchArea {
+            property <bool> mod-ctrl: false;
+            property <bool> mod-shift: false;
+
+            pointer-event(pe) => {
+                if pe.kind == PointerEventKind.down {
+                    self.mod-ctrl = pe.modifiers.control;
+                    self.mod-shift = pe.modifiers.shift;
+                }
+            }
+            clicked => { root.clicked(ta.mod-ctrl, ta.mod-shift); }
+            double-clicked => { root.double-clicked(); }
+        }
+    }
+}

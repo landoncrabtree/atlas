@@ -692,6 +692,7 @@ dependencies = [
  "atlas-core",
  "atlas-fs",
  "atlas-keymap",
+ "atlas-ops",
  "atlas-search",
  "atlas-thumbs",
  "crossbeam-channel",

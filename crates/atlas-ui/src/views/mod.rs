@@ -2,3 +2,5 @@
 
 pub mod details;
 pub mod grid;
+pub mod miller;
+pub mod tree;

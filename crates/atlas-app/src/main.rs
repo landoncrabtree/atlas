@@ -32,12 +32,37 @@ use atlas_ui::{
     AtlasWindow, NavigationController,
 };
 
-/// Stub action sink that logs every UI action.
-struct LoggingActionSink;
+/// Application-level action sink that routes [`UiAction`]s to the appropriate
+/// controller.
+///
+/// File-system operations (`FsCopy`, `FsMove`, etc.) are handled directly by
+/// [`AppShell`]'s Slint callback wiring (see `wire_callbacks` in shell.rs),
+/// so the sink only needs to handle the remaining lifecycle actions here.
+/// The `Fs*` variants exist in [`UiAction`] for future atlas-keymap
+/// integration (when keymap strings like `"fs::Copy"` are translated to typed
+/// `UiAction` values by the keymap resolver).
+struct AtlasActionSink;
 
-impl ActionSink for LoggingActionSink {
+impl ActionSink for AtlasActionSink {
     fn dispatch(&mut self, action: UiAction) {
-        tracing::info!(?action, "ui action");
+        match &action {
+            // Fs* actions are wired directly in AppShell::wire_callbacks via
+            // Slint F-key callbacks; they do not flow through this sink in the
+            // current implementation. Log at debug so the path is traceable.
+            UiAction::FsCopy { .. }
+            | UiAction::FsMove { .. }
+            | UiAction::FsDelete { .. }
+            | UiAction::FsRename { .. }
+            | UiAction::FsMkdir { .. }
+            | UiAction::FsCancel { .. }
+            | UiAction::FsResolveConflict { .. }
+            | UiAction::ToggleOpsPanel => {
+                tracing::debug!(?action, "fs op action (handled by AppShell directly)");
+            }
+            _ => {
+                tracing::info!(?action, "ui action");
+            }
+        }
     }
 }
 
@@ -70,7 +95,7 @@ fn main() -> Result<()> {
     search_ctrl.attach_window(window.as_weak());
     let shell: Arc<AppShell> = AppShell::new(
         &window,
-        LoggingActionSink,
+        AtlasActionSink,
         Arc::clone(&nav),
         Arc::clone(&search_ctrl),
     );

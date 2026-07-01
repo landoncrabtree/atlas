@@ -5,7 +5,10 @@ import { TabBar, TabEntry } from "tab-bar.slint";
 import { EmptyView } from "../views/empty-view.slint";
 import { DetailsView } from "../views/details/details-view.slint";
 import { GridView } from "../views/grid/grid-view.slint";
+import { MillerView } from "../views/miller/miller-view.slint";
+import { MillerColData } from "../views/miller/miller-state.slint";
 import { EntryRowItem, ColumnSpec } from "../views/details/column.slint";
+import { TreeView, TreeNode } from "../views/tree/tree-view.slint";
 
 // A single pane: address bar + breadcrumbs + tab bar + content view.
 //
@@ -32,6 +35,15 @@ export component Pane {
     in property <[bool]> grid-selected-mask: [];
     in property <int> grid-focused-index: -1;
 
+    // Tree view properties
+    in property <[TreeNode]> tree-nodes: [];
+    in property <int> tree-focused-index: -1;
+    in property <int> tree-selected-index: -1;
+
+    // Miller columns view properties
+    in property <[MillerColData]> miller-columns: [];
+    in property <int> miller-focused-col: 0;
+
     callback address-submitted(string);
     callback address-cancelled();
     callback breadcrumb-clicked(int);
@@ -52,6 +64,13 @@ export component Pane {
     callback grid-entry-context-menu(int, length, length);
     callback grid-thumbnail-visible(int);
     callback grid-columns-changed(int);
+
+    // Tree view callbacks
+    callback tree-row-clicked(int, bool, bool);
+    callback tree-row-double-clicked(int);
+    callback tree-chevron-clicked(int);
+    callback miller-row-clicked(int, int);
+    callback miller-row-double-clicked(int, int);
 
     TouchArea {
         clicked => { root.pane-clicked(); }
@@ -124,7 +143,26 @@ export component Pane {
                     columns-changed(c) => { root.grid-columns-changed(c); }
                 }
 
-                if root.view-mode != "Details" && root.view-mode != "Grid" : EmptyView {
+                if root.view-mode == "Miller" : MillerView {
+                    vertical-stretch: 1;
+                    columns: root.miller-columns;
+                    focused-col: root.miller-focused-col;
+                    row-clicked(col, row) => { root.miller-row-clicked(col, row); }
+                    row-double-clicked(col, row) => { root.miller-row-double-clicked(col, row); }
+                }
+
+                if root.view-mode == "Tree" : TreeView {
+                    vertical-stretch: 1;
+                    nodes: root.tree-nodes;
+                    focused-index: root.tree-focused-index;
+                    selected-index: root.tree-selected-index;
+
+                    row-clicked(i, ctrl, shift) => { root.tree-row-clicked(i, ctrl, shift); }
+                    row-double-clicked(i) => { root.tree-row-double-clicked(i); }
+                    chevron-clicked(i) => { root.tree-chevron-clicked(i); }
+                }
+
+                if root.view-mode != "Details" && root.view-mode != "Grid" && root.view-mode != "Miller" && root.view-mode != "Tree" : EmptyView {
                     view-mode: root.view-mode;
                     vertical-stretch: 1;
                 }

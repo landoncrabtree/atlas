@@ -17,6 +17,7 @@ atlas-config.workspace = true
 atlas-keymap.workspace = true
 atlas-thumbs.workspace = true
 atlas-search.workspace = true
+atlas-ops.workspace = true
 image.workspace = true
 ahash.workspace = true
 num_cpus = "1"
