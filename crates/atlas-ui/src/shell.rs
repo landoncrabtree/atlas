@@ -10,6 +10,7 @@
 //! event loop. The inner `RwLock`s guard the Rust-side model copies.
 
 use std::{
+    collections::VecDeque,
     env,
     path::{Path, PathBuf},
     sync::Arc,
@@ -26,7 +27,7 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 use crate::{
     actions::{ActionSink, UiAction},
     models::{
-        split::{Cardinal, PaneId, Rect, SplitDirection},
+        split::{Cardinal, PaneId, Rect, SplitDirection, SplitLayout},
         PaletteModel, PaletteResult, StatusModel, TabModel, ViewMode, WorkspaceModel,
     },
     navigation::NavigationController,
@@ -41,7 +42,7 @@ use crate::{
     views::grid::GridController,
     views::miller::MillerController,
     views::tree::TreeController,
-    AtlasWindow, PaletteEntry, TabEntry,
+    AtlasWindow, PaletteEntry, PaneSlintData, SplitHandle, TabEntry,
 };
 
 fn to_tab_model(tabs: &[crate::models::TabModel]) -> ModelRc<TabEntry> {
@@ -99,6 +100,102 @@ fn dispatch_navigation(
         pane,
         path: expand_tilde(Path::new(raw_path.as_str())),
     });
+}
+
+/// Raw (non-Slint) descriptor for a split-handle grab area.
+struct SplitHandleData {
+    node_index: i32,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    horizontal: bool,
+}
+
+/// Walk the split tree in DFS order and collect one grab-area descriptor per
+/// internal `Split` node.  `node_index` is the DFS visit order (0, 1, …).
+fn collect_split_handles(layout: &SplitLayout, bounds: Rect) -> Vec<SplitHandleData> {
+    let mut handles = Vec::new();
+    collect_handles_recurse(layout, bounds, &mut handles, &mut 0i32);
+    handles
+}
+
+fn collect_handles_recurse(
+    layout: &SplitLayout,
+    bounds: Rect,
+    handles: &mut Vec<SplitHandleData>,
+    node_idx: &mut i32,
+) {
+    let SplitLayout::Split {
+        direction,
+        ratio,
+        first,
+        second,
+    } = layout
+    else {
+        return;
+    };
+
+    let idx = *node_idx;
+    *node_idx += 1;
+    let ratio = ratio.clamp(0.05, 0.95);
+
+    let (first_bounds, second_bounds, handle) = match direction {
+        SplitDirection::Horizontal => {
+            let split_x = bounds.x + bounds.width * ratio;
+            (
+                Rect {
+                    x: bounds.x,
+                    y: bounds.y,
+                    width: bounds.width * ratio,
+                    height: bounds.height,
+                },
+                Rect {
+                    x: split_x,
+                    y: bounds.y,
+                    width: bounds.width * (1.0 - ratio),
+                    height: bounds.height,
+                },
+                SplitHandleData {
+                    node_index: idx,
+                    x: split_x - 2.0,
+                    y: bounds.y,
+                    width: 4.0,
+                    height: bounds.height,
+                    horizontal: false,
+                },
+            )
+        }
+        SplitDirection::Vertical => {
+            let split_y = bounds.y + bounds.height * ratio;
+            (
+                Rect {
+                    x: bounds.x,
+                    y: bounds.y,
+                    width: bounds.width,
+                    height: bounds.height * ratio,
+                },
+                Rect {
+                    x: bounds.x,
+                    y: split_y,
+                    width: bounds.width,
+                    height: bounds.height * (1.0 - ratio),
+                },
+                SplitHandleData {
+                    node_index: idx,
+                    x: bounds.x,
+                    y: split_y - 2.0,
+                    width: bounds.width,
+                    height: 4.0,
+                    horizontal: true,
+                },
+            )
+        }
+    };
+
+    handles.push(handle);
+    collect_handles_recurse(first, first_bounds, handles, node_idx);
+    collect_handles_recurse(second, second_bounds, handles, node_idx);
 }
 
 fn palette_root() -> PathBuf {
@@ -223,9 +320,11 @@ fn build_pane_controllers(
 /// [`AppShell::set_theme`] to push initial state.
 ///
 /// The workspace is an N-pane [`WorkspaceModel`]; per-pane controllers and
-/// view models are keyed by [`PaneId`]. The Slint UI is still 2-pane-capable
-/// (Phase 4 rewrites it), so the shell keeps a `pane_slint_index` map from
-/// [`PaneId`] to the Slint slot (0 or 1) used by the compat callback layer.
+/// view models are keyed by [`PaneId`]. The Slint UI renders panes via a
+/// `for pane[i] in panes` loop driven by [`PaneSlintData`] pushed by
+/// `project_workspace_to_slint`. The `pane_slint_index` map tracks each
+/// pane's DFS slot index so per-slot heavy-data properties remain routed
+/// correctly while view controllers are migrated to an N-pane model.
 pub struct AppShell {
     window: slint::Weak<AtlasWindow>,
     workspace: RwLock<WorkspaceModel>,
@@ -247,6 +346,8 @@ pub struct AppShell {
     bulk_rename: Arc<BulkRenameController>,
     /// Shared thumbnail cache used when building new pane controllers on split.
     thumb_cache: Arc<atlas_thumbs::SqliteCache>,
+    /// Recently-closed tabs per pane, newest first. Bounded to 20 entries per pane.
+    closed_tabs: RwLock<AHashMap<PaneId, VecDeque<TabModel>>>,
 }
 
 impl AppShell {
@@ -302,6 +403,7 @@ impl AppShell {
             ops,
             bulk_rename,
             thumb_cache,
+            closed_tabs: RwLock::new(AHashMap::default()),
         });
 
         shell.wire_callbacks(window);
@@ -360,6 +462,9 @@ impl AppShell {
     }
 
     /// Resolve the controllers currently occupying Slint slot `index`.
+    ///
+    /// Used by the `toggle-dual-pane` callback and Phase 4.1 migration code.
+    #[allow(dead_code)]
     fn ctrl_for_index(&self, index: usize) -> Option<PaneControllers> {
         self.pane_id_for_index(index)
             .and_then(|id| self.pane_by_id(id))
@@ -417,14 +522,13 @@ impl AppShell {
 
     /// Split the focused pane in `direction`. Returns the new [`PaneId`].
     ///
-    /// Compat gate: refuses to produce a 3rd leaf until Phase 4 lands (logs a
-    /// warning and returns `None`) because the Slint UI is still 2-pane-only.
+    /// Creates a new pane by splitting the currently focused leaf. The new pane
+    /// inherits the focused pane's current location. After Phase 4 the Slint UI
+    /// renders N panes, so any number of splits is supported.
     pub fn split_focused(self: &Arc<Self>, direction: SplitDirection) -> Option<PaneId> {
         let leaf_count = self.workspace.read().layout.leaf_count();
-        if leaf_count >= 2 {
-            tracing::warn!("split_focused: 3rd pane not supported until Phase 4; ignoring");
-            return None;
-        }
+        // Determine which DFS slot the new pane will occupy (= current count).
+        let new_slot = leaf_count;
 
         let (new_id, new_location) = {
             let mut ws = self.workspace.write();
@@ -437,14 +541,14 @@ impl AppShell {
             (new_id, loc)
         };
 
-        // Assign the new pane to Slint slot 1.
-        self.pane_slint_index.write().insert(new_id, 1);
+        // Assign the new pane to its DFS slot.
+        self.pane_slint_index.write().insert(new_id, new_slot);
 
-        // Build controllers for the new pane on slot 1.
+        // Build controllers for the new pane (slot index used for push routing).
         let window = self.window.upgrade().expect("window must be alive");
         let new_ctrl = build_pane_controllers(
             new_id,
-            1,
+            new_slot,
             &window,
             Arc::clone(&self.actions),
             Arc::clone(&self.thumb_cache),
@@ -525,6 +629,28 @@ impl AppShell {
                 }
             })
             .unwrap_or(Rect::from_size(1440.0, 900.0))
+    }
+
+    /// The workspace content area: window bounds minus the titlebar, toolbar,
+    /// status bar, and shortcut footer.  This is the rectangle that the pane
+    /// container fills and that `layout_rects` must be called against.
+    ///
+    /// The constant offsets below match the fixed pixel heights used in
+    /// `atlas.slint` (toolbar 32 px, status 24 px, footer 24 px).  Adjust
+    /// if those values ever change.
+    fn workspace_content_bounds(&self) -> Rect {
+        let wb = self.window_bounds();
+        // Toolbar (32 px) + status bar (24 px) + shortcut footer (24 px).
+        // Titlebar is drawn by the OS and already excluded from logical pixels.
+        const TOP_CHROME: f32 = 32.0;
+        const BOTTOM_CHROME: f32 = 24.0 + 24.0;
+        let height = (wb.height - TOP_CHROME - BOTTOM_CHROME).max(1.0);
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: wb.width.max(1.0),
+            height,
+        }
     }
 
     /// Return the current directory path for `id`, if available.
@@ -630,25 +756,199 @@ impl AppShell {
     /// Remove tab `tab` from pane `id`. Refuses to close the last tab
     /// (the pane must always have at least one). Adjusts the active tab so
     /// that a still-valid tab remains selected, navigating to its location
-    /// when the active tab changed.
+    /// when the active tab changed. Pushes the removed tab onto the
+    /// per-pane closed-tab history (bounded at 20) for `reopen_closed_tab`.
     pub fn close_tab(self: &Arc<Self>, id: PaneId, tab: usize) {
-        let switch_to: Option<PathBuf> = {
+        // Release the workspace lock before acquiring closed_tabs to avoid
+        // any potential lock-ordering issues.
+        let result: Option<(TabModel, bool)> = {
             let mut ws = self.workspace.write();
             let Some(p) = ws.pane_mut(id) else {
                 tracing::debug!(?id, tab, "close_tab: pane not found");
                 return;
             };
             let was_active = tab == p.active_tab;
-            if p.close_tab(tab).is_some() && was_active {
-                Some(p.active_location().to_path_buf())
+            p.close_tab(tab).map(|removed| (removed, was_active))
+        };
+        let switch_to = if let Some((removed, was_active)) = result {
+            {
+                let mut ct = self.closed_tabs.write();
+                let deque = ct.entry(id).or_default();
+                deque.push_front(removed);
+                if deque.len() > 20 {
+                    deque.pop_back();
+                }
+            }
+            if was_active {
+                self.workspace
+                    .read()
+                    .pane(id)
+                    .map(|p| p.active_location().to_path_buf())
             } else {
                 None
             }
+        } else {
+            None
         };
         self.project_workspace_to_slint();
         if let Some(dest) = switch_to {
             self.navigation.navigate_pane(id, dest);
         }
+    }
+
+    /// Move the tab at `from` to `to` within pane `pane`. Tabs between the
+    /// two positions shift by one to fill the gap. The active tab tracks the
+    /// moved tab so it stays selected. No-op when `from == to` or either
+    /// index is out of range.
+    pub fn reorder_tab(self: &Arc<Self>, pane: PaneId, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        {
+            let mut ws = self.workspace.write();
+            let Some(p) = ws.pane_mut(pane) else { return };
+            let len = p.tabs.len();
+            if from >= len || to >= len {
+                return;
+            }
+            let tab = p.tabs.remove(from);
+            p.tabs.insert(to, tab);
+            // Adjust the active-tab index so selection follows the moved tab.
+            if p.active_tab == from {
+                p.active_tab = to;
+            } else if from < to {
+                // Tabs in (from, to] shifted left by one.
+                if p.active_tab > from && p.active_tab <= to {
+                    p.active_tab -= 1;
+                }
+            } else {
+                // from > to; tabs in [to, from) shifted right by one.
+                if p.active_tab >= to && p.active_tab < from {
+                    p.active_tab += 1;
+                }
+            }
+        }
+        self.project_workspace_to_slint();
+    }
+
+    /// Duplicate the tab at `tab` in pane `pane`, inserting the copy
+    /// immediately after and activating it. The copy starts with fresh
+    /// history containing only the current location, but inherits the
+    /// source tab's sort specification and filter.
+    pub fn duplicate_tab(self: &Arc<Self>, pane: PaneId, tab: usize) {
+        let (new_loc, src_sort, src_filter) = {
+            let ws = self.workspace.read();
+            let Some(p) = ws.pane(pane) else { return };
+            if tab >= p.tabs.len() {
+                return;
+            }
+            let src = &p.tabs[tab];
+            let loc = src.location.clone().unwrap_or_else(dirs_home);
+            (loc, src.sort.clone(), src.filter.clone())
+        };
+        // Build the duplicate: fresh history, inherited sort + filter.
+        let mut new_tab = TabModel::at(new_loc.clone());
+        new_tab.sort = src_sort;
+        new_tab.filter = src_filter;
+        let insert_at = tab + 1;
+        {
+            let mut ws = self.workspace.write();
+            let Some(p) = ws.pane_mut(pane) else { return };
+            p.tabs.insert(insert_at, new_tab);
+            p.active_tab = insert_at;
+        }
+        self.project_workspace_to_slint();
+        self.navigation.navigate_pane(pane, new_loc);
+    }
+
+    /// Close every tab in pane `pane` except the one at index `keep`.
+    /// Refuses when the pane has only one tab or `keep` is out of range.
+    /// All removed tabs are pushed onto the closed-tab history.
+    pub fn close_other_tabs(self: &Arc<Self>, pane: PaneId, keep: usize) {
+        let (switch_to, closed) = {
+            let mut ws = self.workspace.write();
+            let Some(p) = ws.pane_mut(pane) else { return };
+            if p.tabs.len() <= 1 || keep >= p.tabs.len() {
+                return;
+            }
+            let kept = p.tabs[keep].clone();
+            let all: Vec<TabModel> = std::mem::replace(&mut p.tabs, vec![kept]);
+            let closed: Vec<TabModel> = all
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, t)| (i != keep).then_some(t))
+                .collect();
+            p.active_tab = 0;
+            let dest = p.active_location().to_path_buf();
+            (dest, closed)
+        };
+        {
+            let mut ct = self.closed_tabs.write();
+            let deque = ct.entry(pane).or_default();
+            for t in closed.into_iter().rev() {
+                deque.push_front(t);
+                if deque.len() > 20 {
+                    deque.pop_back();
+                }
+            }
+        }
+        self.project_workspace_to_slint();
+        self.navigation.navigate_pane(pane, switch_to);
+    }
+
+    /// Close every tab in pane `pane` at an index strictly greater than
+    /// `from`. No-op when `from` is the last tab. All removed tabs are
+    /// pushed onto the closed-tab history.
+    pub fn close_tabs_to_right_of(self: &Arc<Self>, pane: PaneId, from: usize) {
+        let (switch_to, closed) = {
+            let mut ws = self.workspace.write();
+            let Some(p) = ws.pane_mut(pane) else { return };
+            if from + 1 >= p.tabs.len() {
+                return;
+            }
+            let closed: Vec<TabModel> = p.tabs.drain(from + 1..).collect();
+            let navigated = if p.active_tab > from {
+                p.active_tab = from;
+                Some(p.active_location().to_path_buf())
+            } else {
+                None
+            };
+            (navigated, closed)
+        };
+        {
+            let mut ct = self.closed_tabs.write();
+            let deque = ct.entry(pane).or_default();
+            for t in closed.into_iter().rev() {
+                deque.push_front(t);
+                if deque.len() > 20 {
+                    deque.pop_back();
+                }
+            }
+        }
+        self.project_workspace_to_slint();
+        if let Some(dest) = switch_to {
+            self.navigation.navigate_pane(pane, dest);
+        }
+    }
+
+    /// Pop the most-recently-closed tab off the pane's history stack and
+    /// append it at the end of the tab list, making it active. No-op when
+    /// the history is empty.
+    pub fn reopen_closed_tab(self: &Arc<Self>, pane: PaneId) {
+        let reopened = {
+            let mut ct = self.closed_tabs.write();
+            ct.get_mut(&pane).and_then(VecDeque::pop_front)
+        };
+        let Some(tab) = reopened else { return };
+        let loc = tab.location.clone().unwrap_or_else(dirs_home);
+        {
+            let mut ws = self.workspace.write();
+            let Some(p) = ws.pane_mut(pane) else { return };
+            p.tabs.push(tab);
+            p.active_tab = p.tabs.len() - 1;
+        }
+        self.project_workspace_to_slint();
+        self.navigation.navigate_pane(pane, loc);
     }
 
     /// Navigate pane `id` to the parent of its current location.
@@ -935,13 +1235,6 @@ impl AppShell {
     }
 
     fn wire_callbacks(self: &Arc<Self>, window: &AtlasWindow) {
-        macro_rules! dispatch {
-            ($actions:expr, $action:expr) => {{
-                let actions = Arc::clone(&$actions);
-                move || actions.lock().dispatch($action)
-            }};
-        }
-
         {
             let palette_ctrl = Arc::clone(&self.palette_ctrl);
             window.on_palette_query_changed(move |query| {
@@ -984,29 +1277,25 @@ impl AppShell {
         }
         {
             let shell = self.clone();
-            window.on_select_tab(move |pane, tab| {
-                if pane >= 0 && tab >= 0 {
-                    if let Some(id) = shell.pane_id_for_index(pane as usize) {
-                        shell.select_tab(id, tab as usize);
-                    }
+            window.on_select_tab(move |pane_id, tab| {
+                if tab >= 0 {
+                    let id = PaneId(pane_id as u32);
+                    shell.select_tab(id, tab as usize);
                 }
             });
         }
         {
             let shell = self.clone();
-            window.on_cycle_tab(move |pane, delta| {
-                if pane >= 0 {
-                    if let Some(id) = shell.pane_id_for_index(pane as usize) {
-                        shell.cycle_tab(id, delta as isize);
-                    }
-                }
+            window.on_cycle_tab(move |pane_id, delta| {
+                let id = PaneId(pane_id as u32);
+                shell.cycle_tab(id, delta as isize);
             });
         }
 
         // ── Multi-pane workspace commands ──
         //
-        // split-right / split-down split the focused pane; the compat gate in
-        // `split_focused` refuses a 3rd leaf until Phase 4 rewrites the Slint UI.
+        // split-right / split-down split the focused pane. Phase 4 removed the
+        // 2-pane compat gate — the Slint UI now renders N panes.
         {
             let shell = self.clone();
             window.on_pane_split_right(move || {
@@ -1150,21 +1439,11 @@ impl AppShell {
         {
             let actions = Arc::clone(&self.actions);
             let shell = Arc::clone(self);
-            window.on_pane0_focused(move || {
-                if let Some(id) = shell.pane_id_for_index(0) {
-                    actions.lock().dispatch(UiAction::PaneFocusChanged(0));
-                    shell.set_focused_pane_id(id);
-                }
-            });
-        }
-        {
-            let actions = Arc::clone(&self.actions);
-            let shell = Arc::clone(self);
-            window.on_pane1_focused(move || {
-                if let Some(id) = shell.pane_id_for_index(1) {
-                    actions.lock().dispatch(UiAction::PaneFocusChanged(1));
-                    shell.set_focused_pane_id(id);
-                }
+            window.on_pane_focused(move |pane_id| {
+                let id = PaneId(pane_id as u32);
+                let slot = shell.pane_slint_index.read().get(&id).copied().unwrap_or(0);
+                actions.lock().dispatch(UiAction::PaneFocusChanged(slot));
+                shell.set_focused_pane_id(id);
             });
         }
         {
@@ -1187,66 +1466,71 @@ impl AppShell {
             let actions = Arc::clone(&self.actions);
             let nav = Arc::clone(&self.navigation);
             let shell = Arc::clone(self);
-            window.on_pane0_address_submitted(move |path| {
-                dispatch_navigation(&actions, 0, path.clone());
-                if let Some(id) = shell.pane_id_for_index(0) {
-                    let expanded = expand_tilde(Path::new(path.as_str()));
-                    nav.navigate_pane(id, expanded);
-                }
+            window.on_address_submitted(move |pane_id, path| {
+                let id = PaneId(pane_id as u32);
+                let slot = shell.pane_slint_index.read().get(&id).copied().unwrap_or(0);
+                dispatch_navigation(&actions, slot, path.clone());
+                let expanded = expand_tilde(Path::new(path.as_str()));
+                nav.navigate_pane(id, expanded);
             });
         }
-        window.on_pane0_address_cancelled(dispatch!(self.actions, UiAction::DismissPalette));
+        {
+            let actions = Arc::clone(&self.actions);
+            window.on_address_cancelled(move |_pane_id| {
+                actions.lock().dispatch(UiAction::DismissPalette);
+            });
+        }
         {
             let actions = Arc::clone(&self.actions);
             let shell = Arc::clone(self);
-            window.on_pane0_breadcrumb_clicked(move |segment| {
+            window.on_breadcrumb_clicked(move |pane_id, segment| {
+                let id = PaneId(pane_id as u32);
+                let slot = shell.pane_slint_index.read().get(&id).copied().unwrap_or(0);
                 let seg = segment as usize;
                 actions.lock().dispatch(UiAction::BreadcrumbClicked {
-                    pane: 0,
+                    pane: slot,
                     segment: seg,
                 });
-                if let Some(id) = shell.pane_id_for_index(0) {
-                    shell.breadcrumb_clicked(id, seg);
-                }
+                shell.breadcrumb_clicked(id, seg);
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_tab_selected(move |tab| {
-                if let Some(id) = shell.pane_id_for_index(0) {
-                    shell.select_tab(id, tab as usize);
-                }
+            window.on_tab_selected(move |pane_id, tab| {
+                let id = PaneId(pane_id as u32);
+                shell.select_tab(id, tab as usize);
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_tab_closed(move |tab| {
-                if let Some(id) = shell.pane_id_for_index(0) {
-                    shell.close_tab(id, tab as usize);
-                }
+            window.on_tab_closed(move |pane_id, tab| {
+                let id = PaneId(pane_id as u32);
+                shell.close_tab(id, tab as usize);
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_new_tab(move || {
-                if let Some(id) = shell.pane_id_for_index(0) {
-                    shell.new_tab(id);
-                }
+            window.on_new_tab(move |pane_id| {
+                let id = PaneId(pane_id as u32);
+                shell.new_tab(id);
             });
         }
 
+        // ── Details callbacks ─────────────────────────────────────────────────
         {
             let shell = self.clone();
-            window.on_pane0_details_row_clicked(move |index, ctrl, shift| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_details_row_clicked(move |pane_id, index, ctrl, shift| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.details.select_index(index as usize, ctrl, shift);
                 }
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_details_row_double_clicked(move |index| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_details_row_double_clicked(move |pane_id, index| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.details.select_index(index as usize, false, false);
                     c.details.activate_focused();
                 }
@@ -1254,26 +1538,29 @@ impl AppShell {
         }
         {
             let shell = self.clone();
-            window.on_pane0_details_header_clicked(move |column_index| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_details_header_clicked(move |pane_id, column_index| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.details.header_clicked(column_index as usize);
                 }
             });
         }
 
-        // Grid callbacks — pane 0
+        // ── Grid callbacks ────────────────────────────────────────────────────
         {
             let shell = self.clone();
-            window.on_pane0_grid_entry_clicked(move |index, ctrl, shift| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_grid_entry_clicked(move |pane_id, index, ctrl, shift| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.grid.select_index(index as usize, ctrl, shift);
                 }
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_grid_entry_double_clicked(move |index| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_grid_entry_double_clicked(move |pane_id, index| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.grid.select_index(index as usize, false, false);
                     c.grid.activate_focused();
                 }
@@ -1281,76 +1568,85 @@ impl AppShell {
         }
         {
             let shell = self.clone();
-            window.on_pane0_grid_thumbnail_visible(move |index| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_grid_thumbnail_visible(move |pane_id, index| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.grid.thumbnail_visible(index as usize);
                 }
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_grid_columns_changed(move |cols| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_grid_columns_changed(move |pane_id, cols| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.grid.set_columns(cols as usize);
                 }
             });
         }
 
-        // Gallery callbacks — pane 0
+        // ── Gallery callbacks ─────────────────────────────────────────────────
         {
             let shell = self.clone();
-            window.on_pane0_gallery_entry_clicked(move |index| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_gallery_entry_clicked(move |pane_id, index| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.gallery.entry_clicked(index as usize);
                 }
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_gallery_strip_visible(move |index| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_gallery_strip_visible(move |pane_id, index| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.gallery.strip_visible(index as usize);
                 }
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_gallery_preview_visible(move |index| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_gallery_preview_visible(move |pane_id, index| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.gallery.preview_visible(index as usize);
                 }
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_gallery_prev_image(move || {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_gallery_prev_image(move |pane_id| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.gallery.prev_image();
                 }
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_gallery_next_image(move || {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_gallery_next_image(move |pane_id| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.gallery.next_image();
                 }
             });
         }
 
-        // Tree callbacks — pane 0
+        // ── Tree callbacks ────────────────────────────────────────────────────
         {
             let shell = self.clone();
-            window.on_pane0_tree_row_clicked(move |index, ctrl, shift| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_tree_row_clicked(move |pane_id, index, ctrl, shift| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.tree.select_index(index as usize, ctrl, shift);
                 }
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_tree_row_double_clicked(move |index| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_tree_row_double_clicked(move |pane_id, index| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.tree.select_index(index as usize, false, false);
                     c.tree.activate_focused();
                 }
@@ -1358,8 +1654,9 @@ impl AppShell {
         }
         {
             let shell = self.clone();
-            window.on_pane0_tree_chevron_clicked(move |index| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_tree_chevron_clicked(move |pane_id, index| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     let visible = c.tree.build_visible_nodes();
                     if let Some(row) = visible.get(index as usize) {
                         let path = std::path::PathBuf::from(row.node_id.as_str());
@@ -1369,225 +1666,21 @@ impl AppShell {
             });
         }
 
-        // Miller callbacks — pane 0
+        // ── Miller callbacks ──────────────────────────────────────────────────
         {
             let shell = self.clone();
-            window.on_pane0_miller_row_clicked(move |col, row| {
-                if let Some(c) = shell.ctrl_for_index(0) {
+            window.on_miller_row_clicked(move |pane_id, col, row| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.miller.select_row(col as usize, row as usize);
                 }
             });
         }
         {
             let shell = self.clone();
-            window.on_pane0_miller_row_double_clicked(move |col, row| {
-                if let Some(c) = shell.ctrl_for_index(0) {
-                    c.miller.select_row(col as usize, row as usize);
-                    c.miller.activate_focused();
-                }
-            });
-        }
-
-        {
-            let actions = Arc::clone(&self.actions);
-            let nav = Arc::clone(&self.navigation);
-            let shell = Arc::clone(self);
-            window.on_pane1_address_submitted(move |path| {
-                dispatch_navigation(&actions, 1, path.clone());
-                if let Some(id) = shell.pane_id_for_index(1) {
-                    let expanded = expand_tilde(Path::new(path.as_str()));
-                    nav.navigate_pane(id, expanded);
-                }
-            });
-        }
-        window.on_pane1_address_cancelled(dispatch!(self.actions, UiAction::DismissPalette));
-        {
-            let actions = Arc::clone(&self.actions);
-            let shell = Arc::clone(self);
-            window.on_pane1_breadcrumb_clicked(move |segment| {
-                let seg = segment as usize;
-                actions.lock().dispatch(UiAction::BreadcrumbClicked {
-                    pane: 1,
-                    segment: seg,
-                });
-                if let Some(id) = shell.pane_id_for_index(1) {
-                    shell.breadcrumb_clicked(id, seg);
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_tab_selected(move |tab| {
-                if let Some(id) = shell.pane_id_for_index(1) {
-                    shell.select_tab(id, tab as usize);
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_tab_closed(move |tab| {
-                if let Some(id) = shell.pane_id_for_index(1) {
-                    shell.close_tab(id, tab as usize);
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_new_tab(move || {
-                if let Some(id) = shell.pane_id_for_index(1) {
-                    shell.new_tab(id);
-                }
-            });
-        }
-
-        // Details callbacks — pane 1
-        {
-            let shell = self.clone();
-            window.on_pane1_details_row_clicked(move |index, ctrl, shift| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.details.select_index(index as usize, ctrl, shift);
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_details_row_double_clicked(move |index| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.details.select_index(index as usize, false, false);
-                    c.details.activate_focused();
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_details_header_clicked(move |column_index| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.details.header_clicked(column_index as usize);
-                }
-            });
-        }
-
-        // Grid callbacks — pane 1
-        {
-            let shell = self.clone();
-            window.on_pane1_grid_entry_clicked(move |index, ctrl, shift| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.grid.select_index(index as usize, ctrl, shift);
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_grid_entry_double_clicked(move |index| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.grid.select_index(index as usize, false, false);
-                    c.grid.activate_focused();
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_grid_thumbnail_visible(move |index| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.grid.thumbnail_visible(index as usize);
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_grid_columns_changed(move |cols| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.grid.set_columns(cols as usize);
-                }
-            });
-        }
-
-        // Gallery callbacks — pane 1
-        {
-            let shell = self.clone();
-            window.on_pane1_gallery_entry_clicked(move |index| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.gallery.entry_clicked(index as usize);
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_gallery_strip_visible(move |index| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.gallery.strip_visible(index as usize);
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_gallery_preview_visible(move |index| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.gallery.preview_visible(index as usize);
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_gallery_prev_image(move || {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.gallery.prev_image();
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_gallery_next_image(move || {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.gallery.next_image();
-                }
-            });
-        }
-
-        // Tree callbacks — pane 1
-        {
-            let shell = self.clone();
-            window.on_pane1_tree_row_clicked(move |index, ctrl, shift| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.tree.select_index(index as usize, ctrl, shift);
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_tree_row_double_clicked(move |index| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.tree.select_index(index as usize, false, false);
-                    c.tree.activate_focused();
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_tree_chevron_clicked(move |index| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    let visible = c.tree.build_visible_nodes();
-                    if let Some(row) = visible.get(index as usize) {
-                        let path = std::path::PathBuf::from(row.node_id.as_str());
-                        c.tree.toggle(&path);
-                    }
-                }
-            });
-        }
-
-        // Miller callbacks — pane 1
-        {
-            let shell = self.clone();
-            window.on_pane1_miller_row_clicked(move |col, row| {
-                if let Some(c) = shell.ctrl_for_index(1) {
-                    c.miller.select_row(col as usize, row as usize);
-                }
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_pane1_miller_row_double_clicked(move |col, row| {
-                if let Some(c) = shell.ctrl_for_index(1) {
+            window.on_miller_row_double_clicked(move |pane_id, col, row| {
+                let id = PaneId(pane_id as u32);
+                if let Some(c) = shell.pane_by_id(id) {
                     c.miller.select_row(col as usize, row as usize);
                     c.miller.activate_focused();
                 }
@@ -1810,81 +1903,126 @@ impl AppShell {
         }
     }
 
-    /// Project the workspace's first ≤2 layout leaves (in DFS order) onto the
-    /// existing `pane0-*` / `pane1-*` Slint properties.
+    /// Project the N-pane workspace layout onto Slint.
     ///
-    /// The Slint UI is still 2-pane-capable (Phase 4 rewrites it), so any
-    /// leaves beyond the first two are dropped with a warning.
+    /// Builds a [`PaneSlintData`] entry for every leaf pane in DFS order and
+    /// pushes it via `set_panes`.  Also pushes split-handle descriptors, the
+    /// focused-pane id, and the per-slot light data (`pane0-*` / `pane1-*`
+    /// tabs/segments/active-tab) used by the per-slot conditional routing in
+    /// the `for pane[i] in panes` loop until view controllers are migrated to
+    /// full N-pane parallel arrays in Phase 4.1.
     pub fn project_workspace_to_slint(self: &Arc<Self>) {
-        struct PaneSnapshot {
+        /// Cheap-to-clone snapshot of one pane's light data.
+        struct PaneData {
+            id: i32,
+            x: f32,
+            y: f32,
+            width: f32,
+            height: f32,
             path: String,
-            segments: Vec<String>,
             view_mode: String,
             tabs: Vec<TabModel>,
             active_tab: i32,
+            segments: Vec<String>,
         }
 
-        let (focus_idx, leaf_count, pane0, pane1) = {
+        let (focused_id, focus_idx, pane_data, handle_data) = {
             let ws = self.workspace.read();
-            let leaves = ws.layout.all_leaves();
-            let leaf_count = leaves.len();
-            let focus_idx = leaves.iter().position(|&id| id == ws.focused).unwrap_or(0);
+            let bounds = self.workspace_content_bounds();
+            let rects = ws.layout.layout_rects(bounds);
 
-            let snapshot_for = |id: PaneId| -> PaneSnapshot {
-                let pane = ws.pane(id).expect("leaf must have pane state");
-                let location = pane.active_location();
-                PaneSnapshot {
-                    path: location.to_string_lossy().into_owned(),
-                    segments: path_segments_for(location),
-                    view_mode: pane.view_mode.to_string(),
-                    tabs: pane.tabs.clone(),
-                    active_tab: pane.active_tab as i32,
+            // Rebuild the DFS-position map so callbacks continue routing correctly.
+            {
+                let mut idx_map = self.pane_slint_index.write();
+                idx_map.clear();
+                for (i, (id, _)) in rects.iter().enumerate() {
+                    idx_map.insert(*id, i);
                 }
-            };
+            }
 
-            let pane0 = leaves.first().map(|&id| snapshot_for(id));
-            let pane1 = leaves.get(1).map(|&id| snapshot_for(id));
-            (focus_idx, leaf_count, pane0, pane1)
+            let focused = ws.focused;
+            let focus_idx = rects.iter().position(|(id, _)| *id == focused).unwrap_or(0) as i32;
+
+            let pane_data: Vec<PaneData> = rects
+                .iter()
+                .map(|(id, rect)| {
+                    let pane = ws.pane(*id).expect("leaf in layout must have pane state");
+                    let location = pane.active_location();
+                    PaneData {
+                        id: id.0 as i32,
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                        path: location.to_string_lossy().into_owned(),
+                        view_mode: pane.view_mode.to_string(),
+                        tabs: pane.tabs.clone(),
+                        active_tab: pane.active_tab as i32,
+                        segments: path_segments_for(location),
+                    }
+                })
+                .collect();
+
+            let handle_data = collect_split_handles(&ws.layout, bounds);
+
+            (focused.0 as i32, focus_idx, pane_data, handle_data)
         };
 
-        if leaf_count > 2 {
-            tracing::warn!(
-                leaf_count,
-                "project_workspace_to_slint: only first 2 panes projected to Slint (Phase 4 pending)"
-            );
-        }
-
-        let is_dual = leaf_count > 1;
         let weak = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(window) = weak.upgrade() else {
                 return;
             };
 
-            window.set_dual_pane(is_dual);
-            window.set_focus_index(focus_idx as i32);
+            // Build and push the PaneSlintData array.
+            // `x`, `y`, `width`, `height` are `sp::Coord` = `f32` in the generated struct.
+            let slint_panes: Vec<PaneSlintData> = pane_data
+                .iter()
+                .map(|p| PaneSlintData {
+                    id: p.id,
+                    x: p.x,
+                    y: p.y,
+                    width: p.width,
+                    height: p.height,
+                    path: SharedString::from(p.path.as_str()),
+                    view_mode: SharedString::from(p.view_mode.as_str()),
+                    active_tab: p.active_tab,
+                })
+                .collect();
+            window.set_panes(ModelRc::new(VecModel::from(slint_panes)));
+            window.set_focused_pane_id(focused_id);
+            window.set_focus_index(focus_idx);
 
-            if let Some(pane0) = pane0 {
-                window.set_pane0_path(pane0.path.into());
-                window.set_pane0_segments(to_segments_model(&pane0.segments));
-                window.set_pane0_view_mode(pane0.view_mode.into());
-                window.set_pane0_tabs(to_tab_model(&pane0.tabs));
-                window.set_pane0_active_tab(pane0.active_tab);
+            // Per-slot light data: tabs and path-segments for slots 0 and 1.
+            // Phase 4.1: generalise this once controllers emit to N-pane arrays.
+            if let Some(p) = pane_data.first() {
+                window.set_pane0_tabs(to_tab_model(&p.tabs));
+                window.set_pane0_active_tab(p.active_tab);
+                window.set_pane0_segments(to_segments_model(&p.segments));
             }
-
-            if let Some(pane1) = pane1 {
-                window.set_pane1_path(pane1.path.into());
-                window.set_pane1_segments(to_segments_model(&pane1.segments));
-                window.set_pane1_view_mode(pane1.view_mode.into());
-                window.set_pane1_tabs(to_tab_model(&pane1.tabs));
-                window.set_pane1_active_tab(pane1.active_tab);
+            if let Some(p) = pane_data.get(1) {
+                window.set_pane1_tabs(to_tab_model(&p.tabs));
+                window.set_pane1_active_tab(p.active_tab);
+                window.set_pane1_segments(to_segments_model(&p.segments));
             } else {
-                window.set_pane1_path(SharedString::default());
-                window.set_pane1_segments(ModelRc::new(VecModel::from(Vec::<SharedString>::new())));
-                window.set_pane1_view_mode(SharedString::from("Details"));
                 window.set_pane1_tabs(ModelRc::new(VecModel::from(Vec::<TabEntry>::new())));
                 window.set_pane1_active_tab(0);
+                window.set_pane1_segments(ModelRc::new(VecModel::from(Vec::<SharedString>::new())));
             }
+
+            // Split-handle descriptors.
+            let slint_handles: Vec<SplitHandle> = handle_data
+                .iter()
+                .map(|h| SplitHandle {
+                    node_index: h.node_index,
+                    x: h.x,
+                    y: h.y,
+                    width: h.width,
+                    height: h.height,
+                    horizontal: h.horizontal,
+                })
+                .collect();
+            window.set_split_handles(ModelRc::new(VecModel::from(slint_handles)));
         });
     }
 
@@ -2136,4 +2274,210 @@ mod tests {
         // DFS order: pane 1's subtree (1, down) then the right sibling.
         assert_eq!(ws.leaves_in_order(), vec![PaneId(1), down, right]);
     }
+}
+
+// ── Phase-5 tab-operation tests ───────────────────────────────────────────────
+//
+// These tests exercise the algorithms that `AppShell`'s new tab methods
+// delegate to.  They operate directly on `WorkspaceModel` / `PaneState`
+// because `AppShell::new` requires a live Slint event loop.
+#[cfg(test)]
+mod tab_ops_tests {
+    use std::collections::VecDeque;
+
+    use crate::models::{
+        pane_state::PaneState, split::PaneId, tab::TabModel, ViewMode, WorkspaceModel,
+    };
+
+    /// Build a workspace with `n` tabs in pane `id`.  Tab titles are
+    /// `"tab-0"`, `"tab-1"`, … so order can be verified by title.
+    fn workspace_with_n_tabs(id: PaneId, n: usize) -> WorkspaceModel {
+        assert!(n >= 1);
+        let mut ws = WorkspaceModel::new(PaneState::new(
+            id,
+            TabModel::at("/root/tab-0"),
+            ViewMode::Details,
+        ));
+        {
+            let p = ws.pane_mut(id).unwrap();
+            for i in 1..n {
+                p.add_tab(TabModel::at(format!("/root/tab-{i}")));
+            }
+            p.set_active(0);
+        }
+        ws
+    }
+
+    // ── reorder_tab ───────────────────────────────────────────────────────
+
+    #[test]
+    fn reorder_from_0_to_2_in_4_tab_pane() {
+        let id = PaneId(1);
+        let mut ws = workspace_with_n_tabs(id, 4);
+        // Make tab-0 active to verify it follows the move.
+        ws.pane_mut(id).unwrap().set_active(0);
+
+        // Simulate AppShell::reorder_tab(pane, from=0, to=2).
+        let p = ws.pane_mut(id).unwrap();
+        let from = 0usize;
+        let to = 2usize;
+        let tab = p.tabs.remove(from);
+        p.tabs.insert(to, tab);
+        if p.active_tab == from {
+            p.active_tab = to;
+        } else if from < to && p.active_tab > from && p.active_tab <= to {
+            p.active_tab -= 1;
+        }
+
+        assert_eq!(p.tabs[0].title, "tab-1");
+        assert_eq!(p.tabs[1].title, "tab-2");
+        assert_eq!(p.tabs[2].title, "tab-0"); // moved tab
+        assert_eq!(p.tabs[3].title, "tab-3");
+        assert_eq!(p.active_tab, 2); // follows the moved tab
+    }
+
+    #[test]
+    fn reorder_non_active_tab_preserves_selection() {
+        let id = PaneId(1);
+        let mut ws = workspace_with_n_tabs(id, 4);
+        ws.pane_mut(id).unwrap().set_active(3); // active is tab-3
+
+        // Move tab-1 → tab-3 (active tab shifts left).
+        let p = ws.pane_mut(id).unwrap();
+        let from = 1usize;
+        let to = 3usize;
+        let tab = p.tabs.remove(from);
+        p.tabs.insert(to, tab);
+        // from < to and active (3) > from (1) and <= to (3) → shift left.
+        if p.active_tab == from {
+            p.active_tab = to;
+        } else if from < to && p.active_tab > from && p.active_tab <= to {
+            p.active_tab -= 1;
+        }
+
+        assert_eq!(p.tabs[3].title, "tab-1");
+        assert_eq!(p.active_tab, 2); // was 3, shifted left by 1
+        assert_eq!(p.tabs[p.active_tab].title, "tab-3");
+    }
+
+    // ── duplicate_tab ─────────────────────────────────────────────────────
+
+    #[test]
+    fn duplicate_inserts_copy_after_and_activates() {
+        let id = PaneId(1);
+        let mut ws = workspace_with_n_tabs(id, 3);
+
+        // Simulate AppShell::duplicate_tab(pane, tab=1).
+        let src = ws.pane(id).unwrap().tabs[1].clone();
+        let insert_at = 2;
+        let mut dup = TabModel::at(src.location.clone().unwrap());
+        dup.sort = src.sort.clone();
+        dup.filter = src.filter.clone();
+        {
+            let p = ws.pane_mut(id).unwrap();
+            p.tabs.insert(insert_at, dup);
+            p.active_tab = insert_at;
+        }
+
+        let p = ws.pane(id).unwrap();
+        assert_eq!(p.tabs.len(), 4);
+        assert_eq!(p.active_tab, 2);
+        assert_eq!(p.tabs[1].title, "tab-1");
+        assert_eq!(p.tabs[2].title, "tab-1"); // copy has same path → same title
+        assert_eq!(p.tabs[3].title, "tab-2");
+    }
+
+    // ── close_other_tabs ──────────────────────────────────────────────────
+
+    #[test]
+    fn close_other_tabs_leaves_only_kept() {
+        let id = PaneId(1);
+        let mut ws = workspace_with_n_tabs(id, 5);
+
+        // Simulate AppShell::close_other_tabs(pane, keep=2).
+        let keep = 2usize;
+        let p = ws.pane_mut(id).unwrap();
+        let kept = p.tabs[keep].clone();
+        let all: Vec<TabModel> = std::mem::replace(&mut p.tabs, vec![kept]);
+        let _closed: Vec<TabModel> = all
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, t)| (i != keep).then_some(t))
+            .collect();
+        p.active_tab = 0;
+
+        let p = ws.pane(id).unwrap();
+        assert_eq!(p.tabs.len(), 1);
+        assert_eq!(p.active_tab, 0);
+        assert_eq!(p.tabs[0].title, "tab-2");
+    }
+
+    // ── close_tabs_to_right_of ────────────────────────────────────────────
+
+    #[test]
+    fn close_tabs_to_right_leaves_correct_count() {
+        let id = PaneId(1);
+        let mut ws = workspace_with_n_tabs(id, 5);
+
+        // Simulate AppShell::close_tabs_to_right_of(pane, from=1).
+        let from = 1usize;
+        let p = ws.pane_mut(id).unwrap();
+        let _closed: Vec<TabModel> = p.tabs.drain(from + 1..).collect();
+        if p.active_tab > from {
+            p.active_tab = from;
+        }
+
+        let p = ws.pane(id).unwrap();
+        assert_eq!(p.tabs.len(), 2);
+        assert_eq!(p.tabs[0].title, "tab-0");
+        assert_eq!(p.tabs[1].title, "tab-1");
+    }
+
+    // ── closed-tab history ────────────────────────────────────────────────
+
+    #[test]
+    fn close_tab_pushes_to_closed_deque_and_reopen_pops() {
+        let id = PaneId(1);
+        let mut ws = workspace_with_n_tabs(id, 3);
+        let mut closed: AHashMap<PaneId, VecDeque<TabModel>> = ahash::AHashMap::default();
+
+        // Simulate closing tab 0.
+        let p = ws.pane_mut(id).unwrap();
+        if let Some(removed) = p.close_tab(0) {
+            let deque = closed.entry(id).or_default();
+            deque.push_front(removed);
+        }
+        assert_eq!(closed[&id].front().unwrap().title, "tab-0");
+        assert_eq!(ws.pane(id).unwrap().tabs.len(), 2);
+
+        // Simulate reopen_closed_tab.
+        let reopened = closed.get_mut(&id).and_then(VecDeque::pop_front);
+        assert!(reopened.is_some());
+        assert_eq!(reopened.unwrap().title, "tab-0");
+        assert!(closed[&id].is_empty());
+    }
+
+    #[test]
+    fn closed_tab_deque_caps_at_twenty() {
+        let id = PaneId(1);
+        let mut closed: AHashMap<PaneId, VecDeque<TabModel>> = ahash::AHashMap::default();
+
+        for i in 0..25usize {
+            let deque = closed.entry(id).or_default();
+            deque.push_front(TabModel::at(format!("/root/tab-{i}")));
+            if deque.len() > 20 {
+                deque.pop_back();
+            }
+        }
+
+        let deque = &closed[&id];
+        assert_eq!(deque.len(), 20);
+        // Most recently pushed (tab-24) is at the front.
+        assert_eq!(deque.front().unwrap().title, "tab-24");
+        // Oldest surviving entry (tab-5) is at the back; 0–4 were evicted.
+        assert_eq!(deque.back().unwrap().title, "tab-5");
+    }
+
+    // Need AHashMap in scope for the tests above.
+    use ahash::AHashMap;
 }

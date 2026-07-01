@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import { Titlebar } from "components/titlebar.slint";
-import { Workspace } from "components/workspace.slint";
+import { Pane } from "components/pane.slint";
 import { StatusBar } from "components/status-bar.slint";
 import { ShortcutFooter } from "components/shortcut-footer.slint";
 import { CommandPalette, PaletteEntry } from "components/command-palette.slint";
@@ -12,6 +12,7 @@ import { EntryRowItem, ColumnSpec } from "views/details/column.slint";
 import { MillerColData } from "views/miller/miller-state.slint";
 import { TreeNode } from "views/tree/tree-view.slint";
 import { MetadataFields } from "views/gallery/gallery-metadata.slint";
+import { PaneSlintData, SplitHandle } from "pane-data.slint";
 
 // Entry-point component for the Atlas application window.
 //
@@ -80,14 +81,31 @@ export component AtlasWindow inherits Window {
     in-out property <length> theme-row-h-compact: 24px;
     in-out property <length> theme-row-h-spacious: 38px;
 
-    in property <bool> dual-pane: false;
+    // ── N-pane workspace ─────────────────────────────────────────────────────
+
+    /// All live panes in DFS layout order; pushed by project_workspace_to_slint.
+    in property <[PaneSlintData]> panes;
+
+    /// Stable id of the currently focused pane.
+    in property <int> focused-pane-id: -1;
+
+    /// DFS position of the focused pane within `panes` (convenience index for
+    /// Slint-side array access such as `panes[focus-index].path`).
     in property <int> focus-index: 0;
 
-    in property <string> pane0-path: "";
-    in property <[string]> pane0-segments: [];
-    in property <string> pane0-view-mode: "Details";
+    /// Resize handles for every internal split node; pushed alongside `panes`.
+    in property <[SplitHandle]> split-handles;
+
+    // ── Per-slot heavy data (DFS positions 0 and 1) ───────────────────────────
+    //
+    // View controllers (details/grid/gallery/miller/tree) push their heavy
+    // per-pane data directly to these properties using the pane's DFS slot
+    // index.  Phase 4.1 will migrate controllers to a nested-array model and
+    // remove these per-slot properties.
+
     in property <[TabEntry]> pane0-tabs: [{ title: "Home", dirty: false }];
     in property <int> pane0-active-tab: 0;
+    in property <[string]> pane0-segments: [];
     in property <[EntryRowItem]> pane0-details-rows: [];
     in property <[ColumnSpec]> pane0-details-columns: [];
     in property <[bool]> pane0-details-selected-mask: [];
@@ -116,11 +134,9 @@ export component AtlasWindow inherits Window {
     in property <[MillerColData]> pane0-miller-columns: [];
     in property <int> pane0-miller-focused-col: 0;
 
-    in property <string> pane1-path: "";
-    in property <[string]> pane1-segments: [];
-    in property <string> pane1-view-mode: "Details";
     in property <[TabEntry]> pane1-tabs: [];
     in property <int> pane1-active-tab: 0;
+    in property <[string]> pane1-segments: [];
     in property <[EntryRowItem]> pane1-details-rows: [];
     in property <[ColumnSpec]> pane1-details-columns: [];
     in property <[bool]> pane1-details-selected-mask: [];
@@ -148,6 +164,8 @@ export component AtlasWindow inherits Window {
     in property <int> pane1-tree-selected-index: -1;
     in property <[MillerColData]> pane1-miller-columns: [];
     in property <int> pane1-miller-focused-col: 0;
+
+    // ── Status bar ───────────────────────────────────────────────────────────
 
     in property <int> total-entries: 0;
     in property <int> folder-count: 0;
@@ -199,6 +217,8 @@ export component AtlasWindow inherits Window {
     /// Operation rows shown in the ops tray.
     in property <[OpRow]> ops-rows: [];
 
+    // ── Global callbacks ──────────────────────────────────────────────────────
+
     callback palette-query-changed(string);
     callback palette-confirm(string);
     callback palette-dismiss();
@@ -238,87 +258,75 @@ export component AtlasWindow inherits Window {
     /// Trigger mkdir in the current pane (F7).
     callback fs-mkdir();
 
-    callback pane0-address-submitted(string);
-    callback pane0-address-cancelled();
-    callback pane0-breadcrumb-clicked(int);
-    callback pane0-tab-selected(int);
-    callback pane0-tab-closed(int);
-    callback pane0-new-tab();
-    callback pane0-focused();
-    callback pane0-details-row-clicked(int, bool, bool);
-    callback pane0-details-row-double-clicked(int);
-    callback pane0-details-row-context-menu(int, length, length);
-    callback pane0-details-header-clicked(int);
-    callback pane0-details-header-resize(int, float);
-    callback pane0-grid-entry-clicked(int, bool, bool);
-    callback pane0-grid-entry-double-clicked(int);
-    callback pane0-grid-entry-context-menu(int, length, length);
-    callback pane0-grid-thumbnail-visible(int);
-    callback pane0-grid-columns-changed(int);
-    callback pane0-gallery-entry-clicked(int);
-    callback pane0-gallery-strip-visible(int);
-    callback pane0-gallery-preview-visible(int);
-    callback pane0-gallery-prev-image();
-    callback pane0-gallery-next-image();
-    callback pane0-tree-row-clicked(int, bool, bool);
-    callback pane0-tree-row-double-clicked(int);
-    callback pane0-tree-chevron-clicked(int);
-    callback pane0-miller-row-clicked(int, int);
-    callback pane0-miller-row-double-clicked(int, int);
+    // ── Per-pane callbacks (all take pane-id as first argument) ──────────────
 
-    callback pane1-address-submitted(string);
-    callback pane1-address-cancelled();
-    callback pane1-breadcrumb-clicked(int);
-    callback pane1-tab-selected(int);
-    callback pane1-tab-closed(int);
-    callback pane1-new-tab();
-    callback pane1-focused();
-    callback pane1-details-row-clicked(int, bool, bool);
-    callback pane1-details-row-double-clicked(int);
-    callback pane1-details-row-context-menu(int, length, length);
-    callback pane1-details-header-clicked(int);
-    callback pane1-details-header-resize(int, float);
-    callback pane1-grid-entry-clicked(int, bool, bool);
-    callback pane1-grid-entry-double-clicked(int);
-    callback pane1-grid-entry-context-menu(int, length, length);
-    callback pane1-grid-thumbnail-visible(int);
-    callback pane1-grid-columns-changed(int);
-    callback pane1-gallery-entry-clicked(int);
-    callback pane1-gallery-strip-visible(int);
-    callback pane1-gallery-preview-visible(int);
-    callback pane1-gallery-prev-image();
-    callback pane1-gallery-next-image();
-    callback pane1-tree-row-clicked(int, bool, bool);
-    callback pane1-tree-row-double-clicked(int);
-    callback pane1-tree-chevron-clicked(int);
-    callback pane1-miller-row-clicked(int, int);
-    callback pane1-miller-row-double-clicked(int, int);
+    /// User submitted an address-bar path.
+    callback address-submitted(int /*pane-id*/, string);
+    /// User cancelled the address-bar edit.
+    callback address-cancelled(int /*pane-id*/);
+    /// User clicked a breadcrumb segment.
+    callback breadcrumb-clicked(int /*pane-id*/, int /*segment*/);
+    /// User selected tab at index.
+    callback tab-selected(int /*pane-id*/, int /*tab*/);
+    /// User closed tab at index.
+    callback tab-closed(int /*pane-id*/, int /*tab*/);
+    /// User opened a new tab.
+    callback new-tab(int /*pane-id*/);
+    /// User clicked within the pane (focus request).
+    callback pane-focused(int /*pane-id*/);
+
+    callback details-row-clicked(int /*pane-id*/, int, bool, bool);
+    callback details-row-double-clicked(int /*pane-id*/, int);
+    callback details-row-context-menu(int /*pane-id*/, int, length, length);
+    callback details-header-clicked(int /*pane-id*/, int);
+    callback details-header-resize(int /*pane-id*/, int, float);
+
+    callback grid-entry-clicked(int /*pane-id*/, int, bool, bool);
+    callback grid-entry-double-clicked(int /*pane-id*/, int);
+    callback grid-entry-context-menu(int /*pane-id*/, int, length, length);
+    callback grid-thumbnail-visible(int /*pane-id*/, int);
+    callback grid-columns-changed(int /*pane-id*/, int);
+
+    callback gallery-entry-clicked(int /*pane-id*/, int);
+    callback gallery-strip-visible(int /*pane-id*/, int);
+    callback gallery-preview-visible(int /*pane-id*/, int);
+    callback gallery-prev-image(int /*pane-id*/);
+    callback gallery-next-image(int /*pane-id*/);
+
+    callback tree-row-clicked(int /*pane-id*/, int, bool, bool);
+    callback tree-row-double-clicked(int /*pane-id*/, int);
+    callback tree-chevron-clicked(int /*pane-id*/, int);
+
+    callback miller-row-clicked(int /*pane-id*/, int /*col*/, int /*row*/);
+    callback miller-row-double-clicked(int /*pane-id*/, int /*col*/, int /*row*/);
+
+    /// Drag a split handle; `delta-fraction` is normalised to the split axis.
+    /// MVP: fires on click with 0.0 (drag computation is a Phase 4.1 follow-up
+    /// pending investigation of TouchArea pressed-x/y availability).
+    callback resize-split(int /*node-index*/, float /*delta-fraction*/);
+
+    // ── Workspace-level callbacks ─────────────────────────────────────────────
 
     callback toggle-palette();
     callback toggle-dual-pane();
     callback open-goto();
     callback cycle-pane-focus();
-    // Focused-pane view navigation (routed by the shell to the currently
-    // focused pane's active view controller).
+    // Focused-pane view navigation.
     callback pane-move-focus(int);          // delta rows (-1 up, +1 down)
-    callback pane-activate-focused();       // Enter: cd into or open the focused entry
+    callback pane-activate-focused();       // Enter: cd into or open focused entry
     callback pane-go-up();                  // Backspace / left arrow: parent dir
     callback palette-selection-delta(int);  // arrow up/down while palette open
-    callback select-tab(int /*pane*/, int /*tab*/);
-    callback cycle-tab(int /*pane*/, int /*delta*/);
-    // Pane-workspace commands (see .github/instructions/multi-pane-refactor
-    // for the phased N-pane plan; today these operate on the 2-pane model).
+    // Tab switching — pane-id indexed.
+    callback select-tab(int /*pane-id*/, int /*tab*/);
+    callback cycle-tab(int /*pane-id*/, int /*delta*/);
+    // Pane-workspace commands.
     callback pane-split-right();          // Cmd+D
     callback pane-split-down();           // Cmd+Shift+D
     callback pane-close();                // Cmd+Shift+W
     callback pane-focus-direction(string); // "left" | "right" | "up" | "down"
     callback pane-cycle-view-mode();      // Cmd+Shift+E
 
-    pure function location-str() -> string {
-        dual-pane
-            ? (focus-index == 0 ? pane0-path : pane1-path)
-            : pane0-path
-    }
+    // ── Theme bridges ─────────────────────────────────────────────────────────
 
     init => {
         Theme.dark = dark;
@@ -450,7 +458,7 @@ export component AtlasWindow inherits Window {
                 root.open-goto();
                 return accept;
             }
-            if event.text == Key.Tab && dual-pane && !palette-visible {
+            if event.text == Key.Tab && panes.length > 1 && !palette-visible {
                 root.cycle-pane-focus();
                 return accept;
             }
@@ -510,20 +518,12 @@ export component AtlasWindow inherits Window {
             // ── macOS-standard shortcuts ────────────────────────────────
             // Cmd/Ctrl+T — new tab in the focused pane.
             if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "t" || event.text == "T") && !palette-visible && !bulk-rename-visible {
-                if focus-index == 0 {
-                    root.pane0-new-tab();
-                } else {
-                    root.pane1-new-tab();
-                }
+                root.new-tab(focused-pane-id);
                 return accept;
             }
             // Cmd/Ctrl+W — close active tab in the focused pane.
             if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "w" || event.text == "W") && !palette-visible && !bulk-rename-visible {
-                if focus-index == 0 {
-                    root.pane0-tab-closed(pane0-active-tab);
-                } else {
-                    root.pane1-tab-closed(pane1-active-tab);
-                }
+                root.tab-closed(focused-pane-id, panes[focus-index].active-tab);
                 return accept;
             }
             // Cmd/Ctrl+Shift+N — new folder (alias for F7 mkdir).
@@ -534,31 +534,30 @@ export component AtlasWindow inherits Window {
 
             // Cmd/Ctrl+1..9 — switch tab N (1-indexed) in the focused pane.
             if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && !palette-visible && !bulk-rename-visible {
-                if event.text == "1" { root.select-tab(focus-index, 0); return accept; }
-                if event.text == "2" { root.select-tab(focus-index, 1); return accept; }
-                if event.text == "3" { root.select-tab(focus-index, 2); return accept; }
-                if event.text == "4" { root.select-tab(focus-index, 3); return accept; }
-                if event.text == "5" { root.select-tab(focus-index, 4); return accept; }
-                if event.text == "6" { root.select-tab(focus-index, 5); return accept; }
-                if event.text == "7" { root.select-tab(focus-index, 6); return accept; }
-                if event.text == "8" { root.select-tab(focus-index, 7); return accept; }
-                if event.text == "9" { root.select-tab(focus-index, 8); return accept; }
+                if event.text == "1" { root.select-tab(focused-pane-id, 0); return accept; }
+                if event.text == "2" { root.select-tab(focused-pane-id, 1); return accept; }
+                if event.text == "3" { root.select-tab(focused-pane-id, 2); return accept; }
+                if event.text == "4" { root.select-tab(focused-pane-id, 3); return accept; }
+                if event.text == "5" { root.select-tab(focused-pane-id, 4); return accept; }
+                if event.text == "6" { root.select-tab(focused-pane-id, 5); return accept; }
+                if event.text == "7" { root.select-tab(focused-pane-id, 6); return accept; }
+                if event.text == "8" { root.select-tab(focused-pane-id, 7); return accept; }
+                if event.text == "9" { root.select-tab(focused-pane-id, 8); return accept; }
             }
 
             // Cmd/Ctrl+Shift+[ / Cmd/Ctrl+Shift+] — cycle to previous/next tab.
             if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && !palette-visible && !bulk-rename-visible {
                 if event.text == "[" || event.text == "{" {
-                    root.cycle-tab(focus-index, -1);
+                    root.cycle-tab(focused-pane-id, -1);
                     return accept;
                 }
                 if event.text == "]" || event.text == "}" {
-                    root.cycle-tab(focus-index, 1);
+                    root.cycle-tab(focused-pane-id, 1);
                     return accept;
                 }
             }
 
-            // ── Multi-pane workspace (Phase 0 keybinds, see
-            // .github/instructions/multi-pane-refactor for the full plan) ──
+            // ── Multi-pane workspace ──────────────────────────────────────
 
             // Cmd/Ctrl+D (no shift) — split the focused pane to the right.
             if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "d" || event.text == "D") && !palette-visible && !bulk-rename-visible {
@@ -580,9 +579,7 @@ export component AtlasWindow inherits Window {
                 root.pane-cycle-view-mode();
                 return accept;
             }
-            // Ctrl+H/J/K/L — vim-style pane focus (works alongside modal
-            // guards). Deliberately Ctrl-only (no Cmd) so it doesn't clash
-            // with macOS system shortcuts.
+            // Ctrl+H/J/K/L — vim-style pane focus.
             if event.modifiers.control && !event.modifiers.meta && !event.modifiers.shift && !palette-visible && !bulk-rename-visible {
                 if event.text == "h" || event.text == "H" { root.pane-focus-direction("left");  return accept; }
                 if event.text == "j" || event.text == "J" { root.pane-focus-direction("down");  return accept; }
@@ -590,10 +587,7 @@ export component AtlasWindow inherits Window {
                 if event.text == "l" || event.text == "L" { root.pane-focus-direction("right"); return accept; }
             }
 
-            // ── View navigation (when no modal has focus) ────────────────
-            // Arrow keys / Enter / Backspace always work; hjkl only when
-            // vim-mode is enabled so letter keys stay available for other
-            // uses (search, typing in the address bar, etc.).
+            // ── View navigation ───────────────────────────────────────────
             if !palette-visible && !search-panel-visible && !bulk-rename-visible {
                 if event.text == Key.DownArrow || (vim-mode && event.text == "j") {
                     root.pane-move-focus(1);
@@ -620,121 +614,107 @@ export component AtlasWindow inherits Window {
             spacing: 0px;
 
             Titlebar {
-                location: location-str();
+                location: panes.length > 0 ? panes[focus-index].path : "";
             }
 
-            Workspace {
+            // ── Pane container ────────────────────────────────────────────────
+            // All panes are absolutely positioned within this Rectangle; their
+            // x/y/width/height come from PaneSlintData computed by
+            // `SplitLayout::layout_rects` on the Rust side.
+            Rectangle {
                 vertical-stretch: 1;
-                dual-pane: root.dual-pane;
-                focus-index: root.focus-index;
+                clip: true;
 
-                pane0-path: root.pane0-path;
-                pane0-segments: root.pane0-segments;
-                pane0-view-mode: root.pane0-view-mode;
-                pane0-tabs: root.pane0-tabs;
-                pane0-active-tab: root.pane0-active-tab;
-                pane0-details-rows: root.pane0-details-rows;
-                pane0-details-columns: root.pane0-details-columns;
-                pane0-details-selected-mask: root.pane0-details-selected-mask;
-                pane0-details-selected-anchor: root.pane0-details-selected-anchor;
-                pane0-details-focused-index: root.pane0-details-focused-index;
-                pane0-grid-thumbnails: root.pane0-grid-thumbnails;
-                pane0-grid-has-thumbs: root.pane0-grid-has-thumbs;
-                pane0-grid-selected-mask: root.pane0-grid-selected-mask;
-                pane0-grid-focused-index: root.pane0-grid-focused-index;
-                pane0-gallery-strip-thumbnails: root.pane0-gallery-strip-thumbnails;
-                pane0-gallery-preview-image: root.pane0-gallery-preview-image;
-                pane0-gallery-preview-loading: root.pane0-gallery-preview-loading;
-                pane0-gallery-preview-fallback-glyph: root.pane0-gallery-preview-fallback-glyph;
-                pane0-gallery-focused-index: root.pane0-gallery-focused-index;
-                pane0-gallery-metadata: root.pane0-gallery-metadata;
-                pane0-tree-nodes: root.pane0-tree-nodes;
-                pane0-tree-focused-index: root.pane0-tree-focused-index;
-                pane0-tree-selected-index: root.pane0-tree-selected-index;
-                pane0-miller-columns: root.pane0-miller-columns;
-                pane0-miller-focused-col: root.pane0-miller-focused-col;
+                for pane[i] in panes: Pane {
+                    x: pane.x;
+                    y: pane.y;
+                    width: pane.width;
+                    height: pane.height;
 
-                pane1-path: root.pane1-path;
-                pane1-segments: root.pane1-segments;
-                pane1-view-mode: root.pane1-view-mode;
-                pane1-tabs: root.pane1-tabs;
-                pane1-active-tab: root.pane1-active-tab;
-                pane1-details-rows: root.pane1-details-rows;
-                pane1-details-columns: root.pane1-details-columns;
-                pane1-details-selected-mask: root.pane1-details-selected-mask;
-                pane1-details-selected-anchor: root.pane1-details-selected-anchor;
-                pane1-details-focused-index: root.pane1-details-focused-index;
-                pane1-grid-thumbnails: root.pane1-grid-thumbnails;
-                pane1-grid-has-thumbs: root.pane1-grid-has-thumbs;
-                pane1-grid-selected-mask: root.pane1-grid-selected-mask;
-                pane1-grid-focused-index: root.pane1-grid-focused-index;
-                pane1-gallery-strip-thumbnails: root.pane1-gallery-strip-thumbnails;
-                pane1-gallery-preview-image: root.pane1-gallery-preview-image;
-                pane1-gallery-preview-loading: root.pane1-gallery-preview-loading;
-                pane1-gallery-preview-fallback-glyph: root.pane1-gallery-preview-fallback-glyph;
-                pane1-gallery-focused-index: root.pane1-gallery-focused-index;
-                pane1-gallery-metadata: root.pane1-gallery-metadata;
-                pane1-tree-nodes: root.pane1-tree-nodes;
-                pane1-tree-focused-index: root.pane1-tree-focused-index;
-                pane1-tree-selected-index: root.pane1-tree-selected-index;
-                pane1-miller-columns: root.pane1-miller-columns;
-                pane1-miller-focused-col: root.pane1-miller-focused-col;
+                    pane-id: pane.id;
+                    focused: pane.id == focused-pane-id;
+                    path: pane.path;
+                    view-mode: pane.view-mode;
 
-                pane0-address-submitted(p) => { root.pane0-address-submitted(p); }
-                pane0-address-cancelled => { root.pane0-address-cancelled(); }
-                pane0-breadcrumb-clicked(i) => { root.pane0-breadcrumb-clicked(i); }
-                pane0-tab-selected(i) => { root.pane0-tab-selected(i); }
-                pane0-tab-closed(i) => { root.pane0-tab-closed(i); }
-                pane0-new-tab => { root.pane0-new-tab(); }
-                pane0-clicked => { root.pane0-focused(); }
-                pane0-details-row-clicked(i, ctrl, shift) => { root.pane0-details-row-clicked(i, ctrl, shift); }
-                pane0-details-row-double-clicked(i) => { root.pane0-details-row-double-clicked(i); }
-                pane0-details-row-context-menu(i, x, y) => { root.pane0-details-row-context-menu(i, x, y); }
-                pane0-details-header-clicked(i) => { root.pane0-details-header-clicked(i); }
-                pane0-details-header-resize(i, w) => { root.pane0-details-header-resize(i, w); }
-                pane0-grid-entry-clicked(i, ctrl, shift) => { root.pane0-grid-entry-clicked(i, ctrl, shift); }
-                pane0-grid-entry-double-clicked(i) => { root.pane0-grid-entry-double-clicked(i); }
-                pane0-grid-entry-context-menu(i, x, y) => { root.pane0-grid-entry-context-menu(i, x, y); }
-                pane0-grid-thumbnail-visible(i) => { root.pane0-grid-thumbnail-visible(i); }
-                pane0-grid-columns-changed(c) => { root.pane0-grid-columns-changed(c); }
-                pane0-gallery-entry-clicked(i) => { root.pane0-gallery-entry-clicked(i); }
-                pane0-gallery-strip-visible(i) => { root.pane0-gallery-strip-visible(i); }
-                pane0-gallery-preview-visible(i) => { root.pane0-gallery-preview-visible(i); }
-                pane0-gallery-prev-image => { root.pane0-gallery-prev-image(); }
-                pane0-gallery-next-image => { root.pane0-gallery-next-image(); }
-                pane0-tree-row-clicked(i, ctrl, shift) => { root.pane0-tree-row-clicked(i, ctrl, shift); }
-                pane0-tree-row-double-clicked(i) => { root.pane0-tree-row-double-clicked(i); }
-                pane0-tree-chevron-clicked(i) => { root.pane0-tree-chevron-clicked(i); }
-                pane0-miller-row-clicked(col, row) => { root.pane0-miller-row-clicked(col, row); }
-                pane0-miller-row-double-clicked(col, row) => { root.pane0-miller-row-double-clicked(col, row); }
+                    // Per-slot data — routed by DFS position i.
+                    // Phase 4.1: replace with panes-*[i] once controllers support N slots.
+                    path-segments: i == 0 ? pane0-segments : pane1-segments;
+                    tabs: i == 0 ? pane0-tabs : pane1-tabs;
+                    active-tab: i == 0 ? pane0-active-tab : pane1-active-tab;
 
-                pane1-address-submitted(p) => { root.pane1-address-submitted(p); }
-                pane1-address-cancelled => { root.pane1-address-cancelled(); }
-                pane1-breadcrumb-clicked(i) => { root.pane1-breadcrumb-clicked(i); }
-                pane1-tab-selected(i) => { root.pane1-tab-selected(i); }
-                pane1-tab-closed(i) => { root.pane1-tab-closed(i); }
-                pane1-new-tab => { root.pane1-new-tab(); }
-                pane1-clicked => { root.pane1-focused(); }
-                pane1-details-row-clicked(i, ctrl, shift) => { root.pane1-details-row-clicked(i, ctrl, shift); }
-                pane1-details-row-double-clicked(i) => { root.pane1-details-row-double-clicked(i); }
-                pane1-details-row-context-menu(i, x, y) => { root.pane1-details-row-context-menu(i, x, y); }
-                pane1-details-header-clicked(i) => { root.pane1-details-header-clicked(i); }
-                pane1-details-header-resize(i, w) => { root.pane1-details-header-resize(i, w); }
-                pane1-grid-entry-clicked(i, ctrl, shift) => { root.pane1-grid-entry-clicked(i, ctrl, shift); }
-                pane1-grid-entry-double-clicked(i) => { root.pane1-grid-entry-double-clicked(i); }
-                pane1-grid-entry-context-menu(i, x, y) => { root.pane1-grid-entry-context-menu(i, x, y); }
-                pane1-grid-thumbnail-visible(i) => { root.pane1-grid-thumbnail-visible(i); }
-                pane1-grid-columns-changed(c) => { root.pane1-grid-columns-changed(c); }
-                pane1-gallery-entry-clicked(i) => { root.pane1-gallery-entry-clicked(i); }
-                pane1-gallery-strip-visible(i) => { root.pane1-gallery-strip-visible(i); }
-                pane1-gallery-preview-visible(i) => { root.pane1-gallery-preview-visible(i); }
-                pane1-gallery-prev-image => { root.pane1-gallery-prev-image(); }
-                pane1-gallery-next-image => { root.pane1-gallery-next-image(); }
-                pane1-tree-row-clicked(i, ctrl, shift) => { root.pane1-tree-row-clicked(i, ctrl, shift); }
-                pane1-tree-row-double-clicked(i) => { root.pane1-tree-row-double-clicked(i); }
-                pane1-tree-chevron-clicked(i) => { root.pane1-tree-chevron-clicked(i); }
-                pane1-miller-row-clicked(col, row) => { root.pane1-miller-row-clicked(col, row); }
-                pane1-miller-row-double-clicked(col, row) => { root.pane1-miller-row-double-clicked(col, row); }
+                    details-rows: i == 0 ? pane0-details-rows : pane1-details-rows;
+                    details-columns: i == 0 ? pane0-details-columns : pane1-details-columns;
+                    details-selected-mask: i == 0 ? pane0-details-selected-mask : pane1-details-selected-mask;
+                    details-selected-anchor: i == 0 ? pane0-details-selected-anchor : pane1-details-selected-anchor;
+                    details-focused-index: i == 0 ? pane0-details-focused-index : pane1-details-focused-index;
+
+                    grid-thumbnails: i == 0 ? pane0-grid-thumbnails : pane1-grid-thumbnails;
+                    grid-has-thumbs: i == 0 ? pane0-grid-has-thumbs : pane1-grid-has-thumbs;
+                    grid-selected-mask: i == 0 ? pane0-grid-selected-mask : pane1-grid-selected-mask;
+                    grid-focused-index: i == 0 ? pane0-grid-focused-index : pane1-grid-focused-index;
+
+                    gallery-strip-thumbnails: i == 0 ? pane0-gallery-strip-thumbnails : pane1-gallery-strip-thumbnails;
+                    gallery-preview-image: i == 0 ? pane0-gallery-preview-image : pane1-gallery-preview-image;
+                    gallery-preview-loading: i == 0 ? pane0-gallery-preview-loading : pane1-gallery-preview-loading;
+                    gallery-preview-fallback-glyph: i == 0 ? pane0-gallery-preview-fallback-glyph : pane1-gallery-preview-fallback-glyph;
+                    gallery-focused-index: i == 0 ? pane0-gallery-focused-index : pane1-gallery-focused-index;
+                    gallery-metadata: i == 0 ? pane0-gallery-metadata : pane1-gallery-metadata;
+
+                    tree-nodes: i == 0 ? pane0-tree-nodes : pane1-tree-nodes;
+                    tree-focused-index: i == 0 ? pane0-tree-focused-index : pane1-tree-focused-index;
+                    tree-selected-index: i == 0 ? pane0-tree-selected-index : pane1-tree-selected-index;
+
+                    miller-columns: i == 0 ? pane0-miller-columns : pane1-miller-columns;
+                    miller-focused-col: i == 0 ? pane0-miller-focused-col : pane1-miller-focused-col;
+
+                    // Unified callbacks — all route through pane.id.
+                    address-submitted(p) => { root.address-submitted(pane.id, p); }
+                    address-cancelled => { root.address-cancelled(pane.id); }
+                    breadcrumb-clicked(seg) => { root.breadcrumb-clicked(pane.id, seg); }
+                    tab-selected(t) => { root.tab-selected(pane.id, t); }
+                    tab-closed(t) => { root.tab-closed(pane.id, t); }
+                    new-tab => { root.new-tab(pane.id); }
+                    pane-clicked => { root.pane-focused(pane.id); }
+
+                    details-row-clicked(idx, ctrl, shift) => { root.details-row-clicked(pane.id, idx, ctrl, shift); }
+                    details-row-double-clicked(idx) => { root.details-row-double-clicked(pane.id, idx); }
+                    details-row-context-menu(idx, x, y) => { root.details-row-context-menu(pane.id, idx, x, y); }
+                    details-header-clicked(col) => { root.details-header-clicked(pane.id, col); }
+                    details-header-resize(col, w) => { root.details-header-resize(pane.id, col, w); }
+
+                    grid-entry-clicked(idx, ctrl, shift) => { root.grid-entry-clicked(pane.id, idx, ctrl, shift); }
+                    grid-entry-double-clicked(idx) => { root.grid-entry-double-clicked(pane.id, idx); }
+                    grid-entry-context-menu(idx, x, y) => { root.grid-entry-context-menu(pane.id, idx, x, y); }
+                    grid-thumbnail-visible(idx) => { root.grid-thumbnail-visible(pane.id, idx); }
+                    grid-columns-changed(c) => { root.grid-columns-changed(pane.id, c); }
+
+                    gallery-entry-clicked(idx) => { root.gallery-entry-clicked(pane.id, idx); }
+                    gallery-strip-visible(idx) => { root.gallery-strip-visible(pane.id, idx); }
+                    gallery-preview-visible(idx) => { root.gallery-preview-visible(pane.id, idx); }
+                    gallery-prev-image => { root.gallery-prev-image(pane.id); }
+                    gallery-next-image => { root.gallery-next-image(pane.id); }
+
+                    tree-row-clicked(idx, ctrl, shift) => { root.tree-row-clicked(pane.id, idx, ctrl, shift); }
+                    tree-row-double-clicked(idx) => { root.tree-row-double-clicked(pane.id, idx); }
+                    tree-chevron-clicked(idx) => { root.tree-chevron-clicked(pane.id, idx); }
+
+                    miller-row-clicked(col, row) => { root.miller-row-clicked(pane.id, col, row); }
+                    miller-row-double-clicked(col, row) => { root.miller-row-double-clicked(pane.id, col, row); }
+                }
+
+                // Split-handle drag areas — rendered above panes.
+                // MVP: emits resize-split with delta 0.0 on click.
+                // Phase 4.1: compute real delta from TouchArea pressed-x/y.
+                for handle[_j] in split-handles: TouchArea {
+                    x: handle.x;
+                    y: handle.y;
+                    width: handle.horizontal ? handle.width : 4px;
+                    height: handle.horizontal ? 4px : handle.height;
+                    mouse-cursor: handle.horizontal ? MouseCursor.row-resize : MouseCursor.col-resize;
+                    clicked => {
+                        root.resize-split(handle.node-index, 0.0);
+                    }
+                }
             }
 
             StatusBar {

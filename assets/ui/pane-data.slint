@@ -1,0 +1,55 @@
+// Per-pane light data and split-handle descriptors for the N-pane workspace.
+//
+// `PaneSlintData` carries the layout geometry and AppShell-managed lightweight
+// fields for each pane.  Heavy per-pane data (details rows, thumbnails, tree
+// nodes, etc.) lives in per-slot top-level properties on `AtlasWindow`
+// (`pane0-*` / `pane1-*`) until Phase 4.1 migrates the view controllers to
+// the N-pane parallel-array model.
+
+/// Light data for a single pane; pushed by `project_workspace_to_slint`.
+///
+/// Geometry fields (x/y/width/height) are computed by
+/// `SplitLayout::layout_rects` on the Rust side and reflect the pane's
+/// absolute position within the workspace content area.
+export struct PaneSlintData {
+    /// Stable pane identifier — matches the Rust `PaneId(u32)`.  All
+    /// per-pane callbacks use this id as their first argument.
+    id: int,
+
+    // ── Layout ────────────────────────────────────────────────────────────
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+
+    // ── AppShell-managed light data ───────────────────────────────────────
+
+    /// Current directory path (display string, not necessarily valid UTF-8).
+    path: string,
+
+    /// Active view mode: "Details" | "Grid" | "Gallery" | "Miller" | "Tree".
+    view-mode: string,
+
+    /// Index of the active tab within the pane's tab list.
+    active-tab: int,
+}
+
+/// Describes a draggable resize handle between two split children.
+///
+/// Pushed by `project_workspace_to_slint` alongside `panes`.  Each `Split`
+/// node in the binary layout tree produces exactly one `SplitHandle`.
+export struct SplitHandle {
+    /// Index into the DFS-ordered split node list; stable within a session.
+    /// Passed back via the `resize-split` callback.
+    node-index: int,
+
+    // ── Grab-area geometry ────────────────────────────────────────────────
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+
+    /// `true` when the split stacks children horizontally (handle dragged
+    /// vertically to resize top/bottom halves).
+    horizontal: bool,
+}

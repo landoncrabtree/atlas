@@ -13,7 +13,13 @@ import { TreeView, TreeNode } from "../views/tree/tree-view.slint";
 import { MetadataFields } from "../views/gallery/gallery-metadata.slint";
 
 // A single pane: address bar + breadcrumbs + tab bar + content view.
+//
+// `pane-id` is the stable semantic identifier (matches the Rust `PaneId`);
+// the parent passes it through so callbacks can carry it up to `AtlasWindow`
+// without the pane needing to know its own array position.
 export component Pane {
+    /// Stable pane identifier forwarded to every callback (Phase 4).
+    in property <int> pane-id: -1;
     in property <bool> focused: false;
     in property <string> path: "";
     in property <[string]> path-segments: [];
