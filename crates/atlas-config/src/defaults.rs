@@ -12,6 +12,7 @@ impl Default for General {
             confirm_on_quit: false,
             follow_symlinks: true,
             vim_mode: false,
+            dual_pane: true,
         }
     }
 }

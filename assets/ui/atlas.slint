@@ -304,6 +304,7 @@ export component AtlasWindow inherits Window {
     callback pane-activate-focused();       // Enter: cd into or open the focused entry
     callback pane-go-up();                  // Backspace / left arrow: parent dir
     callback palette-selection-delta(int);  // arrow up/down while palette open
+    callback select-tab(int /*pane*/, int /*tab*/);
 
     pure function location-str() -> string {
         dual-pane
@@ -521,6 +522,19 @@ export component AtlasWindow inherits Window {
             if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "n" || event.text == "N") && !palette-visible && !bulk-rename-visible {
                 root.fs-mkdir();
                 return accept;
+            }
+
+            // Cmd/Ctrl+1..9 — switch tab N (1-indexed) in the focused pane.
+            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && !palette-visible && !bulk-rename-visible {
+                if event.text == "1" { root.select-tab(focus-index, 0); return accept; }
+                if event.text == "2" { root.select-tab(focus-index, 1); return accept; }
+                if event.text == "3" { root.select-tab(focus-index, 2); return accept; }
+                if event.text == "4" { root.select-tab(focus-index, 3); return accept; }
+                if event.text == "5" { root.select-tab(focus-index, 4); return accept; }
+                if event.text == "6" { root.select-tab(focus-index, 5); return accept; }
+                if event.text == "7" { root.select-tab(focus-index, 6); return accept; }
+                if event.text == "8" { root.select-tab(focus-index, 7); return accept; }
+                if event.text == "9" { root.select-tab(focus-index, 8); return accept; }
             }
 
             // ── View navigation (when no modal has focus) ────────────────

@@ -20,6 +20,11 @@ follow_symlinks = true
 # Enable vim-inspired key bindings (hjkl navigation, :q to quit, …).
 vim_mode = false
 
+# Open the app in dual-pane (split-window) layout on startup. When true
+# both panes navigate to `start_path` initially; Cmd/Ctrl+\ toggles at
+# runtime; Tab cycles focus between panes.
+dual_pane = true
+
 [ui]
 # Colour theme. Built-in values: "atlas-dark", "atlas-light".
 # Custom themes can be placed in your config directory.

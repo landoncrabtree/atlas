@@ -703,6 +703,14 @@ impl AppShell {
                 palette_ctrl.move_selection(delta as isize);
             });
         }
+        {
+            let shell = self.clone();
+            window.on_select_tab(move |pane, tab| {
+                if pane >= 0 && tab >= 0 {
+                    shell.select_tab(pane as usize, tab as usize);
+                }
+            });
+        }
 
         // ── Focused-pane navigation callbacks ────────────────────────────
         // The FocusScope in atlas.slint dispatches these when no modal or

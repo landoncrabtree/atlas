@@ -132,6 +132,11 @@ fn main() -> Result<()> {
     tracing::info!(layers = ?keymap.layers(), "keymap loaded");
 
     let window = AtlasWindow::new()?;
+    // Force the initial window size: Slint's preferred-width is treated as a
+    // hint the WM can ignore, so on macOS we sometimes open at min-width
+    // (720). Explicitly set 1440x900 which is comfortable for dual-pane +
+    // Miller. Users can resize freely afterwards; we don't auto-grow.
+    window.window().set_size(slint::PhysicalSize::new(1440, 900));
     let nav = NavigationController::with_config(&config);
     let search_ctrl = SearchController::new();
 
@@ -202,6 +207,13 @@ fn main() -> Result<()> {
 
     // Push config-driven UI settings into the Slint window.
     shell.set_vim_mode(config.general.vim_mode);
+
+    // Open in dual-pane layout when the config asks for it (default: true).
+    // Pane 1 auto-navigates to pane 0's location via AppShell::set_dual_pane.
+    if config.general.dual_pane {
+        shell.set_dual_pane(true);
+        shell.set_view_mode(1, config_view_mode(config.view.default_mode));
+    }
 
     // Build the keymap dispatcher and register handlers for common action IDs.
     // The palette on_dispatch callback routes through this dispatcher so that

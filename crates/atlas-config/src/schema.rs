@@ -45,6 +45,8 @@ pub struct General {
     pub follow_symlinks: bool,
     /// Enable vim-inspired key bindings.
     pub vim_mode: bool,
+    /// Open the app in dual-pane (split) layout on startup.
+    pub dual_pane: bool,
 }
 
 // ── UI ─────────────────────────────────────────────────────────────────────
