@@ -59,4 +59,22 @@ mod tests {
             .unwrap_or_else(|| PathBuf::from("/"));
         assert_eq!(workspace.panes[0].location, home);
     }
+
+    #[test]
+    fn set_focused_pane_updates_model() {
+        let mut ws = WorkspaceModel::new_default();
+        assert_eq!(ws.focused_pane, 0);
+        ws.focused_pane = 1;
+        assert_eq!(ws.focused_pane, 1);
+    }
+
+    #[test]
+    fn dual_pane_can_have_two_panes() {
+        let home = PathBuf::from("/tmp");
+        let mut ws = WorkspaceModel::new_default();
+        ws.dual_pane = true;
+        ws.panes.push(PaneModel::new(home.clone()));
+        assert_eq!(ws.panes.len(), 2);
+        assert!(ws.dual_pane);
+    }
 }

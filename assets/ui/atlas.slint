@@ -120,6 +120,8 @@ export component AtlasWindow inherits Window {
     in property <[TreeNode]> pane1-tree-nodes: [];
     in property <int> pane1-tree-focused-index: -1;
     in property <int> pane1-tree-selected-index: -1;
+    in property <[MillerColData]> pane1-miller-columns: [];
+    in property <int> pane1-miller-focused-col: 0;
 
     in property <int> total-entries: 0;
     in property <int> selected-entries: 0;
@@ -254,8 +256,11 @@ export component AtlasWindow inherits Window {
     callback pane1-tree-row-clicked(int, bool, bool);
     callback pane1-tree-row-double-clicked(int);
     callback pane1-tree-chevron-clicked(int);
+    callback pane1-miller-row-clicked(int, int);
+    callback pane1-miller-row-double-clicked(int, int);
 
     callback toggle-palette();
+    callback toggle-dual-pane();
     callback open-goto();
     callback cycle-pane-focus();
 
@@ -384,6 +389,11 @@ export component AtlasWindow inherits Window {
                 root.fs-delete();
                 return accept;
             }
+            // Cmd/Ctrl+Backslash — toggle dual-pane mode.
+            if (event.modifiers.meta || event.modifiers.control) && event.text == "\\" && !palette-visible && !search-panel-visible && !bulk-rename-visible {
+                root.toggle-dual-pane();
+                return accept;
+            }
             reject;
         }
 
@@ -449,6 +459,8 @@ export component AtlasWindow inherits Window {
                 pane1-tree-nodes: root.pane1-tree-nodes;
                 pane1-tree-focused-index: root.pane1-tree-focused-index;
                 pane1-tree-selected-index: root.pane1-tree-selected-index;
+                pane1-miller-columns: root.pane1-miller-columns;
+                pane1-miller-focused-col: root.pane1-miller-focused-col;
 
                 pane0-address-submitted(p) => { root.pane0-address-submitted(p); }
                 pane0-address-cancelled => { root.pane0-address-cancelled(); }
@@ -503,6 +515,8 @@ export component AtlasWindow inherits Window {
                 pane1-tree-row-clicked(i, ctrl, shift) => { root.pane1-tree-row-clicked(i, ctrl, shift); }
                 pane1-tree-row-double-clicked(i) => { root.pane1-tree-row-double-clicked(i); }
                 pane1-tree-chevron-clicked(i) => { root.pane1-tree-chevron-clicked(i); }
+                pane1-miller-row-clicked(col, row) => { root.pane1-miller-row-clicked(col, row); }
+                pane1-miller-row-double-clicked(col, row) => { root.pane1-miller-row-double-clicked(col, row); }
             }
 
             StatusBar {

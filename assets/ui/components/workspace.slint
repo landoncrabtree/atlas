@@ -74,6 +74,8 @@ export component Workspace {
     in property <[TreeNode]> pane1-tree-nodes: [];
     in property <int> pane1-tree-focused-index: -1;
     in property <int> pane1-tree-selected-index: -1;
+    in property <[MillerColData]> pane1-miller-columns: [];
+    in property <int> pane1-miller-focused-col: 0;
 
     callback pane0-address-submitted(string);
     callback pane0-address-cancelled();
@@ -128,6 +130,8 @@ export component Workspace {
     callback pane1-tree-row-clicked(int, bool, bool);
     callback pane1-tree-row-double-clicked(int);
     callback pane1-tree-chevron-clicked(int);
+    callback pane1-miller-row-clicked(int, int);
+    callback pane1-miller-row-double-clicked(int, int);
 
     HorizontalLayout {
         spacing: 0px;
@@ -221,6 +225,8 @@ export component Workspace {
             tree-nodes: root.pane1-tree-nodes;
             tree-focused-index: root.pane1-tree-focused-index;
             tree-selected-index: root.pane1-tree-selected-index;
+            miller-columns: root.pane1-miller-columns;
+            miller-focused-col: root.pane1-miller-focused-col;
 
             address-submitted(p) => { root.pane1-address-submitted(p); }
             address-cancelled => { root.pane1-address-cancelled(); }
@@ -247,6 +253,8 @@ export component Workspace {
             tree-row-clicked(i, ctrl, shift) => { root.pane1-tree-row-clicked(i, ctrl, shift); }
             tree-row-double-clicked(i) => { root.pane1-tree-row-double-clicked(i); }
             tree-chevron-clicked(i) => { root.pane1-tree-chevron-clicked(i); }
+            miller-row-clicked(col, row) => { root.pane1-miller-row-clicked(col, row); }
+            miller-row-double-clicked(col, row) => { root.pane1-miller-row-double-clicked(col, row); }
         }
     }
 }

@@ -100,8 +100,8 @@ export component Pane {
 
         Rectangle {
             background: Theme.bg;
-            border-width: focused ? 1px : 0px;
-            border-color: Theme.accent;
+            border-width: 1px;
+            border-color: focused ? Theme.accent.with-alpha(0.4) : Theme.border;
 
             VerticalLayout {
                 spacing: 0px;

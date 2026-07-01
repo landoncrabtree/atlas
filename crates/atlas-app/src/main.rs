@@ -67,6 +67,12 @@ impl ActionSink for AtlasActionSink {
             | UiAction::BulkRenameClose => {
                 tracing::debug!(?action, "bulk rename action (handled by AppShell directly)");
             }
+            UiAction::SetDualPane(_) | UiAction::PaneFocusChanged(_) => {
+                tracing::debug!(
+                    ?action,
+                    "pane focus/layout action (handled by AppShell directly)"
+                );
+            }
             _ => {
                 tracing::info!(?action, "ui action");
             }

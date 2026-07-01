@@ -92,6 +92,12 @@ fn palette_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+fn dirs_home() -> PathBuf {
+    directories::BaseDirs::new()
+        .map(|d| d.home_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
 fn build_palette_controller(
     window: &AtlasWindow,
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
@@ -116,6 +122,53 @@ fn build_palette_controller(
     controller
 }
 
+/// Per-pane view controllers.
+pub struct PaneControllers {
+    /// Details view controller for the pane.
+    pub details: Arc<crate::views::details::DetailsController>,
+    /// Grid view controller for the pane.
+    pub grid: Arc<crate::views::grid::GridController>,
+    /// Miller columns view controller for the pane.
+    pub miller: Arc<crate::views::miller::MillerController>,
+    /// Tree view controller for the pane.
+    pub tree: Arc<crate::views::tree::TreeController>,
+    /// Gallery view controller for the pane.
+    pub gallery: Arc<crate::views::gallery::GalleryController>,
+}
+
+fn build_pane_controllers(
+    pane: usize,
+    window: &AtlasWindow,
+    actions: Arc<Mutex<Box<dyn ActionSink>>>,
+    thumb_cache: Arc<atlas_thumbs::SqliteCache>,
+) -> PaneControllers {
+    let details = DetailsController::new(pane, window.as_weak(), Arc::clone(&actions));
+    let grid = GridController::new(
+        pane,
+        window.as_weak(),
+        Arc::clone(&actions),
+        Arc::clone(&thumb_cache),
+    );
+    let gallery = GalleryController::new(
+        pane,
+        window.as_weak(),
+        Arc::clone(&actions),
+        Arc::clone(&thumb_cache),
+    );
+    let tree = TreeController::new(pane, Arc::clone(&actions));
+    tree.attach_window(window.as_weak());
+    let miller = MillerController::new(actions);
+    miller.attach_window(window.as_weak());
+
+    PaneControllers {
+        details,
+        grid,
+        miller,
+        tree,
+        gallery,
+    }
+}
+
 /// Owns Rust-side model state and bridges it to the Slint window.
 ///
 /// Construct with [`AppShell::new`], then call [`AppShell::set_workspace`],
@@ -130,12 +183,8 @@ pub struct AppShell {
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
     navigation: Arc<NavigationController>,
     palette_ctrl: Arc<PaletteController>,
-    details0: Arc<DetailsController>,
+    panes_ctrl: Box<[PaneControllers; 2]>,
     search: Arc<SearchController>,
-    grid0: Arc<GridController>,
-    gallery0: Arc<GalleryController>,
-    tree0: Arc<TreeController>,
-    miller0: Arc<MillerController>,
     /// File-operations queue controller.
     ops: Arc<OpsController>,
     /// Bulk rename modal controller.
@@ -163,19 +212,10 @@ impl AppShell {
             atlas_thumbs::SqliteCache::open_default()
                 .unwrap_or_else(|error| panic!("failed to open thumbnail cache: {error}")),
         );
-        let details0 = DetailsController::new(0, window.as_weak(), Arc::clone(&actions));
-        let grid0 = GridController::new(
-            0,
-            window.as_weak(),
-            Arc::clone(&actions),
-            Arc::clone(&thumb_cache),
-        );
-        let gallery0 =
-            GalleryController::new(0, window.as_weak(), Arc::clone(&actions), thumb_cache);
-        let tree0 = TreeController::new(0, Arc::clone(&actions));
-        tree0.attach_window(window.as_weak());
-        let miller0 = MillerController::new(Arc::clone(&actions));
-        miller0.attach_window(window.as_weak());
+        let panes_ctrl = Box::new([
+            build_pane_controllers(0, window, Arc::clone(&actions), Arc::clone(&thumb_cache)),
+            build_pane_controllers(1, window, Arc::clone(&actions), thumb_cache),
+        ]);
         let palette_ctrl = build_palette_controller(window, Arc::clone(&actions));
         search.set_action_sink(Arc::clone(&actions));
         let ops = OpsController::new();
@@ -190,12 +230,8 @@ impl AppShell {
             actions,
             navigation: nav,
             palette_ctrl,
-            details0,
+            panes_ctrl,
             search,
-            grid0,
-            gallery0,
-            tree0,
-            miller0,
             ops,
             bulk_rename,
             pane0_vm: RwLock::new(None),
@@ -210,31 +246,37 @@ impl AppShell {
     /// Return the pane-0 details controller.
     #[must_use]
     pub fn details_controller(&self) -> Arc<DetailsController> {
-        Arc::clone(&self.details0)
+        Arc::clone(&self.panes_ctrl[0].details)
     }
 
     /// Return the pane-0 grid controller.
     #[must_use]
     pub fn grid_controller(&self) -> Arc<GridController> {
-        Arc::clone(&self.grid0)
+        Arc::clone(&self.panes_ctrl[0].grid)
     }
 
     /// Return the pane-0 gallery controller.
     #[must_use]
     pub fn gallery_controller(&self) -> Arc<GalleryController> {
-        Arc::clone(&self.gallery0)
+        Arc::clone(&self.panes_ctrl[0].gallery)
     }
 
     /// Return the pane-0 tree controller.
     #[must_use]
     pub fn tree_controller(&self) -> Arc<TreeController> {
-        Arc::clone(&self.tree0)
+        Arc::clone(&self.panes_ctrl[0].tree)
     }
 
     /// Return the pane-0 miller columns controller.
     #[must_use]
     pub fn miller_controller(&self) -> Arc<MillerController> {
-        Arc::clone(&self.miller0)
+        Arc::clone(&self.panes_ctrl[0].miller)
+    }
+
+    /// Return the per-pane view controllers for `index`.
+    #[must_use]
+    pub fn pane(&self, index: usize) -> &PaneControllers {
+        &self.panes_ctrl[index.min(1)]
     }
 
     /// Return the shared navigation controller.
@@ -271,6 +313,58 @@ impl AppShell {
     #[must_use]
     pub fn focused_pane(&self) -> usize {
         self.workspace.read().focused_pane
+    }
+
+    /// Return whether dual-pane mode is active.
+    #[must_use]
+    pub fn is_dual_pane(&self) -> bool {
+        self.workspace.read().dual_pane
+    }
+
+    /// Set focused pane, updating the workspace model and pushing to Slint.
+    pub fn set_focused_pane(self: &Arc<Self>, index: usize) {
+        {
+            let mut ws = self.workspace.write();
+            if ws.focused_pane == index {
+                return;
+            }
+            ws.focused_pane = index;
+            for (i, pane) in ws.panes.iter_mut().enumerate() {
+                pane.focused = i == index;
+            }
+        }
+        let snapshot = self.workspace.read().clone();
+        self.set_workspace(snapshot);
+    }
+
+    /// Enable or disable dual-pane mode.
+    ///
+    /// When enabling and pane 1 has no loaded location, navigates pane 1 to
+    /// pane 0's current path (falling back to `$HOME`).
+    pub fn set_dual_pane(self: &Arc<Self>, on: bool) {
+        let needs_navigate = if on {
+            let mut ws = self.workspace.write();
+            ws.dual_pane = true;
+            if ws.panes.len() < 2 {
+                let home = dirs_home();
+                ws.panes.push(PaneModel::new(home));
+            }
+            self.navigation.location(1).is_none()
+        } else {
+            let mut ws = self.workspace.write();
+            ws.dual_pane = false;
+            ws.focused_pane = 0;
+            for (i, pane) in ws.panes.iter_mut().enumerate() {
+                pane.focused = i == 0;
+            }
+            false
+        };
+        if needs_navigate {
+            let start = self.pane_location(0).unwrap_or_else(dirs_home);
+            self.navigation.navigate(1, start);
+        }
+        let snapshot = self.workspace.read().clone();
+        self.set_workspace(snapshot);
     }
 
     /// Return the current directory path for `pane`, if available.
@@ -367,22 +461,33 @@ impl AppShell {
             let vm_dyn: Arc<dyn LocationViewModel> = vm.clone();
             if pane == 0 {
                 *shell.pane0_vm.write() = Some(vm_dyn);
-                // Set typed location on view controllers.
                 let vm_typed: Arc<dyn LocationViewModel> = vm;
-                shell.details0.set_location(Arc::clone(&vm_typed));
-                shell.grid0.set_location(Arc::clone(&vm_typed));
-                shell.gallery0.set_location(vm_typed);
-                shell.tree0.set_root(path.clone());
-                shell.miller0.set_root(path.clone());
+                shell.panes_ctrl[0]
+                    .details
+                    .set_location(Arc::clone(&vm_typed));
+                shell.panes_ctrl[0].grid.set_location(Arc::clone(&vm_typed));
+                shell.panes_ctrl[0].gallery.set_location(vm_typed);
+                shell.panes_ctrl[0].tree.set_root(path.clone());
+                shell.panes_ctrl[0].miller.set_root(path.clone());
                 shell.search.set_scope(Some(path.clone()));
             } else if pane == 1 {
                 *shell.pane1_vm.write() = Some(vm_dyn);
+                let vm_typed: Arc<dyn LocationViewModel> = vm;
+                shell.panes_ctrl[1]
+                    .details
+                    .set_location(Arc::clone(&vm_typed));
+                shell.panes_ctrl[1].grid.set_location(Arc::clone(&vm_typed));
+                shell.panes_ctrl[1].gallery.set_location(vm_typed);
+                shell.panes_ctrl[1].tree.set_root(path.clone());
+                shell.panes_ctrl[1].miller.set_root(path.clone());
             }
             let new_pane = PaneModel::new(path);
             {
                 let mut workspace = shell.workspace.write();
-                if let Some(existing_pane) = workspace.panes.get_mut(pane) {
-                    *existing_pane = new_pane;
+                if pane < workspace.panes.len() {
+                    workspace.panes[pane] = new_pane;
+                } else if pane == workspace.panes.len() {
+                    workspace.panes.push(new_pane);
                 }
             }
             let snapshot = shell.workspace.read().clone();
@@ -484,14 +589,18 @@ impl AppShell {
 
         {
             let actions = Arc::clone(&self.actions);
+            let shell = Arc::clone(self);
             window.on_pane0_focused(move || {
                 actions.lock().dispatch(UiAction::PaneFocusChanged(0));
+                shell.set_focused_pane(0);
             });
         }
         {
             let actions = Arc::clone(&self.actions);
+            let shell = Arc::clone(self);
             window.on_pane1_focused(move || {
                 actions.lock().dispatch(UiAction::PaneFocusChanged(1));
+                shell.set_focused_pane(1);
             });
         }
         {
@@ -503,11 +612,9 @@ impl AppShell {
                 } else {
                     1
                 };
-                let next = {
-                    let workspace = shell.workspace.read();
-                    (workspace.focused_pane + 1) % pane_count
-                };
+                let next = (shell.workspace.read().focused_pane + 1) % pane_count;
                 actions.lock().dispatch(UiAction::PaneFocusChanged(next));
+                shell.set_focused_pane(next);
             });
         }
 
@@ -554,20 +661,20 @@ impl AppShell {
         window.on_pane0_new_tab(dispatch!(self.actions, UiAction::NewTab { pane: 0 }));
 
         {
-            let details = Arc::clone(&self.details0);
+            let details = Arc::clone(&self.panes_ctrl[0].details);
             window.on_pane0_details_row_clicked(move |index, ctrl, shift| {
                 details.select_index(index as usize, ctrl, shift);
             });
         }
         {
-            let details = Arc::clone(&self.details0);
+            let details = Arc::clone(&self.panes_ctrl[0].details);
             window.on_pane0_details_row_double_clicked(move |index| {
                 details.select_index(index as usize, false, false);
                 details.activate_focused();
             });
         }
         {
-            let details = Arc::clone(&self.details0);
+            let details = Arc::clone(&self.panes_ctrl[0].details);
             window.on_pane0_details_header_clicked(move |column_index| {
                 details.header_clicked(column_index as usize);
             });
@@ -575,26 +682,26 @@ impl AppShell {
 
         // Grid callbacks — pane 0
         {
-            let grid = Arc::clone(&self.grid0);
+            let grid = Arc::clone(&self.panes_ctrl[0].grid);
             window.on_pane0_grid_entry_clicked(move |index, ctrl, shift| {
                 grid.select_index(index as usize, ctrl, shift);
             });
         }
         {
-            let grid = Arc::clone(&self.grid0);
+            let grid = Arc::clone(&self.panes_ctrl[0].grid);
             window.on_pane0_grid_entry_double_clicked(move |index| {
                 grid.select_index(index as usize, false, false);
                 grid.activate_focused();
             });
         }
         {
-            let grid = Arc::clone(&self.grid0);
+            let grid = Arc::clone(&self.panes_ctrl[0].grid);
             window.on_pane0_grid_thumbnail_visible(move |index| {
                 grid.thumbnail_visible(index as usize);
             });
         }
         {
-            let grid = Arc::clone(&self.grid0);
+            let grid = Arc::clone(&self.panes_ctrl[0].grid);
             window.on_pane0_grid_columns_changed(move |cols| {
                 grid.set_columns(cols as usize);
             });
@@ -602,31 +709,31 @@ impl AppShell {
 
         // Gallery callbacks — pane 0
         {
-            let gallery = Arc::clone(&self.gallery0);
+            let gallery = Arc::clone(&self.panes_ctrl[0].gallery);
             window.on_pane0_gallery_entry_clicked(move |index| {
                 gallery.entry_clicked(index as usize);
             });
         }
         {
-            let gallery = Arc::clone(&self.gallery0);
+            let gallery = Arc::clone(&self.panes_ctrl[0].gallery);
             window.on_pane0_gallery_strip_visible(move |index| {
                 gallery.strip_visible(index as usize);
             });
         }
         {
-            let gallery = Arc::clone(&self.gallery0);
+            let gallery = Arc::clone(&self.panes_ctrl[0].gallery);
             window.on_pane0_gallery_preview_visible(move |index| {
                 gallery.preview_visible(index as usize);
             });
         }
         {
-            let gallery = Arc::clone(&self.gallery0);
+            let gallery = Arc::clone(&self.panes_ctrl[0].gallery);
             window.on_pane0_gallery_prev_image(move || {
                 gallery.prev_image();
             });
         }
         {
-            let gallery = Arc::clone(&self.gallery0);
+            let gallery = Arc::clone(&self.panes_ctrl[0].gallery);
             window.on_pane0_gallery_next_image(move || {
                 gallery.next_image();
             });
@@ -634,20 +741,20 @@ impl AppShell {
 
         // Tree callbacks — pane 0
         {
-            let tree = Arc::clone(&self.tree0);
+            let tree = Arc::clone(&self.panes_ctrl[0].tree);
             window.on_pane0_tree_row_clicked(move |index, ctrl, shift| {
                 tree.select_index(index as usize, ctrl, shift);
             });
         }
         {
-            let tree = Arc::clone(&self.tree0);
+            let tree = Arc::clone(&self.panes_ctrl[0].tree);
             window.on_pane0_tree_row_double_clicked(move |index| {
                 tree.select_index(index as usize, false, false);
                 tree.activate_focused();
             });
         }
         {
-            let tree = Arc::clone(&self.tree0);
+            let tree = Arc::clone(&self.panes_ctrl[0].tree);
             window.on_pane0_tree_chevron_clicked(move |index| {
                 let visible = tree.build_visible_nodes();
                 if let Some(row) = visible.get(index as usize) {
@@ -659,13 +766,13 @@ impl AppShell {
 
         // Miller callbacks — pane 0
         {
-            let miller = Arc::clone(&self.miller0);
+            let miller = Arc::clone(&self.panes_ctrl[0].miller);
             window.on_pane0_miller_row_clicked(move |col, row| {
                 miller.select_row(col as usize, row as usize);
             });
         }
         {
-            let miller = Arc::clone(&self.miller0);
+            let miller = Arc::clone(&self.panes_ctrl[0].miller);
             window.on_pane0_miller_row_double_clicked(move |col, row| {
                 miller.select_row(col as usize, row as usize);
                 miller.activate_focused();
@@ -713,6 +820,135 @@ impl AppShell {
             });
         }
         window.on_pane1_new_tab(dispatch!(self.actions, UiAction::NewTab { pane: 1 }));
+
+        // Details callbacks — pane 1
+        {
+            let details = Arc::clone(&self.panes_ctrl[1].details);
+            window.on_pane1_details_row_clicked(move |index, ctrl, shift| {
+                details.select_index(index as usize, ctrl, shift);
+            });
+        }
+        {
+            let details = Arc::clone(&self.panes_ctrl[1].details);
+            window.on_pane1_details_row_double_clicked(move |index| {
+                details.select_index(index as usize, false, false);
+                details.activate_focused();
+            });
+        }
+        {
+            let details = Arc::clone(&self.panes_ctrl[1].details);
+            window.on_pane1_details_header_clicked(move |column_index| {
+                details.header_clicked(column_index as usize);
+            });
+        }
+
+        // Grid callbacks — pane 1
+        {
+            let grid = Arc::clone(&self.panes_ctrl[1].grid);
+            window.on_pane1_grid_entry_clicked(move |index, ctrl, shift| {
+                grid.select_index(index as usize, ctrl, shift);
+            });
+        }
+        {
+            let grid = Arc::clone(&self.panes_ctrl[1].grid);
+            window.on_pane1_grid_entry_double_clicked(move |index| {
+                grid.select_index(index as usize, false, false);
+                grid.activate_focused();
+            });
+        }
+        {
+            let grid = Arc::clone(&self.panes_ctrl[1].grid);
+            window.on_pane1_grid_thumbnail_visible(move |index| {
+                grid.thumbnail_visible(index as usize);
+            });
+        }
+        {
+            let grid = Arc::clone(&self.panes_ctrl[1].grid);
+            window.on_pane1_grid_columns_changed(move |cols| {
+                grid.set_columns(cols as usize);
+            });
+        }
+
+        // Gallery callbacks — pane 1
+        {
+            let gallery = Arc::clone(&self.panes_ctrl[1].gallery);
+            window.on_pane1_gallery_entry_clicked(move |index| {
+                gallery.entry_clicked(index as usize);
+            });
+        }
+        {
+            let gallery = Arc::clone(&self.panes_ctrl[1].gallery);
+            window.on_pane1_gallery_strip_visible(move |index| {
+                gallery.strip_visible(index as usize);
+            });
+        }
+        {
+            let gallery = Arc::clone(&self.panes_ctrl[1].gallery);
+            window.on_pane1_gallery_preview_visible(move |index| {
+                gallery.preview_visible(index as usize);
+            });
+        }
+        {
+            let gallery = Arc::clone(&self.panes_ctrl[1].gallery);
+            window.on_pane1_gallery_prev_image(move || {
+                gallery.prev_image();
+            });
+        }
+        {
+            let gallery = Arc::clone(&self.panes_ctrl[1].gallery);
+            window.on_pane1_gallery_next_image(move || {
+                gallery.next_image();
+            });
+        }
+
+        // Tree callbacks — pane 1
+        {
+            let tree = Arc::clone(&self.panes_ctrl[1].tree);
+            window.on_pane1_tree_row_clicked(move |index, ctrl, shift| {
+                tree.select_index(index as usize, ctrl, shift);
+            });
+        }
+        {
+            let tree = Arc::clone(&self.panes_ctrl[1].tree);
+            window.on_pane1_tree_row_double_clicked(move |index| {
+                tree.select_index(index as usize, false, false);
+                tree.activate_focused();
+            });
+        }
+        {
+            let tree = Arc::clone(&self.panes_ctrl[1].tree);
+            window.on_pane1_tree_chevron_clicked(move |index| {
+                let visible = tree.build_visible_nodes();
+                if let Some(row) = visible.get(index as usize) {
+                    let path = std::path::PathBuf::from(row.node_id.as_str());
+                    tree.toggle(&path);
+                }
+            });
+        }
+
+        // Miller callbacks — pane 1
+        {
+            let miller = Arc::clone(&self.panes_ctrl[1].miller);
+            window.on_pane1_miller_row_clicked(move |col, row| {
+                miller.select_row(col as usize, row as usize);
+            });
+        }
+        {
+            let miller = Arc::clone(&self.panes_ctrl[1].miller);
+            window.on_pane1_miller_row_double_clicked(move |col, row| {
+                miller.select_row(col as usize, row as usize);
+                miller.activate_focused();
+            });
+        }
+        {
+            let actions = Arc::clone(&self.actions);
+            let shell = Arc::clone(self);
+            window.on_toggle_dual_pane(move || {
+                let on = !shell.is_dual_pane();
+                actions.lock().dispatch(UiAction::SetDualPane(on));
+                shell.set_dual_pane(on);
+            });
+        }
 
         // ── Ops-panel callbacks ───────────────────────────────────────────────
 

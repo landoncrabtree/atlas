@@ -307,4 +307,34 @@ mod tests {
         assert_eq!(hist.len(), 1);
         assert_eq!(hist[0], a);
     }
+
+    #[test]
+    fn per_pane_navigation_is_independent() {
+        let dir_a = tempfile::TempDir::new().expect("temp dir");
+        let dir_b = tempfile::TempDir::new().expect("temp dir");
+        let a = dir_a.path().canonicalize().expect("canon");
+        let b = dir_b.path().canonicalize().expect("canon");
+
+        let ctrl = NavigationController::new(&[]);
+        ctrl.navigate(0, a.clone());
+        ctrl.navigate(1, b.clone());
+
+        let dir_c = tempfile::TempDir::new().expect("temp dir");
+        let c = dir_c.path().canonicalize().expect("canon");
+        ctrl.navigate(0, c.clone());
+
+        let last_pane1: StdArc<StdMutex<Option<PathBuf>>> = StdArc::new(StdMutex::new(None));
+        let last_pane1_clone = StdArc::clone(&last_pane1);
+        ctrl.on_location_changed(move |pane, vm| {
+            if pane == 1 {
+                *last_pane1_clone.lock().expect("lock") = Some(vm.location().to_path_buf());
+            }
+        });
+
+        ctrl.navigate_relative(0, true);
+        assert!(
+            last_pane1.lock().expect("lock").is_none(),
+            "pane 1 history must not change when pane 0 navigates"
+        );
+    }
 }
