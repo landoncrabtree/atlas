@@ -1,4 +1,5 @@
 import { Theme } from "../theme.slint";
+import { ScrollView, ListView } from "std-widgets.slint";
 
 export struct TabEntry {
     title: string,
@@ -12,19 +13,45 @@ export component TabBar {
     callback select(int);
     callback close(int);
     callback new-tab();
+    /// Emitted when the user drags a tab from index `from` to index `to`.
+    callback reorder(int /*from*/, int /*to*/);
+    /// Close every tab in the strip except the one at `i`.
+    callback close-others(int);
+    /// Close all tabs with index strictly greater than `i`.
+    callback close-to-right(int);
+    /// Insert a copy of tab `i` immediately after it and activate the copy.
+    callback duplicate(int);
 
     height: Theme.tab-h;
 
-    // Fixed tab width — overflow clips rather than pushing the window
-    // wider. A future v0.2 will replace this with a proper horizontal
-    // scroller + tab dropdown when overflow.
-    property <length> tab-w: 140px;
+    // ── Layout budget ─────────────────────────────────────────────────────
+    // Reserve space for both the overflow (») and new-tab (+) buttons
+    // unconditionally so we avoid a circular dependency between has-overflow,
+    // tab-w, and the button widths.  The overflow button is hidden via opacity
+    // rather than removed from the layout when it is not needed.
+    property <length> new-btn-w: 28px;
+    property <length> ovfl-btn-w: 28px;
+    property <length> avail-strip-w: max(1px, root.width - new-btn-w - ovfl-btn-w - Theme.space-2 * 2);
+    property <length> tab-w: max(80px, tabs.length == 0 ? 140px : avail-strip-w / tabs.length);
+    /// True when tabs have been shrunk to minimum width and the strip overflows.
+    property <bool> has-overflow: tabs.length > 0 && tab-w <= 80.5px;
+
+    // ── Drag-to-reorder state ─────────────────────────────────────────────
+    /// Index of the tab being dragged, or -1 when no drag is active.
+    property <int> drag-from: -1;
+    /// Cumulative horizontal pointer displacement since the press.
+    property <length> drag-delta-x: 0;
+    /// Reactively-computed drop-target index clamped to a valid range.
+    property <int> drag-target: clamp(
+        drag-from + drag-delta-x / (tab-w + Theme.space-1),
+        0,
+        tabs.length - 1,
+    );
 
     Rectangle {
         background: Theme.panel-bg;
-        clip: true;
 
-        // Bottom border
+        // Bottom hairline separator
         Rectangle {
             y: parent.height - 1px;
             height: 1px;
@@ -32,104 +59,270 @@ export component TabBar {
         }
 
         HorizontalLayout {
-            alignment: start;
-            spacing: Theme.space-1;
+            spacing: 0;
             padding-left: Theme.space-2;
             padding-right: Theme.space-2;
 
-            for tab[i] in tabs: tab-outer := Rectangle {
-                width: root.tab-w;
-                height: Theme.tab-h;
-                background: transparent;
-
-                tab-ta := TouchArea {
-                    x: 0px; y: 0px;
-                    width: parent.width;
-                    height: parent.height;
-                    mouse-cursor: MouseCursor.pointer;
-                    // Left-click selects; middle-click closes.
-                    pointer-event(event) => {
-                        if event.button == PointerEventButton.middle && event.kind == PointerEventKind.up {
-                            root.close(i);
-                        }
-                    }
-                    clicked => { root.select(i); }
-                }
-
-                // Pill background
-                pill := Rectangle {
-                    x: 0px;
-                    y: (Theme.tab-h - 26px) / 2;
-                    width: parent.width;
-                    height: 26px;
-                    border-radius: Theme.radius-sm;
-                    background: i == active-index
-                        ? Theme.panel-bg-elevated
-                        : (tab-ta.has-hover ? Theme.hover-bg : transparent);
-                    animate background { duration: 120ms; easing: ease-out; }
-                }
-
-                // Active bottom accent rail
-                if i == active-index : Rectangle {
-                    x: Theme.space-2;
-                    y: Theme.tab-h - 2px;
-                    width: parent.width - Theme.space-2 * 2;
-                    height: 2px;
-                    border-radius: 1px;
-                    background: Theme.accent;
-                }
+            // ── Scrollable tab strip ──────────────────────────────────────
+            tab-strip := ScrollView {
+                horizontal-stretch: 1;
+                height: parent.height;
+                // Suppress vertical scroll; horizontal scroll handles overflow.
+                viewport-height: parent.height;
 
                 HorizontalLayout {
-                    x: 0px; y: 0px;
-                    width: parent.width;
-                    height: Theme.tab-h;
-                    alignment: center;
+                    alignment: start;
                     spacing: Theme.space-1;
-                    padding-left: Theme.space-3;
-                    padding-right: Theme.space-1;
 
-                    Text {
-                        text: (tab.dirty ? "● " : "") + tab.title;
-                        color: i == active-index ? Theme.fg : Theme.fg-muted;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                        overflow: elide;
-                        horizontal-stretch: 1;
-                        animate color { duration: 120ms; easing: ease-out; }
-                    }
+                    for tab[i] in tabs: tab-outer := Rectangle {
+                        width: root.tab-w;
+                        height: Theme.tab-h;
 
-                    // Close button — visible only on hover (progressive disclosure)
-                    close-ta := TouchArea {
-                        width: 18px;
-                        height: 18px;
-                        visible: tab-ta.has-hover || i == active-index;
-                        clicked => { root.close(i); }
+                        // ── Per-tab right-click context menu ──────────────
+                        ctx-popup := PopupWindow {
+                            // Position relative to this tab's top-left corner.
+                            x: 0;
+                            y: Theme.tab-h;
 
-                        Rectangle {
+                            Rectangle {
+                                width: 210px;
+                                height: 128px;
+                                background: Theme.panel-bg-elevated;
+                                border-color: Theme.border-strong;
+                                border-width: 1px;
+                                border-radius: Theme.radius-sm;
+
+                                VerticalLayout {
+                                    padding: 4px;
+                                    spacing: 2px;
+
+                                    close-row := TouchArea {
+                                        height: 28px;
+                                        clicked => { root.close(i); ctx-popup.close(); }
+                                        Rectangle {
+                                            background: close-row.has-hover ? Theme.hover-bg : transparent;
+                                            border-radius: Theme.radius-xs;
+                                            Text {
+                                                text: "Close Tab";
+                                                color: Theme.fg;
+                                                font-size: 12px;
+                                                x: 8px;
+                                                vertical-alignment: center;
+                                                height: parent.height;
+                                            }
+                                        }
+                                    }
+
+                                    close-others-row := TouchArea {
+                                        height: 28px;
+                                        clicked => { root.close-others(i); ctx-popup.close(); }
+                                        Rectangle {
+                                            background: close-others-row.has-hover ? Theme.hover-bg : transparent;
+                                            border-radius: Theme.radius-xs;
+                                            Text {
+                                                text: "Close Other Tabs";
+                                                color: Theme.fg;
+                                                font-size: 12px;
+                                                x: 8px;
+                                                vertical-alignment: center;
+                                                height: parent.height;
+                                            }
+                                        }
+                                    }
+
+                                    close-right-row := TouchArea {
+                                        height: 28px;
+                                        clicked => { root.close-to-right(i); ctx-popup.close(); }
+                                        Rectangle {
+                                            background: close-right-row.has-hover ? Theme.hover-bg : transparent;
+                                            border-radius: Theme.radius-xs;
+                                            Text {
+                                                text: "Close Tabs to Right";
+                                                color: Theme.fg;
+                                                font-size: 12px;
+                                                x: 8px;
+                                                vertical-alignment: center;
+                                                height: parent.height;
+                                            }
+                                        }
+                                    }
+
+                                    dup-row := TouchArea {
+                                        height: 28px;
+                                        clicked => { root.duplicate(i); ctx-popup.close(); }
+                                        Rectangle {
+                                            background: dup-row.has-hover ? Theme.hover-bg : transparent;
+                                            border-radius: Theme.radius-xs;
+                                            Text {
+                                                text: "Duplicate Tab";
+                                                color: Theme.fg;
+                                                font-size: 12px;
+                                                x: 8px;
+                                                vertical-alignment: center;
+                                                height: parent.height;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Main tab interaction area ─────────────────────
+                        tab-ta := TouchArea {
+                            x: 0; y: 0;
                             width: parent.width;
                             height: parent.height;
-                            border-radius: parent.width / 2;
-                            background: close-ta.has-hover ? Theme.border-strong : transparent;
-                            animate background { duration: 100ms; easing: ease-out; }
+                            mouse-cursor: MouseCursor.pointer;
+
+                            pointer-event(event) => {
+                                // Middle-click → close.
+                                if event.button == PointerEventButton.middle && event.kind == PointerEventKind.up {
+                                    root.close(i);
+                                }
+                                // Right-click → context menu.
+                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.up {
+                                    ctx-popup.show();
+                                }
+                                // Left press → start drag tracking.
+                                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                                    root.drag-from = i;
+                                    root.drag-delta-x = 0;
+                                }
+                                // Left release → select (small delta) or reorder (large delta).
+                                if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                                    if root.drag-from == i && abs(root.drag-delta-x) < 8px {
+                                        root.select(i);
+                                    } else if root.drag-from >= 0 && root.drag-target != root.drag-from {
+                                        root.reorder(root.drag-from, root.drag-target);
+                                    }
+                                    root.drag-from = -1;
+                                    root.drag-delta-x = 0;
+                                }
+                            }
+
+                            moved => {
+                                if root.drag-from == i {
+                                    root.drag-delta-x = self.mouse-x - self.pressed-x;
+                                }
+                            }
+                        }
+
+                        // Pill background — tinted with accent-soft while dragging.
+                        Rectangle {
+                            x: 0;
+                            y: (Theme.tab-h - 26px) / 2;
+                            width: parent.width;
+                            height: 26px;
+                            border-radius: Theme.radius-sm;
+                            background: root.drag-from == i
+                                ? Theme.accent-soft
+                                : (i == active-index
+                                    ? Theme.panel-bg-elevated
+                                    : (tab-ta.has-hover ? Theme.hover-bg : transparent));
+                            animate background { duration: 120ms; easing: ease-out; }
+                        }
+
+                        // Active bottom accent rail.
+                        if i == active-index: Rectangle {
+                            x: Theme.space-2;
+                            y: Theme.tab-h - 2px;
+                            width: parent.width - Theme.space-2 * 2;
+                            height: 2px;
+                            border-radius: 1px;
+                            background: Theme.accent;
+                        }
+
+                        // Drop-target indicator: 2 px accent bar at the left edge of
+                        // the tab where the dragged tab would land.
+                        if root.drag-from >= 0 && root.drag-target == i && root.drag-from != i: Rectangle {
+                            x: -1px;
+                            y: (Theme.tab-h - 20px) / 2;
+                            width: 2px;
+                            height: 20px;
+                            border-radius: 1px;
+                            background: Theme.accent;
+                        }
+
+                        // Tab label and close button.
+                        HorizontalLayout {
+                            x: 0; y: 0;
+                            width: parent.width;
+                            height: Theme.tab-h;
+                            alignment: center;
+                            spacing: Theme.space-1;
+                            padding-left: Theme.space-3;
+                            padding-right: Theme.space-1;
 
                             Text {
-                                text: "✕";
-                                color: close-ta.has-hover ? Theme.fg : Theme.fg-muted;
-                                font-size: 10px;
-                                horizontal-alignment: center;
+                                text: (tab.dirty ? "● " : "") + tab.title;
+                                color: i == active-index ? Theme.fg : Theme.fg-muted;
+                                font-size: 12px;
                                 vertical-alignment: center;
-                                width: parent.width;
-                                height: parent.height;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                                animate color { duration: 120ms; easing: ease-out; }
+                            }
+
+                            // Close (×) — revealed on hover (progressive disclosure).
+                            close-ta := TouchArea {
+                                width: 18px;
+                                height: 18px;
+                                visible: tab-ta.has-hover || i == active-index;
+                                clicked => { root.close(i); }
+
+                                Rectangle {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    border-radius: parent.width / 2;
+                                    background: close-ta.has-hover ? Theme.border-strong : transparent;
+                                    animate background { duration: 100ms; easing: ease-out; }
+
+                                    Text {
+                                        text: "✕";
+                                        color: close-ta.has-hover ? Theme.fg : Theme.fg-muted;
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: parent.width;
+                                        height: parent.height;
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // New-tab + button
-            new-ta := TouchArea {
-                width: 28px;
+            // ── Overflow indicator (») ────────────────────────────────────
+            // Always present in the layout (fixed width) to avoid a circular
+            // dependency.  Invisible (opacity 0) when all tabs fit at >= 80 px.
+            ovfl-ta := TouchArea {
+                width: root.ovfl-btn-w;
                 height: Theme.tab-h;
+                opacity: has-overflow ? 1.0 : 0.0;
+                mouse-cursor: has-overflow ? MouseCursor.pointer : MouseCursor.default;
+                clicked => {
+                    if has-overflow {
+                        overflow-popup.show();
+                    }
+                }
+
+                Text {
+                    text: "\u{00BB}";
+                    color: ovfl-ta.has-hover && has-overflow ? Theme.fg-muted : Theme.fg-faint;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                }
+            }
+
+            // ── New-tab (+) button ────────────────────────────────────────
+            new-ta := TouchArea {
+                width: root.new-btn-w;
+                height: Theme.tab-h;
+                mouse-cursor: MouseCursor.pointer;
                 clicked => { root.new-tab(); }
 
                 Text {
@@ -141,6 +334,73 @@ export component TabBar {
                     width: parent.width;
                     height: parent.height;
                     animate color { duration: 120ms; easing: ease-out; }
+                }
+            }
+        }
+
+        // ── Overflow popup — lists every tab when the strip is too narrow ─
+        // Position is relative to the outer Rectangle (= the full tab-bar area).
+        overflow-popup := PopupWindow {
+            x: root.width - 248px - Theme.space-2;
+            y: root.height;
+
+            Rectangle {
+                width: 240px;
+                height: min(300px, tabs.length * 30px + 8px);
+                background: Theme.panel-bg-elevated;
+                border-color: Theme.border-strong;
+                border-width: 1px;
+                border-radius: Theme.radius-sm;
+
+                ListView {
+                    for tab[i] in tabs: ov-row := TouchArea {
+                        height: 30px;
+                        clicked => {
+                            root.select(i);
+                            overflow-popup.close();
+                        }
+
+                        Rectangle {
+                            background: ov-row.has-hover ? Theme.hover-bg : transparent;
+
+                            HorizontalLayout {
+                                padding-left: Theme.space-2;
+                                padding-right: Theme.space-1;
+                                alignment: center;
+                                spacing: Theme.space-1;
+
+                                Text {
+                                    text: (tab.dirty ? "● " : "") + tab.title;
+                                    color: i == active-index ? Theme.accent : Theme.fg-muted;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+
+                                ov-close-ta := TouchArea {
+                                    width: 18px;
+                                    height: 18px;
+                                    clicked => { root.close(i); overflow-popup.close(); }
+
+                                    Rectangle {
+                                        border-radius: 9px;
+                                        background: ov-close-ta.has-hover ? Theme.border-strong : transparent;
+
+                                        Text {
+                                            text: "\u{2715}";
+                                            color: ov-close-ta.has-hover ? Theme.fg : Theme.fg-muted;
+                                            font-size: 10px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            width: parent.width;
+                                            height: parent.height;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
