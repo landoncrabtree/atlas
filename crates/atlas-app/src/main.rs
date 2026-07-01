@@ -145,6 +145,12 @@ fn main() -> Result<()> {
 
     // config: reads config.search.fuzzy_max_results
     search_ctrl.set_max_results(config.search.fuzzy_max_results);
+    // config: reads config.search.max_visible_results
+    search_ctrl.set_max_visible_results(config.search.max_visible_results);
+    // config: reads config.search.min_query_length
+    search_ctrl.set_min_query_length(config.search.min_query_length);
+    // config: reads config.search.debounce_ms
+    search_ctrl.set_debounce_ms(config.search.debounce_ms);
     // config: reads config.search.default_globs_exclude
     search_ctrl.set_exclude_globs(config.search.default_globs_exclude.clone());
     // config: reads config.search.content_search_threads
@@ -344,16 +350,29 @@ fn main() -> Result<()> {
     // physical semantics, build an atlas-keymap `ChordSequence`, and
     // dispatch under the {Global, Pane} context stack. Handlers registered
     // in `build_dispatcher` do the actual work.
+    //
+    // `modal_active` is Slint's local union of modal-visibility flags
+    // (palette / goto / search / bulk rename / ops progress). When a modal
+    // is up we restrict the dispatch context to `[Global]` only — Pane
+    // bindings (Cmd+A → pane::SelectAll, Cmd+C → fs::Copy, arrows →
+    // pane::MoveDown, …) return false, the callback returns false, and
+    // the key falls through to the modal's TextInput natively. This is
+    // the modal-focus fix that keeps Cmd+A selecting the query text
+    // rather than the pane's visible entries.
     {
         let dispatcher = Arc::clone(&dispatcher);
-        shell.install_key_dispatcher(move |key, ctrl, alt, shift, cmd| {
+        shell.install_key_dispatcher(move |key, ctrl, alt, shift, cmd, modal_active| {
             let Some(seq) = build_sequence_from_slint(&key, ctrl, alt, shift, cmd) else {
                 return false;
             };
-            let contexts = [String::from("Global"), String::from("Pane")];
+            let contexts: Vec<String> = if modal_active {
+                vec![String::from("Global")]
+            } else {
+                vec![String::from("Global"), String::from("Pane")]
+            };
             let hit = dispatcher.handle_key(&seq, &contexts);
             if hit {
-                tracing::debug!(chord = %seq, "keymap: dispatched");
+                tracing::debug!(chord = %seq, modal_active, "keymap: dispatched");
             }
             hit
         });
@@ -695,6 +714,9 @@ fn spawn_config_event_thread(
 
                         // ── Search knobs ──────────────────────────────────
                         search_ctrl.set_max_results(cfg.search.fuzzy_max_results);
+                        search_ctrl.set_max_visible_results(cfg.search.max_visible_results);
+                        search_ctrl.set_min_query_length(cfg.search.min_query_length);
+                        search_ctrl.set_debounce_ms(cfg.search.debounce_ms);
                         search_ctrl.set_exclude_globs(cfg.search.default_globs_exclude.clone());
                         search_ctrl.set_content_search_threads(cfg.search.content_search_threads);
                     }

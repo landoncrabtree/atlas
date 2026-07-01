@@ -963,18 +963,22 @@ impl AppShell {
     /// Install the atlas-keymap dispatch hook on the Slint `handle-key-chord`
     /// callback. Called once at startup after both `AppShell` and the
     /// `Dispatcher` exist. `hook` is invoked with the raw event fields
-    /// (key text + physical modifier bools) and returns `true` if it
-    /// consumed the event.
+    /// (key text, physical modifier bools, and a `modal_active` flag) and
+    /// returns `true` if it consumed the event.
     ///
     /// Physical-modifier normalisation happens on the caller side so this
-    /// method stays UI-only.
+    /// method stays UI-only. `modal_active` reflects Slint's local union of
+    /// modal visibility (palette / goto / search / bulk rename / ops
+    /// progress); the caller uses it to restrict the dispatched context
+    /// stack so text-input-consuming chords (Cmd+A, Cmd+C, arrows) don't
+    /// steal keys from a focused TextInput.
     pub fn install_key_dispatcher<F>(&self, hook: F)
     where
-        F: Fn(SharedString, bool, bool, bool, bool) -> bool + 'static,
+        F: Fn(SharedString, bool, bool, bool, bool, bool) -> bool + 'static,
     {
         if let Some(window) = self.window.upgrade() {
-            window.on_handle_key_chord(move |key, ctrl, alt, shift, cmd| {
-                hook(key, ctrl, alt, shift, cmd)
+            window.on_handle_key_chord(move |key, ctrl, alt, shift, cmd, modal_active| {
+                hook(key, ctrl, alt, shift, cmd, modal_active)
             });
         }
     }

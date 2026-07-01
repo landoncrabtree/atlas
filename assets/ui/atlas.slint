@@ -426,9 +426,13 @@ export component AtlasWindow inherits Window {
     //   alt  = ⌥ Option / Alt
     //   shift = ⇧
     //
-    // MVP: pane-context distinction is deferred; the shell always
-    // dispatches with both "Global" and "Pane" contexts stacked.
-    callback handle-key-chord(string /*key*/, bool /*ctrl*/, bool /*alt*/, bool /*shift*/, bool /*cmd*/) -> bool;
+    // `modal-active` tells the dispatcher a text-input-owning modal (palette,
+    // goto, search panel, bulk rename, ops progress) currently has focus.
+    // When true, Rust restricts the context stack to `[Global]` — Pane-scoped
+    // chords like Cmd+A / Cmd+C fall through to the TextInput natively rather
+    // than firing pane operations against a background list the user can't
+    // even see.
+    callback handle-key-chord(string /*key*/, bool /*ctrl*/, bool /*alt*/, bool /*shift*/, bool /*cmd*/, bool /*modal-active*/) -> bool;
 
     // ── Theme bridges ─────────────────────────────────────────────────────────
 
@@ -683,6 +687,12 @@ export component AtlasWindow inherits Window {
             // for file navigation lives in the fallback `key-pressed`
             // handler below, gated on `vim-mode`, so it doesn't collide
             // with typing in a TextInput.
+            //
+            // When any modal (palette, goto, search, bulk rename, ops
+            // progress) is visible, we still call the dispatcher but pass
+            // `modal-active = true` — Rust restricts the context stack to
+            // `[Global]` so Pane-scoped chords (Cmd+A / Cmd+C / arrows)
+            // fall through to the modal's TextInput natively.
             if event.modifiers.control || event.modifiers.meta
                 || event.modifiers.alt || event.modifiers.shift
                 || event.text == Key.F1 || event.text == Key.F2
@@ -695,7 +705,8 @@ export component AtlasWindow inherits Window {
                                          event.modifiers.control,
                                          event.modifiers.alt,
                                          event.modifiers.shift,
-                                         event.modifiers.meta) {
+                                         event.modifiers.meta,
+                                         any-modal-visible) {
                     return accept;
                 }
             }
@@ -730,7 +741,8 @@ export component AtlasWindow inherits Window {
                                      event.modifiers.control,
                                      event.modifiers.alt,
                                      event.modifiers.shift,
-                                     event.modifiers.meta) {
+                                     event.modifiers.meta,
+                                     any-modal-visible) {
                 return accept;
             }
             reject;
