@@ -630,6 +630,25 @@ export component AtlasWindow inherits Window {
             if !any-modal-visible { self.focus(); }
         }
 
+        // Tracks which pane's address-bar TextInput currently owns focus,
+        // or `-1` when none. Populated by the `changed text-input-focused`
+        // handler on each pane iteration below and read by
+        // `keymap-bypass-active` so Cmd+A / Cmd+C / Cmd+V route to the
+        // TextInput's native edit shortcuts instead of the pane keymap
+        // when the user is typing a path. Mirrors the modal-focus fix from
+        // `a3830bc`, extended to per-pane text inputs.
+        //
+        // Anti-drift: an incoming focus event sets the id; a blur only
+        // clears it when the id matches, so cross-pane focus jumps
+        // (blur A then focus B fires in either order) never leave the
+        // gate stuck open.
+        property <int> text-focus-pane-id: -1;
+
+        // Composite gate passed to the Rust dispatcher: `true` restricts
+        // context to `[Global]` so Pane bindings return false and the
+        // key falls through to whatever TextInput currently owns focus.
+        property <bool> keymap-bypass-active: any-modal-visible || text-focus-pane-id != -1;
+
         // Ticks up whenever Rust wants the root FocusScope to re-grab focus
         // (e.g. after the AddressBar's TextInput cancels or submits). We rely
         // on the `changed` handler so we don't need a Slint-side callback.
@@ -689,10 +708,12 @@ export component AtlasWindow inherits Window {
             // with typing in a TextInput.
             //
             // When any modal (palette, goto, search, bulk rename, ops
-            // progress) is visible, we still call the dispatcher but pass
-            // `modal-active = true` — Rust restricts the context stack to
-            // `[Global]` so Pane-scoped chords (Cmd+A / Cmd+C / arrows)
-            // fall through to the modal's TextInput natively.
+            // progress) is visible OR a per-pane text input (address bar)
+            // owns focus, we still call the dispatcher but pass
+            // `modal-active = true` (see `keymap-bypass-active` above) —
+            // Rust restricts the context stack to `[Global]` so Pane-scoped
+            // chords (Cmd+A / Cmd+C / arrows) fall through to the focused
+            // TextInput natively.
             if event.modifiers.control || event.modifiers.meta
                 || event.modifiers.alt || event.modifiers.shift
                 || event.text == Key.F1 || event.text == Key.F2
@@ -706,7 +727,7 @@ export component AtlasWindow inherits Window {
                                          event.modifiers.alt,
                                          event.modifiers.shift,
                                          event.modifiers.meta,
-                                         any-modal-visible) {
+                                         keymap-bypass-active) {
                     return accept;
                 }
             }
@@ -742,7 +763,7 @@ export component AtlasWindow inherits Window {
                                      event.modifiers.alt,
                                      event.modifiers.shift,
                                      event.modifiers.meta,
-                                     any-modal-visible) {
+                                     keymap-bypass-active) {
                 return accept;
             }
             reject;
@@ -858,6 +879,24 @@ export component AtlasWindow inherits Window {
 
                     miller-row-clicked(col, row) => { root.miller-row-clicked(pane.id, col, row); }
                     miller-row-double-clicked(col, row) => { root.miller-row-double-clicked(pane.id, col, row); }
+
+                    // Bubble per-pane text-input focus (currently the
+                    // address bar; future inline-rename inputs bubble via
+                    // the same out property) into the root FocusScope's
+                    // `text-focus-pane-id`. When any pane's TextInput has
+                    // focus, `keymap-bypass-active` becomes true and the
+                    // Rust dispatcher restricts to [Global] so Cmd+A /
+                    // Cmd+C / Cmd+V route to the TextInput's edit
+                    // shortcuts. Anti-drift: a blur only clears the id
+                    // when it matches, so cross-pane focus jumps (focus B
+                    // fires before blur A) never leave the gate stuck.
+                    changed text-input-focused => {
+                        if self.text-input-focused {
+                            text-focus-pane-id = pane.id;
+                        } else if text-focus-pane-id == pane.id {
+                            text-focus-pane-id = -1;
+                        }
+                    }
                 }
 
                 // Split-handle drag areas — rendered above panes.

@@ -180,6 +180,15 @@ export component Pane {
     callback miller-row-clicked(int, int);
     callback miller-row-double-clicked(int, int);
 
+    /// True while the pane's address bar TextInput owns keyboard focus.
+    /// The root FocusScope watches this via a `changed` handler on each
+    /// pane iteration and folds it into `keymap-bypass-active` so
+    /// Cmd+A / Cmd+C / Cmd+V route to the TextInput's native edit
+    /// shortcuts instead of firing pane::SelectAll / fs::Copy / fs::Paste.
+    /// Mirrors the modal-focus fix from `a3830bc`, extended to per-pane
+    /// text inputs.
+    out property <bool> text-input-focused: address-bar.input-focused;
+
     Rectangle {
         background: Theme.bg;
 
@@ -202,7 +211,7 @@ export component Pane {
                     HorizontalLayout {
                         padding: Theme.space-2;
 
-                        AddressBar {
+                        address-bar := AddressBar {
                             path: root.path;
                             submitted(p) => { root.address-submitted(p); }
                             cancelled => { root.address-cancelled(); }

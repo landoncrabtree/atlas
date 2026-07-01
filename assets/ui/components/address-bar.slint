@@ -2,8 +2,19 @@ import { Theme } from "../theme.slint";
 
 // Editable path input. Shows a small ↵ icon on the right.
 // Emits `submitted(path)` on Enter, `cancelled` on Escape.
+//
+// Exposes `input-focused` so the root FocusScope can widen its
+// `modal-active` gate to cover the address bar's TextInput — mirrors
+// the `a3830bc` chord-routing pattern used for the palette / goto /
+// search / bulk-rename modals so Cmd+A / Cmd+C / Cmd+V select and
+// copy the query text instead of firing pane::SelectAll / fs::Copy /
+// fs::Paste against the pane's list of entries.
 export component AddressBar {
     in-out property <string> path: "";
+    /// True while the inner TextInput owns keyboard focus. Bubbled up by
+    /// [`Pane`] as `text-input-focused` so the root can bypass Pane-context
+    /// keymap chords in favour of the TextInput's native edit shortcuts.
+    out property <bool> input-focused: input.has-focus;
     callback submitted(string);
     callback cancelled();
 
