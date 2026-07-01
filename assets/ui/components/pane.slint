@@ -22,6 +22,9 @@ export component Pane {
     in property <int> pane-id: -1;
     in property <bool> focused: false;
     in property <string> path: "";
+    /// When true, a 2-px accent inset border is rendered to indicate this pane
+    /// is a valid drop destination for the current drag operation.
+    in property <bool> drag-target: false;
     in property <[string]> path-segments: [];
     in property <string> view-mode: "Details";
     in property <[TabEntry]> tabs: [];
@@ -66,6 +69,10 @@ export component Pane {
     callback tab-closed(int);
     callback new-tab();
     callback pane-clicked();
+    /// Emitted from any view when a drag threshold is exceeded.
+    /// `entry-index` is the index of the dragged entry in the pane's current
+    /// listing.
+    callback drag-start(int /*entry-index*/);
 
     callback details-row-clicked(int, bool, bool);
     callback details-row-double-clicked(int);
@@ -93,8 +100,10 @@ export component Pane {
 
     Rectangle {
         background: Theme.bg;
-        border-width: focused ? 1px : 0px;
-        border-color: Theme.accent.with-alpha(0.4);
+        // Focus ring: 1-px accent border when focused.
+        // Drag-target ring: 2-px accent border when this pane is the drop destination.
+        border-width: drag-target ? 2px : (focused ? 1px : 0px);
+        border-color: Theme.accent.with-alpha(drag-target ? 0.9 : 0.4);
 
         // Full-pane click capture (fires on empty background clicks so the
         // pane can request focus). Placed BEHIND the layout so children with
@@ -149,6 +158,7 @@ export component Pane {
                     row-context-menu(i, x, y) => { root.details-row-context-menu(i, x, y); }
                     header-clicked(i) => { root.details-header-clicked(i); }
                     header-resize(i, w) => { root.details-header-resize(i, w); }
+                    drag-start(i) => { root.drag-start(i); }
                 }
 
                 if root.view-mode == "Grid" : GridView {
@@ -164,6 +174,7 @@ export component Pane {
                     entry-context-menu(i, x, y) => { root.grid-entry-context-menu(i, x, y); }
                     thumbnail-visible(i) => { root.grid-thumbnail-visible(i); }
                     columns-changed(c) => { root.grid-columns-changed(c); }
+                    drag-start(i) => { root.drag-start(i); }
                 }
 
                 if root.view-mode == "Gallery" : GalleryView {
@@ -181,6 +192,7 @@ export component Pane {
                     preview-visible(i) => { root.gallery-preview-visible(i); }
                     prev-image => { root.gallery-prev-image(); }
                     next-image => { root.gallery-next-image(); }
+                    drag-start(i) => { root.drag-start(i); }
                 }
 
                 if root.view-mode == "Miller" : MillerView {
@@ -189,6 +201,7 @@ export component Pane {
                     focused-col: root.miller-focused-col;
                     row-clicked(col, row) => { root.miller-row-clicked(col, row); }
                     row-double-clicked(col, row) => { root.miller-row-double-clicked(col, row); }
+                    drag-start(col, row) => { root.drag-start(row); }
                 }
 
                 if root.view-mode == "Tree" : TreeView {
@@ -200,6 +213,7 @@ export component Pane {
                     row-clicked(i, ctrl, shift) => { root.tree-row-clicked(i, ctrl, shift); }
                     row-double-clicked(i) => { root.tree-row-double-clicked(i); }
                     chevron-clicked(i) => { root.tree-chevron-clicked(i); }
+                    drag-start(i) => { root.drag-start(i); }
                 }
 
                 if root.view-mode != "Details" && root.view-mode != "Grid" && root.view-mode != "Gallery" && root.view-mode != "Miller" && root.view-mode != "Tree" : EmptyView {

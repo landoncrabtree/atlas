@@ -11,6 +11,9 @@ export component EntryRow {
     callback clicked(bool, bool);
     callback double-clicked();
     callback context-menu(length, length);
+    /// Emitted once after the pointer has moved ≥ 4 px while pressed —
+    /// signals to the parent that a drag should begin for this row.
+    callback drag-start();
 
     height: Theme.row-h-default;
 
@@ -103,11 +106,26 @@ export component EntryRow {
         ta := TouchArea {
             property <bool> mod-ctrl: false;
             property <bool> mod-shift: false;
+            // Set to true once the drag threshold has fired so we only emit
+            // drag-start once per press; reset on the next pointer-down.
+            property <bool> drag-initiated: false;
 
             pointer-event(pe) => {
                 if pe.kind == PointerEventKind.down {
                     self.mod-ctrl = pe.modifiers.control;
                     self.mod-shift = pe.modifiers.shift;
+                    self.drag-initiated = false;
+                }
+            }
+
+            moved => {
+                // Escalate to a drag once the pointer has moved ≥ 4 px from the
+                // press point, but only once per press (drag-initiated guard).
+                if !self.drag-initiated && self.pressed {
+                    if abs(self.mouse-x - self.pressed-x) > 4px || abs(self.mouse-y - self.pressed-y) > 4px {
+                        self.drag-initiated = true;
+                        root.drag-start();
+                    }
                 }
             }
 

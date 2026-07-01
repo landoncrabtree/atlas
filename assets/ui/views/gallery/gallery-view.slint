@@ -20,6 +20,8 @@ export component GalleryView inherits FocusScope {
     callback preview-visible(int);
     callback prev-image();
     callback next-image();
+    /// Forwarded from the strip when the 4-px drag threshold is exceeded.
+    callback drag-start(int /*entry-index*/);
 
     key-pressed(event) => {
         if event.text == Key.LeftArrow {
@@ -72,6 +74,7 @@ export component GalleryView inherits FocusScope {
                 focused-index: root.focused-index;
                 entry-clicked(i) => { root.entry-clicked(i); }
                 item-visible(i) => { root.strip-visible(i); }
+                drag-start(i) => { root.drag-start(i); }
             }
         }
     }

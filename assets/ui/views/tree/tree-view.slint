@@ -50,6 +50,8 @@ export component TreeView inherits FocusScope {
     callback row-double-clicked(int);
     /// Emitted when the user clicks the expand/collapse chevron on row `i`.
     callback chevron-clicked(int);
+    /// Forwarded from a tree row when the 4-px drag threshold is exceeded.
+    callback drag-start(int /*entry-index*/);
 
     Rectangle {
         background: Theme.bg;
@@ -70,6 +72,7 @@ export component TreeView inherits FocusScope {
                 clicked(ctrl, shift) => { root.row-clicked(i, ctrl, shift); }
                 double-clicked => { root.row-double-clicked(i); }
                 chevron-clicked => { root.chevron-clicked(i); }
+                drag-start => { root.drag-start(i); }
             }
         }
     }

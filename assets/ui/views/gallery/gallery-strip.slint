@@ -11,6 +11,8 @@ export component GalleryStrip {
 
     callback entry-clicked(int);
     callback item-visible(int);
+    /// Emitted from a strip cell when the 4-px drag threshold is exceeded.
+    callback drag-start(int /*entry-index*/);
 
     ScrollView {
         width: parent.width;
@@ -53,6 +55,21 @@ export component GalleryStrip {
                 }
 
                 TouchArea {
+                    property <bool> drag-initiated: false;
+
+                    pointer-event(pe) => {
+                        if pe.kind == PointerEventKind.down {
+                            self.drag-initiated = false;
+                        }
+                    }
+                    moved => {
+                        if !self.drag-initiated && self.pressed {
+                            if abs(self.mouse-x - self.pressed-x) > 4px || abs(self.mouse-y - self.pressed-y) > 4px {
+                                self.drag-initiated = true;
+                                root.drag-start(i);
+                            }
+                        }
+                    }
                     clicked => { root.entry-clicked(i); }
                 }
             }

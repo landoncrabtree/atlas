@@ -16,6 +16,8 @@ export component TreeRow {
     callback clicked(bool, bool);
     callback double-clicked();
     callback chevron-clicked();
+    /// Emitted once after the pointer has moved ≥ 4 px while pressed.
+    callback drag-start();
 
     height: root.row-height;
 
@@ -83,11 +85,21 @@ export component TreeRow {
         ta := TouchArea {
             property <bool> mod-ctrl: false;
             property <bool> mod-shift: false;
+            property <bool> drag-initiated: false;
 
             pointer-event(pe) => {
                 if pe.kind == PointerEventKind.down {
                     self.mod-ctrl = pe.modifiers.control;
                     self.mod-shift = pe.modifiers.shift;
+                    self.drag-initiated = false;
+                }
+            }
+            moved => {
+                if !self.drag-initiated && self.pressed {
+                    if abs(self.mouse-x - self.pressed-x) > 4px || abs(self.mouse-y - self.pressed-y) > 4px {
+                        self.drag-initiated = true;
+                        root.drag-start();
+                    }
                 }
             }
             clicked => { root.clicked(ta.mod-ctrl, ta.mod-shift); }

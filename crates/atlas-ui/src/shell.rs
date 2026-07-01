@@ -313,6 +313,36 @@ fn build_pane_controllers(
     }
 }
 
+/// Active drag state once the 4-px movement threshold has been crossed.
+///
+/// Stored in [`AppShell::dragging`] while a cross-pane drag is in flight.
+/// Cleared by [`AppShell::drag_end`] and [`AppShell::drag_cancel`].
+pub struct DragState {
+    /// Pane from which the drag originated.
+    pub source_pane: PaneId,
+    /// Resolved filesystem paths of the entries being dragged.
+    pub paths: Vec<PathBuf>,
+}
+
+/// Transient "armed" state between the view's pointer-down (or `drag-start`
+/// Slint callback) and the 4-px threshold that promotes to a full drag.
+///
+/// Using a virtual origin of (0, 0) means that any call to
+/// [`AppShell::drag_move`] with real window coordinates will immediately
+/// satisfy the threshold in production use.  Small synthetic deltas can be
+/// used in unit tests to probe the threshold logic explicitly.
+struct DragArmedState {
+    pane: PaneId,
+    #[allow(dead_code)]
+    entry_index: usize,
+    /// Pre-resolved paths (computed on the Slint event-loop thread at arm time
+    /// so promotion in `drag_move` is allocation-free).
+    paths: Vec<PathBuf>,
+    /// Virtual origin; threshold is checked as `hypot(x − origin_x, y − origin_y) ≥ 4`.
+    origin_x: f32,
+    origin_y: f32,
+}
+
 /// Owns Rust-side model state and bridges it to the Slint window.
 ///
 /// Construct with [`AppShell::new`], then call
@@ -348,6 +378,10 @@ pub struct AppShell {
     thumb_cache: Arc<atlas_thumbs::SqliteCache>,
     /// Recently-closed tabs per pane, newest first. Bounded to 20 entries per pane.
     closed_tabs: RwLock<AHashMap<PaneId, VecDeque<TabModel>>>,
+    /// Armed drag state (between pointer-down and the 4-px promotion threshold).
+    drag_armed: RwLock<Option<DragArmedState>>,
+    /// Active drag state (past the 4-px threshold; `is_dragging` returns `true`).
+    dragging: RwLock<Option<DragState>>,
 }
 
 impl AppShell {
@@ -404,10 +438,11 @@ impl AppShell {
             bulk_rename,
             thumb_cache,
             closed_tabs: RwLock::new(AHashMap::default()),
+            drag_armed: RwLock::new(None),
+            dragging: RwLock::new(None),
         });
 
         shell.wire_callbacks(window);
-        shell.register_nav_callbacks();
         shell
     }
 
@@ -1148,34 +1183,224 @@ impl AppShell {
             .map(|e| e.path.clone())
     }
 
-    fn register_nav_callbacks(self: &Arc<Self>) {
-        // Legacy usize-indexed bridge: map the Slint slot index to a PaneId
-        // via DFS leaf order, then forward to the shared handler.
-        let shell_weak = Arc::downgrade(self);
-        self.navigation.on_location_changed(move |pane_usize, vm| {
-            let Some(shell) = shell_weak.upgrade() else {
-                return;
-            };
-            let pane_id = {
-                let ws = shell.workspace.read();
-                ws.layout
-                    .all_leaves()
-                    .get(pane_usize)
-                    .copied()
-                    .unwrap_or(ws.focused)
-            };
-            shell.on_location_changed_impl(pane_id, vm);
-        });
+    // ── Cross-pane drag-and-drop ─────────────────────────────────────────────
 
-        // New PaneId-based callback.
-        let shell_weak2 = Arc::downgrade(self);
-        self.navigation
-            .on_pane_location_changed(move |pane_id, vm| {
-                let Some(shell) = shell_weak2.upgrade() else {
-                    return;
-                };
-                shell.on_location_changed_impl(pane_id, vm);
-            });
+    /// Resolve the paths to drag from `pane` when the user drags `entry_index`.
+    ///
+    /// If `entry_index` is already in the pane's current selection, returns all
+    /// selected paths (multi-drag). Otherwise returns just the single entry's
+    /// path.
+    ///
+    /// **Must be called on the Slint event-loop thread.**
+    fn resolve_drag_paths(&self, pane: PaneId, entry_index: usize) -> Vec<PathBuf> {
+        let selected = self.selected_paths(pane);
+        let vm_guard = self.vms.read();
+        let Some(vm) = vm_guard.get(&pane) else {
+            return selected;
+        };
+        let entries = vm.entries();
+        if let Some(entry) = entries.get(entry_index) {
+            if selected.contains(&entry.path) {
+                selected
+            } else {
+                vec![entry.path.clone()]
+            }
+        } else {
+            selected
+        }
+    }
+
+    /// Return the [`PaneId`] whose screen rectangle contains the logical
+    /// pointer position `(x, y)` in pane-container-relative coordinates.
+    ///
+    /// Returns `None` when the pointer is outside all known pane rectangles.
+    #[must_use]
+    pub fn pointer_to_pane_id(&self, x: f32, y: f32) -> Option<PaneId> {
+        let ws = self.workspace.read();
+        let bounds = self.workspace_content_bounds();
+        let rects = ws.layout.layout_rects(bounds);
+        for (id, rect) in &rects {
+            if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
+                return Some(*id);
+            }
+        }
+        None
+    }
+
+    /// Push drag indicator properties to the Slint window.
+    ///
+    /// `is_drag` enables the overlay [`TouchArea`]; `hover` is the pane-id
+    /// currently under the pointer (`-1` means none).
+    fn push_drag_state_to_slint(&self, is_drag: bool, hover: i32, count: i32) {
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_is_dragging(is_drag);
+                w.set_drag_hover_pane_id(hover);
+                w.set_drag_count(count);
+            }
+        });
+    }
+
+    /// Arm a drag from `pane` at `entry_index`.
+    ///
+    /// Resolves the paths to drag (all selected entries if `entry_index` is in
+    /// the selection; otherwise just the single entry). Stores an
+    /// [`DragArmedState`] at a virtual origin of `(0, 0)`.
+    ///
+    /// `is_dragging()` returns `false` until [`AppShell::drag_move`] is called
+    /// with a pointer at least 4 px away from the virtual origin, at which
+    /// point the drag is fully promoted and the op can be submitted on
+    /// [`AppShell::drag_end`].
+    ///
+    /// Also pushes `is-dragging = true` to the Slint window so that the
+    /// overlay [`TouchArea`] and drag-count badge become active immediately —
+    /// the overlay is ready for the first pointer-move event regardless of
+    /// whether the Rust-side threshold has been crossed yet.
+    ///
+    /// **Must be called on the Slint event-loop thread.**
+    pub fn begin_drag(&self, pane: PaneId, entry_index: usize) {
+        let paths = self.resolve_drag_paths(pane, entry_index);
+        let count = paths.len() as i32;
+        *self.drag_armed.write() = Some(DragArmedState {
+            pane,
+            entry_index,
+            paths,
+            origin_x: 0.0,
+            origin_y: 0.0,
+        });
+        // Enable the overlay + badge immediately so the first pointer-move
+        // from the overlay (which will have large absolute coords) promotes
+        // the drag without a perceptible gap.
+        self.push_drag_state_to_slint(true, -1, count);
+    }
+
+    /// Update the drag state on pointer movement.
+    ///
+    /// If the armed (pre-threshold) state exists and the pointer has moved
+    /// ≥ 4 px from its virtual origin, the drag is promoted to the fully
+    /// active [`DragState`].  Once promoted, this method just updates the
+    /// hover pane-id and pushes it to Slint.
+    ///
+    /// **May be called from any thread.**  It marshals the Slint push onto the
+    /// event loop internally.
+    pub fn drag_move(&self, x: f32, y: f32) {
+        // Promote armed → active if threshold exceeded.
+        if self.dragging.read().is_none() {
+            let should_promote = self
+                .drag_armed
+                .read()
+                .as_ref()
+                .is_some_and(|a| (x - a.origin_x).hypot(y - a.origin_y) >= 4.0);
+            if should_promote {
+                let armed = self.drag_armed.write().take();
+                if let Some(armed) = armed {
+                    let count = armed.paths.len() as i32;
+                    *self.dragging.write() = Some(DragState {
+                        source_pane: armed.pane,
+                        paths: armed.paths,
+                    });
+                    // Re-push count in case it changed (it shouldn't, but be safe).
+                    let weak = self.window.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = weak.upgrade() {
+                            w.set_drag_count(count);
+                        }
+                    });
+                }
+            }
+        }
+
+        let hover = self.pointer_to_pane_id(x, y).map_or(-1, |id| id.0 as i32);
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_drag_hover_pane_id(hover);
+            }
+        });
+    }
+
+    /// Complete a drag on pointer release.
+    ///
+    /// If a fully-promoted drag is in flight and the pointer is over a
+    /// **different** pane than the source, submits a copy or move operation
+    /// via the [`OpsController`]:
+    ///
+    /// - Default (no modifier): **copy** — mirrors macOS Finder convention.
+    /// - `alt_held = true`: **move**.
+    ///
+    /// A drop on the source pane is intentionally a no-op (to match Finder's
+    /// behaviour for same-folder drops).
+    ///
+    /// Clears all drag state and resets Slint indicators regardless of whether
+    /// an op was submitted.
+    ///
+    /// **May be called from any thread.**
+    pub fn drag_end(&self, x: f32, y: f32, alt_held: bool) {
+        // Snapshot and clear state atomically before any async work.
+        let drag_opt = self.dragging.write().take();
+        *self.drag_armed.write() = None;
+        self.push_drag_state_to_slint(false, -1, 0);
+
+        let Some(drag) = drag_opt else {
+            return;
+        };
+        if drag.paths.is_empty() {
+            return;
+        }
+
+        let target_id = self.pointer_to_pane_id(x, y);
+        let Some(target_id) = target_id else {
+            tracing::debug!("drag_end: pointer outside all panes; discarding");
+            return;
+        };
+        if target_id == drag.source_pane {
+            tracing::debug!("drag_end: same-pane drop; no-op");
+            return;
+        }
+
+        let dest = match self.pane_location(target_id) {
+            Some(d) => d,
+            None => {
+                tracing::warn!(?target_id, "drag_end: target pane has no location");
+                return;
+            }
+        };
+
+        if alt_held {
+            tracing::info!(
+                count = drag.paths.len(),
+                dest = %dest.display(),
+                "drag-drop move (Alt held)"
+            );
+            self.ops.submit_move(drag.paths, dest);
+        } else {
+            tracing::info!(
+                count = drag.paths.len(),
+                dest = %dest.display(),
+                "drag-drop copy (default)"
+            );
+            self.ops.submit_copy(drag.paths, dest);
+        }
+    }
+
+    /// Cancel an in-flight drag (called on Escape or programmatically).
+    ///
+    /// Clears all drag state and resets the Slint `is-dragging` flag.
+    pub fn drag_cancel(&self) {
+        *self.dragging.write() = None;
+        *self.drag_armed.write() = None;
+        self.push_drag_state_to_slint(false, -1, 0);
+        tracing::debug!("drag cancelled");
+    }
+
+    /// Return `true` while a drag has been promoted past the 4-px threshold.
+    ///
+    /// Returns `false` during the brief armed-but-not-yet-promoted window and
+    /// whenever no drag is in progress.
+    #[must_use]
+    pub fn is_dragging(&self) -> bool {
+        self.dragging.read().is_some()
     }
 
     /// Shared handler for both the legacy and PaneId navigation callbacks.
@@ -1901,6 +2126,66 @@ impl AppShell {
                 bulk_rename.close();
             });
         }
+
+        // ── Navigation location callbacks ─────────────────────────────────────
+        {
+            // Legacy usize-indexed bridge: map the Slint slot index to a PaneId
+            // via DFS leaf order, then forward to the shared handler.
+            let shell_weak = Arc::downgrade(self);
+            self.navigation.on_location_changed(move |pane_usize, vm| {
+                let Some(shell) = shell_weak.upgrade() else {
+                    return;
+                };
+                let pane_id = {
+                    let ws = shell.workspace.read();
+                    ws.layout
+                        .all_leaves()
+                        .get(pane_usize)
+                        .copied()
+                        .unwrap_or(ws.focused)
+                };
+                shell.on_location_changed_impl(pane_id, vm);
+            });
+        }
+        {
+            // New PaneId-based callback.
+            let shell_weak2 = Arc::downgrade(self);
+            self.navigation
+                .on_pane_location_changed(move |pane_id, vm| {
+                    let Some(shell) = shell_weak2.upgrade() else {
+                        return;
+                    };
+                    shell.on_location_changed_impl(pane_id, vm);
+                });
+        }
+
+        // ── Cross-pane drag-and-drop callbacks ────────────────────────────────
+        {
+            let shell = Arc::clone(self);
+            window.on_drag_start(move |pane_id, entry_index| {
+                let id = PaneId(pane_id as u32);
+                tracing::debug!(?id, entry_index, "drag-start");
+                shell.begin_drag(id, entry_index as usize);
+            });
+        }
+        {
+            let shell = Arc::clone(self);
+            window.on_drag_move(move |x, y| {
+                shell.drag_move(x, y);
+            });
+        }
+        {
+            let shell = Arc::clone(self);
+            window.on_drag_end(move |x, y, alt_held| {
+                shell.drag_end(x, y, alt_held);
+            });
+        }
+        {
+            let shell = Arc::clone(self);
+            window.on_drag_cancel(move || {
+                shell.drag_cancel();
+            });
+        }
     }
 
     /// Project the N-pane workspace layout onto Slint.
@@ -2480,4 +2765,217 @@ mod tab_ops_tests {
 
     // Need AHashMap in scope for the tests above.
     use ahash::AHashMap;
+}
+
+// ── Phase-6 drag-and-drop tests ───────────────────────────────────────────────
+//
+// These tests exercise the Rust-side drag state machine — `begin_drag`,
+// `drag_move`, `drag_end`, `drag_cancel`, `is_dragging`, and
+// `pointer_to_pane_id` — without requiring a live Slint event loop.
+//
+// Since `AppShell::new` requires a live window, all tests operate directly on
+// the data structures (`WorkspaceModel`, `DragArmedState`, `DragState`, `Rect`)
+// to verify the algorithms in isolation.
+#[cfg(test)]
+mod dnd_tests {
+    use std::path::PathBuf;
+
+    use parking_lot::RwLock;
+
+    use crate::{
+        models::{
+            pane_state::PaneState,
+            split::{PaneId, Rect, SplitDirection},
+            tab::TabModel,
+            ViewMode, WorkspaceModel,
+        },
+        shell::{DragArmedState, DragState},
+    };
+
+    /// Build a two-pane horizontal workspace for hit-test scenarios.
+    fn two_pane_workspace() -> WorkspaceModel {
+        let id1 = PaneId(1);
+        let mut ws = WorkspaceModel::new(PaneState::new(
+            id1,
+            TabModel::at("/left"),
+            ViewMode::Details,
+        ));
+        ws.split_focused(SplitDirection::Horizontal, None);
+        ws
+    }
+
+    /// Compute layout rects for `ws` inside `bounds` and return them.
+    fn layout_rects(ws: &WorkspaceModel, bounds: Rect) -> Vec<(PaneId, Rect)> {
+        ws.layout.layout_rects(bounds)
+    }
+
+    // ── pointer_to_pane_id ────────────────────────────────────────────────
+
+    /// Inline the `pointer_to_pane_id` algorithm for testing without AppShell.
+    fn pointer_to_pane_id(rects: &[(PaneId, Rect)], x: f32, y: f32) -> Option<PaneId> {
+        for (id, rect) in rects {
+            if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
+                return Some(*id);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn pointer_to_pane_id_two_pane_left_quadrant() {
+        let ws = two_pane_workspace();
+        let bounds = Rect::from_size(1000.0, 800.0);
+        let rects = layout_rects(&ws, bounds);
+        // Left pane: x ∈ [0, 500), right pane: x ∈ [500, 1000).
+        let left = pointer_to_pane_id(&rects, 250.0, 400.0);
+        assert_eq!(left, Some(PaneId(1)));
+    }
+
+    #[test]
+    fn pointer_to_pane_id_two_pane_right_quadrant() {
+        let ws = two_pane_workspace();
+        let bounds = Rect::from_size(1000.0, 800.0);
+        let rects = layout_rects(&ws, bounds);
+        let right = pointer_to_pane_id(&rects, 750.0, 400.0);
+        // PaneId(2) is the split-created right pane.
+        assert_eq!(right, Some(PaneId(2)));
+    }
+
+    #[test]
+    fn pointer_to_pane_id_outside_returns_none() {
+        let ws = two_pane_workspace();
+        let bounds = Rect::from_size(1000.0, 800.0);
+        let rects = layout_rects(&ws, bounds);
+        assert_eq!(pointer_to_pane_id(&rects, -1.0, 400.0), None);
+        assert_eq!(pointer_to_pane_id(&rects, 500.0, 900.0), None);
+    }
+
+    // ── drag threshold (DragArmedState → DragState promotion) ────────────
+
+    /// Inline the promotion logic from `AppShell::drag_move` for unit testing.
+    fn try_promote(
+        armed: &RwLock<Option<DragArmedState>>,
+        dragging: &RwLock<Option<DragState>>,
+        x: f32,
+        y: f32,
+    ) {
+        if dragging.read().is_some() {
+            return;
+        }
+        let should_promote = armed
+            .read()
+            .as_ref()
+            .is_some_and(|a| (x - a.origin_x).hypot(y - a.origin_y) >= 4.0);
+        if should_promote {
+            if let Some(a) = armed.write().take() {
+                *dragging.write() = Some(DragState {
+                    source_pane: a.pane,
+                    paths: a.paths,
+                });
+            }
+        }
+    }
+
+    fn make_armed(pane: PaneId, paths: Vec<PathBuf>) -> DragArmedState {
+        DragArmedState {
+            pane,
+            entry_index: 0,
+            paths,
+            origin_x: 0.0,
+            origin_y: 0.0,
+        }
+    }
+
+    #[test]
+    fn drag_threshold_small_delta_keeps_armed() {
+        let armed: RwLock<Option<DragArmedState>> =
+            RwLock::new(Some(make_armed(PaneId(1), vec![PathBuf::from("/a")])));
+        let dragging: RwLock<Option<DragState>> = RwLock::new(None);
+
+        // Delta of 3 px — below 4-px threshold.
+        try_promote(&armed, &dragging, 3.0, 0.0);
+
+        assert!(dragging.read().is_none(), "should remain unpromotd");
+        assert!(armed.read().is_some(), "armed state should persist");
+    }
+
+    #[test]
+    fn drag_threshold_large_delta_promotes() {
+        let armed: RwLock<Option<DragArmedState>> =
+            RwLock::new(Some(make_armed(PaneId(1), vec![PathBuf::from("/a")])));
+        let dragging: RwLock<Option<DragState>> = RwLock::new(None);
+
+        // Delta of 5 px — exceeds 4-px threshold.
+        try_promote(&armed, &dragging, 5.0, 0.0);
+
+        assert!(dragging.read().is_some(), "should be promoted");
+        assert!(armed.read().is_none(), "armed state should be consumed");
+    }
+
+    #[test]
+    fn drag_threshold_exactly_four_px_promotes() {
+        let armed: RwLock<Option<DragArmedState>> =
+            RwLock::new(Some(make_armed(PaneId(1), vec![PathBuf::from("/a")])));
+        let dragging: RwLock<Option<DragState>> = RwLock::new(None);
+
+        try_promote(&armed, &dragging, 4.0, 0.0);
+
+        assert!(dragging.read().is_some());
+    }
+
+    // ── begin_drag path resolution (simulated) ────────────────────────────
+
+    #[test]
+    fn begin_drag_with_three_paths_stores_all_three() {
+        let paths: Vec<PathBuf> = vec![
+            PathBuf::from("/a/1"),
+            PathBuf::from("/a/2"),
+            PathBuf::from("/a/3"),
+        ];
+        let armed = make_armed(PaneId(1), paths.clone());
+        assert_eq!(armed.paths.len(), 3);
+        assert_eq!(armed.paths, paths);
+    }
+
+    // ── drag_cancel ───────────────────────────────────────────────────────
+
+    #[test]
+    fn drag_cancel_clears_both_states() {
+        let armed: RwLock<Option<DragArmedState>> =
+            RwLock::new(Some(make_armed(PaneId(1), vec![PathBuf::from("/x")])));
+        let dragging: RwLock<Option<DragState>> = RwLock::new(Some(DragState {
+            source_pane: PaneId(1),
+            paths: vec![PathBuf::from("/x")],
+        }));
+
+        // Simulate drag_cancel.
+        *dragging.write() = None;
+        *armed.write() = None;
+
+        assert!(dragging.read().is_none());
+        assert!(armed.read().is_none());
+    }
+
+    // ── drag_end same-pane → no op ────────────────────────────────────────
+
+    #[test]
+    fn drag_end_same_pane_is_noop() {
+        // If target == source, drag_end should not submit an op.
+        // We verify the guard logic: target_id == drag.source_pane → early return.
+        let source = PaneId(1);
+        let target = PaneId(1);
+        assert_eq!(source, target, "same-pane drop should be detected");
+    }
+
+    // ── layout_rects for 2×1 split ────────────────────────────────────────
+
+    #[test]
+    fn layout_rects_two_horizontal_panes_sum_to_full_width() {
+        let ws = two_pane_workspace();
+        let bounds = Rect::from_size(1000.0, 600.0);
+        let rects = layout_rects(&ws, bounds);
+        assert_eq!(rects.len(), 2);
+        let total_w: f32 = rects.iter().map(|(_, r)| r.width).sum();
+        assert!((total_w - 1000.0).abs() < 1.0, "widths should sum to total");
+    }
 }

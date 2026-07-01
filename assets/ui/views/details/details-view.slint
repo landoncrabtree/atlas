@@ -22,6 +22,8 @@ export component DetailsView {
     callback row-context-menu(int, length, length);
     callback header-clicked(int);
     callback header-resize(int, float);
+    /// Forwarded from the focused row when the 4-px drag threshold is exceeded.
+    callback drag-start(int /*entry-index*/);
 
     VerticalLayout {
         spacing: 0px;
@@ -47,6 +49,7 @@ export component DetailsView {
                     clicked(ctrl, shift) => { root.row-clicked(i, ctrl, shift); }
                     double-clicked => { root.row-double-clicked(i); }
                     context-menu(x, y) => { root.row-context-menu(i, x, y); }
+                    drag-start => { root.drag-start(i); }
                 }
             }
         }

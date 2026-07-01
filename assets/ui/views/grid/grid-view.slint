@@ -38,6 +38,8 @@ export component GridView inherits FocusScope {
     callback thumbnail-visible(int);
     // Fires when the computed column count changes; controller updates move_focus.
     callback columns-changed(int);
+    /// Forwarded from a cell when the 4-px drag threshold is exceeded.
+    callback drag-start(int /*entry-index*/);
 
     changed columns => { root.columns-changed(columns); }
 
@@ -68,6 +70,7 @@ export component GridView inherits FocusScope {
             double-clicked => { root.entry-double-clicked(i); }
             context-menu(x, y) => { root.entry-context-menu(i, x, y); }
             became-visible => { root.thumbnail-visible(i); }
+            drag-start => { root.drag-start(i); }
         }
     }
 }

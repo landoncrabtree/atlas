@@ -14,6 +14,8 @@ export component GridCell {
     callback double-clicked();
     callback context-menu(length, length);
     callback became-visible();
+    /// Emitted once after the pointer has moved ≥ 4 px while pressed.
+    callback drag-start();
 
     width: cell-size;
     height: cell-size + label-height;
@@ -71,11 +73,22 @@ export component GridCell {
         ta := TouchArea {
             property <bool> mod-ctrl: false;
             property <bool> mod-shift: false;
+            property <bool> drag-initiated: false;
 
             pointer-event(pe) => {
                 if pe.kind == PointerEventKind.down {
                     self.mod-ctrl = pe.modifiers.control;
                     self.mod-shift = pe.modifiers.shift;
+                    self.drag-initiated = false;
+                }
+            }
+
+            moved => {
+                if !self.drag-initiated && self.pressed {
+                    if abs(self.mouse-x - self.pressed-x) > 4px || abs(self.mouse-y - self.pressed-y) > 4px {
+                        self.drag-initiated = true;
+                        root.drag-start();
+                    }
                 }
             }
 

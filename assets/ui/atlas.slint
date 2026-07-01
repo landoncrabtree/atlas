@@ -305,6 +305,38 @@ export component AtlasWindow inherits Window {
     /// pending investigation of TouchArea pressed-x/y availability).
     callback resize-split(int /*node-index*/, float /*delta-fraction*/);
 
+    // ── Cross-pane drag-and-drop ──────────────────────────────────────────────
+    //
+    // Primitive: TouchArea::moved (same as Phase 5 tab reorder).  No native
+    // DragArea / DropArea in Slint 1.17.
+    //
+    // Flow:
+    //   1. A view row/cell detects ≥ 4 px movement while pressed → fires
+    //      `drag-start(pane-id, entry-index)`.
+    //   2. Rust `begin_drag` resolves paths + sets `is-dragging = true`.
+    //   3. The overlay TouchArea (enabled only while `is-dragging`) intercepts
+    //      all pointer moves and fires `drag-move` / `drag-end`.
+    //   4. Escape → `drag-cancel`.
+
+    /// Emitted when a view row/cell exceeds the 4-px drag threshold.
+    callback drag-start(int /*pane-id*/, int /*entry-index*/);
+    /// Emitted continuously by the overlay while the pointer moves during drag.
+    callback drag-move(length /*x*/, length /*y*/);
+    /// Emitted by the overlay on pointer release.
+    callback drag-end(length /*x*/, length /*y*/, bool /*alt-held*/);
+    /// Emitted on Escape while a drag is in flight.
+    callback drag-cancel();
+
+    /// True while a cross-pane drag is in flight (past the 4-px threshold).
+    in property <bool> is-dragging: false;
+    /// PaneId of the pane currently under the drag pointer; -1 when none.
+    in property <int> drag-hover-pane-id: -1;
+    /// Number of entries being dragged (shown in the count badge).
+    in property <int> drag-count: 0;
+    /// Badge position in pane-container-relative coordinates (updated by drag-move).
+    in-out property <length> drag-badge-x: 0px;
+    in-out property <length> drag-badge-y: 0px;
+
     // ── Workspace-level callbacks ─────────────────────────────────────────────
 
     callback toggle-palette();
@@ -448,6 +480,11 @@ export component AtlasWindow inherits Window {
         key-pressed(event) => {
             if event.text == Key.Escape && palette-visible {
                 root.palette-dismiss();
+                return accept;
+            }
+            // Cancel an in-flight drag before dismissing anything else.
+            if event.text == Key.Escape && is-dragging {
+                root.drag-cancel();
                 return accept;
             }
             if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "P" || event.text == "p") {
@@ -675,6 +712,12 @@ export component AtlasWindow inherits Window {
                     tab-closed(t) => { root.tab-closed(pane.id, t); }
                     new-tab => { root.new-tab(pane.id); }
                     pane-clicked => { root.pane-focused(pane.id); }
+                    // Drag-and-drop: forward with pane-id prefix so the root callback
+                    // carries both source pane and entry index.
+                    drag-start(entry-idx) => { root.drag-start(pane.id, entry-idx); }
+                    // Drop-target highlight: show on any pane other than the source
+                    // that is under the pointer while dragging.
+                    drag-target: root.is-dragging && pane.id == root.drag-hover-pane-id;
 
                     details-row-clicked(idx, ctrl, shift) => { root.details-row-clicked(pane.id, idx, ctrl, shift); }
                     details-row-double-clicked(idx) => { root.details-row-double-clicked(pane.id, idx); }
@@ -713,6 +756,52 @@ export component AtlasWindow inherits Window {
                     mouse-cursor: handle.horizontal ? MouseCursor.row-resize : MouseCursor.col-resize;
                     clicked => {
                         root.resize-split(handle.node-index, 0.0);
+                    }
+                }
+
+                // ── Drag-and-drop overlay ─────────────────────────────────────
+                // Enabled only while a drag is in flight (`is-dragging = true`)
+                // so it never steals clicks during normal operation.
+                // Intercepts all pointer moves to update hover-pane highlight
+                // and fires drag-end on pointer release.
+                TouchArea {
+                    enabled: root.is-dragging;
+                    width: 100%;
+                    height: 100%;
+                    mouse-cursor: root.is-dragging ? MouseCursor.copy : MouseCursor.default;
+
+                    moved => {
+                        root.drag-badge-x = self.mouse-x;
+                        root.drag-badge-y = self.mouse-y;
+                        root.drag-move(self.mouse-x, self.mouse-y);
+                    }
+
+                    pointer-event(pe) => {
+                        if pe.button == PointerEventButton.left && pe.kind == PointerEventKind.up {
+                            root.drag-end(self.mouse-x, self.mouse-y, pe.modifiers.alt);
+                        }
+                    }
+                }
+
+                // ── Drag-count badge ──────────────────────────────────────────
+                // Small pill that follows the pointer during drag to indicate
+                // how many items are being dragged.
+                if root.is-dragging && root.drag-count > 0 : Rectangle {
+                    x: root.drag-badge-x + 14px;
+                    y: root.drag-badge-y - 14px;
+                    width: 60px;
+                    height: 22px;
+                    background: Theme.accent;
+                    border-radius: Theme.radius-sm;
+
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.drag-count == 1 ? "1 item" : (root.drag-count + " items");
+                        color: Theme.accent-fg;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
                     }
                 }
             }
