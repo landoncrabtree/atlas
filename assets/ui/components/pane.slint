@@ -106,13 +106,6 @@ export component Pane {
 
     Rectangle {
         background: Theme.bg;
-        // Focus ring: accent border when focused (thickness from
-        // config.ui.active_pane_border_px), fatter accent border when this
-        // pane is the drop destination.
-        border-width: drag-target ? focused-border-px + 1px : (focused ? focused-border-px : 0px);
-        border-color: focused
-            ? Theme.accent.with-alpha(drag-target ? 0.95 : 0.85)
-            : Theme.accent.with-alpha(drag-target ? 0.9 : 0.4);
 
         // Full-pane click capture (fires on empty background clicks so the
         // pane can request focus). Placed BEHIND the layout so children with
@@ -149,6 +142,11 @@ export component Pane {
                 TabBar {
                     tabs: root.tabs;
                     active-index: root.active-tab;
+                    // Only show the tab bar when there are 2+ tabs — with
+                    // exactly one tab the tab title (folder name) duplicates
+                    // the trailing breadcrumb segment.
+                    visible: root.tabs.length > 1;
+                    height: root.tabs.length > 1 ? 32px : 0px;
                     select(i) => { root.tab-selected(i); }
                     close(i) => { root.tab-closed(i); }
                     new-tab => { root.new-tab(); }
@@ -229,6 +227,21 @@ export component Pane {
                     view-mode: root.view-mode;
                     vertical-stretch: 1;
                 }
+        }
+
+        // Focused / drag-target ring, painted ON TOP of the pane content so
+        // it is always visible (the pane's Rectangle border would otherwise
+        // be occluded by 100%-sized children). Non-interactive.
+        Rectangle {
+            x: 0px; y: 0px;
+            width: parent.width;
+            height: parent.height;
+            background: transparent;
+            border-width: drag-target ? focused-border-px + 1px : (focused ? focused-border-px : 0px);
+            border-color: focused
+                ? Theme.accent
+                : Theme.accent.with-alpha(drag-target ? 0.6 : 0.3);
+            border-radius: 0px;
         }
     }
 }

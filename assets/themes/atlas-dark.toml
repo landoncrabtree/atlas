@@ -22,7 +22,7 @@ success = "#5bd18a"
 warning = "#f5c274"
 
 [typography]
-font_family = "SF Pro Text, Inter, system-ui, sans-serif"
+font_family = "SF Pro Text, Inter, system-ui, Apple Symbols, Segoe UI Symbol, sans-serif"
 monospace_family = "SF Mono, JetBrains Mono, Menlo, monospace"
 font_size_pt = 13.0
 

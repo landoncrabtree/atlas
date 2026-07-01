@@ -436,7 +436,7 @@ fn entry_to_row_item(entry: &Entry) -> EntryRowItem {
         EntryKind::Dir => (true, false, false, "▸"),
         EntryKind::File => (false, false, false, "·"),
         EntryKind::Symlink { broken, .. } => (false, true, *broken, "↳"),
-        EntryKind::Other => (false, false, false, "⚙️"),
+        EntryKind::Other => (false, false, false, "◆"),
     };
 
     let size_text = if is_dir {

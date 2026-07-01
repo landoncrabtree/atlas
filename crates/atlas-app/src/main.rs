@@ -858,21 +858,41 @@ fn spawn_theme_event_thread(
 
 /// Overlay user-configured typography onto the resolved theme tokens.
 ///
-/// Empty strings and non-positive sizes are treated as "unset" and leave the
-/// theme's own defaults in place; any populated field wins. This gives users
-/// a clean escape hatch for fonts without maintaining a full custom theme
-/// TOML. Applied both at startup and whenever `config.toml` hot-reloads.
+/// The user's font choice is *prepended* to the theme's own font-family
+/// stack rather than replacing it, so glyphs the user's font can't render
+/// (emoji, arrows, tab-close ✕) still resolve via the built-in fallback
+/// chain instead of showing as tofu boxes.
+///
+/// Empty strings and non-positive sizes are treated as "unset" and leave
+/// the theme's own defaults in place. Applied both at startup and whenever
+/// `config.toml` hot-reloads.
 ///
 /// config: reads config.ui.{font_family, monospace_font_family, font_size}
 fn apply_font_overrides(tokens: &mut ThemeTokens, ui: &atlas_config::Ui) {
     if !ui.font_family.trim().is_empty() {
-        tokens.typography.font_family = ui.font_family.clone();
+        tokens.typography.font_family =
+            prepend_font(&ui.font_family, &tokens.typography.font_family);
     }
     if !ui.monospace_font_family.trim().is_empty() {
-        tokens.typography.monospace_family = ui.monospace_font_family.clone();
+        tokens.typography.monospace_family =
+            prepend_font(&ui.monospace_font_family, &tokens.typography.monospace_family);
     }
     if ui.font_size > 0.0 && ui.font_size.is_finite() {
         tokens.typography.font_size_pt = ui.font_size;
+    }
+}
+
+/// Prepend `user_font` to the comma-separated `fallback_chain`, de-duplicating
+/// case-insensitively so repeated overrides don't stack.
+fn prepend_font(user_font: &str, fallback_chain: &str) -> String {
+    let user = user_font.trim();
+    let already_present = fallback_chain
+        .split(',')
+        .any(|f| f.trim().eq_ignore_ascii_case(user));
+    if already_present {
+        fallback_chain.to_owned()
+    } else {
+        format!("{user}, {fallback_chain}")
     }
 }
 
