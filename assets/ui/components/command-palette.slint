@@ -96,7 +96,7 @@ export component CommandPalette {
                         height: 40px;
                         width: parent.width;
                         background: i == selected-index ? Theme.accent-soft : transparent;
-                        animate background { duration: 100ms; easing: linear; }
+                        animate background { duration: Theme.motion-fast; easing: linear; }
 
                         // Selected accent left rail
                         if i == selected-index : Rectangle {

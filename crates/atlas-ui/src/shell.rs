@@ -608,6 +608,15 @@ impl AppShell {
         }
     }
 
+    /// Enable or disable UI animations globally. When `false`, every
+    /// `animate {}` block in Slint collapses to a 0ms transition. Bound to
+    /// `ui.animations`.
+    pub fn set_animations_enabled(&self, enabled: bool) {
+        if let Some(window) = self.window.upgrade() {
+            window.set_theme_animations(enabled);
+        }
+    }
+
     /// Resolve a Slint pane index (0 or 1) to a [`PaneId`] via DFS leaf order.
     fn pane_id_for_index(&self, index: usize) -> Option<PaneId> {
         let leaves = self.workspace.read().layout.all_leaves();

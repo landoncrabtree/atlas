@@ -17,7 +17,7 @@ export component AddressBar {
 
         property <bool> has-focus: input.has-focus;
 
-        animate border-color { duration: 120ms; easing: ease-out; }
+        animate border-color { duration: Theme.motion-quick; easing: ease-out; }
 
         HorizontalLayout {
             padding-left: Theme.space-3;
@@ -52,7 +52,7 @@ export component AddressBar {
                     horizontal-alignment: center;
                     width: parent.width;
                     height: parent.height;
-                    animate color { duration: 120ms; easing: ease-out; }
+                    animate color { duration: Theme.motion-quick; easing: ease-out; }
                 }
             }
         }

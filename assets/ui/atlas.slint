@@ -80,6 +80,9 @@ export component AtlasWindow inherits Window {
     in-out property <length> theme-row-h-default: 30px;
     in-out property <length> theme-row-h-compact: 24px;
     in-out property <length> theme-row-h-spacious: 38px;
+    /// When false every animate{} duration collapses to 0ms. Wired from
+    /// config.ui.animations.
+    in-out property <bool> theme-animations: true;
 
     // ── N-pane workspace ─────────────────────────────────────────────────────
 
@@ -410,6 +413,7 @@ export component AtlasWindow inherits Window {
         Theme.row-h-default = theme-row-h-default;
         Theme.row-h-compact = theme-row-h-compact;
         Theme.row-h-spacious = theme-row-h-spacious;
+        Theme.animations = theme-animations;
     }
 
     changed dark => { Theme.dark = dark; }
@@ -457,6 +461,7 @@ export component AtlasWindow inherits Window {
     changed theme-row-h-default => { Theme.row-h-default = theme-row-h-default; }
     changed theme-row-h-compact => { Theme.row-h-compact = theme-row-h-compact; }
     changed theme-row-h-spacious => { Theme.row-h-spacious = theme-row-h-spacious; }
+    changed theme-animations => { Theme.animations = theme-animations; }
 
     FocusScope {
         root-focus := Rectangle {

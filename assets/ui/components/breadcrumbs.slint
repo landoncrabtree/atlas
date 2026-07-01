@@ -30,7 +30,7 @@ export component Breadcrumbs {
                         x: 0px; y: 0px;
                         width: parent.width;
                         height: parent.height;
-                        animate background { duration: 120ms; easing: ease-out; }
+                        animate background { duration: Theme.motion-quick; easing: ease-out; }
                     }
 
                     seg-text := Text {
@@ -39,7 +39,7 @@ export component Breadcrumbs {
                         color: i == segments.length - 1 ? Theme.fg : Theme.fg-muted;
                         font-size: 12px;
                         vertical-alignment: center;
-                        animate color { duration: 120ms; easing: ease-out; }
+                        animate color { duration: Theme.motion-quick; easing: ease-out; }
                     }
                 }
 

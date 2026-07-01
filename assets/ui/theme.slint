@@ -60,4 +60,13 @@ export global Theme {
     in-out property <length> row-h-default: 30px;
     in-out property <length> row-h-compact: 24px;
     in-out property <length> row-h-spacious: 38px;
+
+    // ── Motion ────────────────────────────────────────────────────────────────
+    // When `animations` is false every `animate {}` block resolves to 0ms and
+    // becomes an instant transition. Wired from `config.ui.animations`.
+    in-out property <bool> animations: true;
+    // Standard hover/highlight easing duration; use `animate x { duration: Theme.motion-quick; }`.
+    in-out property <duration> motion-quick: animations ? 120ms : 0ms;
+    // Faster transition (list-row hover backgrounds).
+    in-out property <duration> motion-fast: animations ? 100ms : 0ms;
 }

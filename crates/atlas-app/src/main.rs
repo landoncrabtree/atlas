@@ -234,6 +234,8 @@ fn main() -> Result<()> {
     // Wire chrome visibility from config.ui.
     shell.set_status_bar_visible(config.ui.show_status_bar);
     shell.set_breadcrumbs_visible(config.ui.show_breadcrumbs);
+    // config: reads config.ui.animations
+    shell.set_animations_enabled(config.ui.animations);
     spawn_theme_event_thread(Arc::clone(&shell), Arc::clone(&themes_arc), theme_events);
 
     // Start the config hot-reload watcher so users can edit config.toml and
@@ -304,9 +306,6 @@ fn main() -> Result<()> {
     // TODO(config-sweep): ui.font_family / ui.font_size / ui.monospace_font_family —
     //   requires pushing new properties into the Theme Slint global. Tracked in
     //   gap-ui-fonts.
-    //
-    // TODO(config-sweep): ui.animations — gate animate{} blocks on a Theme bool;
-    //   tracked in gap-ui-animations.
 
     // Open in dual-pane layout when the config asks for it (default: true).
     // The new pane inherits pane 0's location via AppShell::split_focused.
@@ -601,6 +600,7 @@ fn spawn_config_event_thread(
                         // ── Chrome visibility ─────────────────────────────
                         shell.set_status_bar_visible(cfg.ui.show_status_bar);
                         shell.set_breadcrumbs_visible(cfg.ui.show_breadcrumbs);
+                        shell.set_animations_enabled(cfg.ui.animations);
 
                         // ── Search knobs ──────────────────────────────────
                         search_ctrl.set_max_results(cfg.search.fuzzy_max_results);

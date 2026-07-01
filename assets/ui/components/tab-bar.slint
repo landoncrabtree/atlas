@@ -219,7 +219,7 @@ export component TabBar {
                                 : (i == active-index
                                     ? Theme.panel-bg-elevated
                                     : (tab-ta.has-hover ? Theme.hover-bg : transparent));
-                            animate background { duration: 120ms; easing: ease-out; }
+                            animate background { duration: Theme.motion-quick; easing: ease-out; }
                         }
 
                         // Active bottom accent rail.
@@ -260,7 +260,7 @@ export component TabBar {
                                 vertical-alignment: center;
                                 overflow: elide;
                                 horizontal-stretch: 1;
-                                animate color { duration: 120ms; easing: ease-out; }
+                                animate color { duration: Theme.motion-quick; easing: ease-out; }
                             }
 
                             // Close (×) — revealed on hover (progressive disclosure).
@@ -275,7 +275,7 @@ export component TabBar {
                                     height: parent.height;
                                     border-radius: parent.width / 2;
                                     background: close-ta.has-hover ? Theme.border-strong : transparent;
-                                    animate background { duration: 100ms; easing: ease-out; }
+                                    animate background { duration: Theme.motion-fast; easing: ease-out; }
 
                                     Text {
                                         text: "✕";
@@ -333,7 +333,7 @@ export component TabBar {
                     vertical-alignment: center;
                     width: parent.width;
                     height: parent.height;
-                    animate color { duration: 120ms; easing: ease-out; }
+                    animate color { duration: Theme.motion-quick; easing: ease-out; }
                 }
             }
         }

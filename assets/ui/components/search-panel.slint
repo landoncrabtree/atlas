@@ -55,7 +55,7 @@ export component SearchPanel inherits Rectangle {
                     Rectangle {
                         border-radius: Theme.radius-sm;
                         background: close-ta.has-hover ? Theme.hover-bg : transparent;
-                        animate background { duration: 100ms; easing: ease-out; }
+                        animate background { duration: Theme.motion-fast; easing: ease-out; }
 
                         Text {
                             text: "×";

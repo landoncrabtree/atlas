@@ -59,7 +59,7 @@ export component OpsPanel inherits Rectangle {
                         Rectangle {
                             border-radius: Theme.radius-sm;
                             background: header-close.has-hover ? Theme.hover-bg : transparent;
-                            animate background { duration: 100ms; easing: ease-out; }
+                            animate background { duration: Theme.motion-fast; easing: ease-out; }
 
                             Text {
                                 text: "×";
@@ -165,7 +165,7 @@ export component OpsPanel inherits Rectangle {
                                 Rectangle {
                                     border-radius: Theme.radius-sm;
                                     background: dismiss-ta.has-hover ? Theme.border-strong : transparent;
-                                    animate background { duration: 100ms; easing: ease-out; }
+                                    animate background { duration: Theme.motion-fast; easing: ease-out; }
 
                                     Text {
                                         text: "×";
@@ -188,7 +188,7 @@ export component OpsPanel inherits Rectangle {
                                 Rectangle {
                                     border-radius: Theme.radius-sm;
                                     background: cancel-ta.has-hover ? Theme.border-strong : transparent;
-                                    animate background { duration: 100ms; easing: ease-out; }
+                                    animate background { duration: Theme.motion-fast; easing: ease-out; }
 
                                     Text {
                                         text: "■";
