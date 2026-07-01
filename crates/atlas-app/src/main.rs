@@ -1,8 +1,8 @@
 //! Atlas — application binary.
 //!
 //! This is an intentionally thin wrapper. All UI types come from `atlas-ui`.
-//! The file-system-backed Details view is wired here by creating the initial
-//! location view model and attaching it to the pane-0 controller.
+//! The file-system-backed Details view is wired here by creating the shell
+//! and driving the initial pane location through the navigation controller.
 //!
 //! # Theme chain
 //!
@@ -19,17 +19,16 @@ use std::{env, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
-use atlas_fs::{InMemoryLocationViewModel, OpenOptions};
 use slint::ComponentHandle as _;
 use tracing_subscriber::EnvFilter;
 
 use atlas_ui::{
     actions::{ActionSink, UiAction},
-    models::{PaletteModel, PaneModel, StatusModel, WorkspaceModel},
+    models::{PaletteModel, StatusModel},
     shell::AppShell,
     theme::{ThemeLoader, ThemeTokens, ThemeWatcher},
     theming::ThemeEvent,
-    AtlasWindow,
+    AtlasWindow, NavigationController,
 };
 
 /// Stub action sink that logs every UI action.
@@ -56,7 +55,8 @@ fn main() -> Result<()> {
     let theme_id = config.ui.theme.clone();
 
     let window = AtlasWindow::new()?;
-    let shell: Arc<AppShell> = AppShell::new(&window, LoggingActionSink);
+    let nav = NavigationController::new(&config.bookmarks);
+    let shell: Arc<AppShell> = AppShell::new(&window, LoggingActionSink, Arc::clone(&nav));
 
     // ── Theme chain ─────────────────────────────────────────────────────────
     // Resolve the theme ID from config, fall back to "atlas-dark" if missing.
@@ -75,18 +75,12 @@ fn main() -> Result<()> {
     spawn_theme_event_thread(Arc::clone(&shell), Arc::clone(&themes_arc), theme_events);
     // ────────────────────────────────────────────────────────────────────────
 
-    let home = env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/"));
-    let location = InMemoryLocationViewModel::open(home.clone(), OpenOptions::default());
-    shell.details_controller().set_location(location);
-
-    let mut workspace = WorkspaceModel::new_default();
-    if let Some(pane0) = workspace.panes.first_mut() {
-        *pane0 = PaneModel::new(home);
-        pane0.focused = true;
-    }
-    shell.set_workspace(workspace);
+    let start_path = config.general.start_path.clone().unwrap_or_else(|| {
+        env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/"))
+    });
+    nav.navigate(0, start_path);
     shell.set_status(StatusModel::default());
     shell.set_palette(PaletteModel::default());
 

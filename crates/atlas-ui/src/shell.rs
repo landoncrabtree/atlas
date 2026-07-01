@@ -15,9 +15,12 @@ use atlas_core::path::expand_tilde;
 use parking_lot::{Mutex, RwLock};
 use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
+use atlas_fs::LocationViewModel;
+
 use crate::{
     actions::{ActionSink, UiAction},
-    models::{PaletteModel, PaletteResult, StatusModel, WorkspaceModel},
+    models::{PaletteModel, PaletteResult, PaneModel, StatusModel, WorkspaceModel},
+    navigation::NavigationController,
     theme::{ThemeMode, ThemeTokens},
     theming::defaults,
     views::details::DetailsController,
@@ -78,12 +81,17 @@ pub struct AppShell {
     palette: RwLock<PaletteModel>,
     status: RwLock<StatusModel>,
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
+    navigation: Arc<NavigationController>,
     details0: Arc<DetailsController>,
 }
 
 impl AppShell {
     /// Build the shell, wire all Slint callbacks, and return a shared handle.
-    pub fn new(window: &AtlasWindow, actions: impl ActionSink) -> Arc<Self> {
+    pub fn new(
+        window: &AtlasWindow,
+        actions: impl ActionSink,
+        nav: Arc<NavigationController>,
+    ) -> Arc<Self> {
         let actions: Arc<Mutex<Box<dyn ActionSink>>> = Arc::new(Mutex::new(Box::new(actions)));
         let details0 = DetailsController::new(0, window.as_weak(), Arc::clone(&actions));
         let shell = Arc::new(Self {
@@ -92,10 +100,12 @@ impl AppShell {
             palette: RwLock::new(PaletteModel::default()),
             status: RwLock::new(StatusModel::default()),
             actions,
+            navigation: nav,
             details0,
         });
 
         shell.wire_callbacks(window);
+        shell.register_nav_callbacks();
         shell
     }
 
@@ -103,6 +113,34 @@ impl AppShell {
     #[must_use]
     pub fn details_controller(&self) -> Arc<DetailsController> {
         Arc::clone(&self.details0)
+    }
+
+    /// Return the shared navigation controller.
+    #[must_use]
+    pub fn navigation(&self) -> Arc<NavigationController> {
+        Arc::clone(&self.navigation)
+    }
+
+    fn register_nav_callbacks(self: &Arc<Self>) {
+        let shell_weak = Arc::downgrade(self);
+        self.navigation.on_location_changed(move |pane, vm| {
+            let Some(shell) = shell_weak.upgrade() else {
+                return;
+            };
+            let path = vm.location().to_path_buf();
+            if pane == 0 {
+                shell.details0.set_location(vm);
+            }
+            let new_pane = PaneModel::new(path);
+            {
+                let mut workspace = shell.workspace.write();
+                if let Some(existing_pane) = workspace.panes.get_mut(pane) {
+                    *existing_pane = new_pane;
+                }
+            }
+            let snapshot = shell.workspace.read().clone();
+            shell.set_workspace(snapshot);
+        });
     }
 
     fn wire_callbacks(self: &Arc<Self>, window: &AtlasWindow) {
@@ -168,18 +206,24 @@ impl AppShell {
 
         {
             let actions = Arc::clone(&self.actions);
+            let nav = Arc::clone(&self.navigation);
             window.on_pane0_address_submitted(move |path| {
-                dispatch_navigation(&actions, 0, path);
+                dispatch_navigation(&actions, 0, path.clone());
+                let expanded = expand_tilde(Path::new(path.as_str()));
+                nav.navigate(0, expanded);
             });
         }
         window.on_pane0_address_cancelled(dispatch!(self.actions, UiAction::DismissPalette));
         {
             let actions = Arc::clone(&self.actions);
+            let nav = Arc::clone(&self.navigation);
             window.on_pane0_breadcrumb_clicked(move |segment| {
+                let seg = segment as usize;
                 actions.lock().dispatch(UiAction::BreadcrumbClicked {
                     pane: 0,
-                    segment: segment as usize,
+                    segment: seg,
                 });
+                nav.breadcrumb_clicked(0, seg);
             });
         }
         {
@@ -224,18 +268,24 @@ impl AppShell {
 
         {
             let actions = Arc::clone(&self.actions);
+            let nav = Arc::clone(&self.navigation);
             window.on_pane1_address_submitted(move |path| {
-                dispatch_navigation(&actions, 1, path);
+                dispatch_navigation(&actions, 1, path.clone());
+                let expanded = expand_tilde(Path::new(path.as_str()));
+                nav.navigate(1, expanded);
             });
         }
         window.on_pane1_address_cancelled(dispatch!(self.actions, UiAction::DismissPalette));
         {
             let actions = Arc::clone(&self.actions);
+            let nav = Arc::clone(&self.navigation);
             window.on_pane1_breadcrumb_clicked(move |segment| {
+                let seg = segment as usize;
                 actions.lock().dispatch(UiAction::BreadcrumbClicked {
                     pane: 1,
-                    segment: segment as usize,
+                    segment: seg,
                 });
+                nav.breadcrumb_clicked(1, seg);
             });
         }
         {

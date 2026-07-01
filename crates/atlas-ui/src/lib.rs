@@ -13,6 +13,7 @@ slint::include_modules!();
 pub mod actions;
 pub mod focus;
 pub mod models;
+pub mod navigation;
 pub mod shell;
 pub mod theme;
 pub mod theming;
@@ -22,3 +23,5 @@ pub use views::details::ColumnSpec as DetailsColumnSpec;
 pub use views::details::{
     format_relative_time, format_size, ColumnKind, DetailsController, Selection,
 };
+
+pub use navigation::NavigationController;
