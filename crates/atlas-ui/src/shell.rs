@@ -397,6 +397,25 @@ impl AppShell {
             .map(|p| p.location.clone())
     }
 
+    /// Set the view mode for `pane` and push the change to the UI.
+    ///
+    /// If `pane` is out of range this is a no-op (with a debug log).
+    pub fn set_view_mode(self: &Arc<Self>, pane: usize, mode: crate::models::ViewMode) {
+        {
+            let mut ws = self.workspace.write();
+            let Some(p) = ws.panes.get_mut(pane) else {
+                tracing::debug!(pane, "set_view_mode: pane out of range");
+                return;
+            };
+            if p.view_mode == mode {
+                return;
+            }
+            p.view_mode = mode;
+        }
+        let snapshot = self.workspace.read().clone();
+        self.set_workspace(snapshot);
+    }
+
     /// Return the filesystem paths of all selected entries in `pane`.
     ///
     /// Reads the selection mask from the Slint window and the entry list from

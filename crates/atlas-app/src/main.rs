@@ -197,6 +197,9 @@ fn main() -> Result<()> {
     shell.set_status(StatusModel::default());
     shell.set_palette(PaletteModel::default());
 
+    // Apply the config's default view mode to pane 0.
+    shell.set_view_mode(0, config_view_mode(config.view.default_mode));
+
     // Build the keymap dispatcher and register handlers for common action IDs.
     // The palette on_dispatch callback routes through this dispatcher so that
     // palette-triggered actions use the same code paths as keyboard-triggered ones.
@@ -248,6 +251,17 @@ fn seed_config_if_missing() {
         return;
     }
     tracing::info!(path = %path.display(), "seeded default config.toml");
+}
+
+/// Convert `atlas_config::ViewMode` into the UI-side `atlas_ui::models::ViewMode`.
+fn config_view_mode(m: atlas_config::ViewMode) -> atlas_ui::models::ViewMode {
+    match m {
+        atlas_config::ViewMode::Details => atlas_ui::models::ViewMode::Details,
+        atlas_config::ViewMode::Grid => atlas_ui::models::ViewMode::Grid,
+        atlas_config::ViewMode::Gallery => atlas_ui::models::ViewMode::Gallery,
+        atlas_config::ViewMode::Miller => atlas_ui::models::ViewMode::Miller,
+        atlas_config::ViewMode::Tree => atlas_ui::models::ViewMode::Tree,
+    }
 }
 
 /// Build the default keymap and layer any user overrides from
@@ -479,6 +493,20 @@ fn build_dispatcher(
         let s = Arc::clone(shell);
         d.register("pane::Forward", move || {
             n.navigate_relative(s.focused_pane(), false);
+        });
+    }
+
+    // ── View mode switching (Cmd+Alt+1..5 by default) ────────────────────
+    for (id, mode) in [
+        ("view::Details", atlas_ui::models::ViewMode::Details),
+        ("view::Grid", atlas_ui::models::ViewMode::Grid),
+        ("view::Gallery", atlas_ui::models::ViewMode::Gallery),
+        ("view::Miller", atlas_ui::models::ViewMode::Miller),
+        ("view::Tree", atlas_ui::models::ViewMode::Tree),
+    ] {
+        let s = Arc::clone(shell);
+        d.register(id, move || {
+            s.set_view_mode(s.focused_pane(), mode);
         });
     }
 
