@@ -157,6 +157,30 @@ fn main() -> Result<()> {
         tracing::info!("indexer disabled by config (indexer.enabled = false)");
         None
     };
+
+    // config: reads config.indexer.roots — after daemon connect, tell it to
+    // watch every configured root so path-index search covers them without
+    // requiring the user to seed the daemon separately.
+    if let Some(client) = &index_client {
+        if !config.indexer.roots.is_empty() {
+            let client = Arc::clone(client);
+            let roots = config.indexer.roots.clone();
+            let handle = search_ctrl.runtime_handle();
+            handle.spawn(async move {
+                for root in roots {
+                    match client.add_root(root.clone()).await {
+                        Ok(()) => {
+                            tracing::info!(?root, "indexer: added configured root");
+                        }
+                        Err(err) => {
+                            tracing::warn!(?root, %err, "indexer: add_root failed");
+                        }
+                    }
+                }
+            });
+        }
+    }
+
     search_ctrl.set_index_client(index_client);
     search_ctrl.attach_window(window.as_weak());
 
@@ -204,6 +228,7 @@ fn main() -> Result<()> {
     {
         let mut overlaid = (**themes_arc.load()).clone();
         apply_font_overrides(&mut overlaid, &config.ui);
+        apply_density_override(&mut overlaid, config.ui.density);
         shell.apply_theme(&overlaid);
     }
     // Wire chrome visibility from config.ui.
@@ -235,9 +260,24 @@ fn main() -> Result<()> {
         );
     }
 
-    let start_path = config_arc
-        .as_ref()
-        .and_then(|a| a.load().general.start_path.clone())
+    // If remember_last_location is enabled and a last_location was saved on a
+    // previous quit, prefer it over start_path so the app re-opens where the
+    // user left off.
+    // config: reads config.navigation.{remember_last_location,last_location}
+    let last_location = if config.navigation.remember_last_location {
+        config_arc
+            .as_ref()
+            .and_then(|a| a.load().navigation.last_location.clone())
+            .or(config.navigation.last_location.clone())
+    } else {
+        None
+    };
+    let start_path = last_location
+        .or_else(|| {
+            config_arc
+                .as_ref()
+                .and_then(|a| a.load().general.start_path.clone())
+        })
         .or(config.general.start_path.clone())
         .unwrap_or_else(|| {
             env::var("HOME")
@@ -265,23 +305,8 @@ fn main() -> Result<()> {
     //   requires pushing new properties into the Theme Slint global. Tracked in
     //   gap-ui-fonts.
     //
-    // TODO(config-sweep): ui.density — row-height multiplier via Theme token;
-    //   tracked in gap-ui-density.
-    //
     // TODO(config-sweep): ui.animations — gate animate{} blocks on a Theme bool;
     //   tracked in gap-ui-animations.
-    //
-    // TODO(config-sweep): navigation.remember_last_location persist-on-quit —
-    //   requires a shutdown hook to write the active path back into config.toml
-    //   via atlas_config::save(); read side already gates navigation in the config
-    //   event thread. Tracked in gap-remember-last-location.
-    //
-    // TODO(config-sweep): indexer.roots — IndexClient needs an add_root() method
-    //   before we can iterate config.indexer.roots after daemon connect; tracked in
-    //   gap-indexer-add-roots.
-    //
-    // TODO(config-sweep): indexer.respect_gitignore — needs to be threaded into
-    //   the IPC AddRoot request; tracked in gap-indexer-gitignore.
 
     // Open in dual-pane layout when the config asks for it (default: true).
     // The new pane inherits pane 0's location via AppShell::split_focused.
@@ -313,6 +338,30 @@ fn main() -> Result<()> {
     if let Some(w) = config_watcher {
         w.stop();
     }
+
+    // On quit, persist the focused pane's active-tab location so the next
+    // launch re-opens the same directory when navigation.remember_last_location
+    // is true. We re-load the config from disk to preserve any concurrent edits
+    // the user may have made while Atlas was running.
+    // config: writes config.navigation.last_location
+    match atlas_config::load() {
+        Ok(mut latest) => {
+            if latest.navigation.remember_last_location {
+                if let Some(loc) = shell.pane_location(shell.focused_pane_id()) {
+                    latest.navigation.last_location = Some(loc.clone());
+                    if let Err(err) = atlas_config::save(&latest) {
+                        tracing::warn!(%err, "could not persist last_location on quit");
+                    } else {
+                        tracing::info!(?loc, "persisted last_location on quit");
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            tracing::warn!(%err, "could not re-load config to persist last_location");
+        }
+    }
+
     // Keep dispatcher alive until the event loop exits.
     drop(dispatcher);
     theme_watcher.stop();
@@ -509,6 +558,7 @@ fn spawn_config_event_thread(
                                     let mut overlaid =
                                         (**themes_arc.load()).clone();
                                     apply_font_overrides(&mut overlaid, &cfg.ui);
+                                    apply_density_override(&mut overlaid, cfg.ui.density);
                                     shell.apply_theme(&overlaid);
                                     tracing::info!(theme = %cfg.ui.theme, "config reload: theme updated");
                                 }
@@ -521,10 +571,11 @@ fn spawn_config_event_thread(
                                 }
                             }
                         } else {
-                            // Theme id unchanged but font/size may have changed;
-                            // re-apply overlay so users see the new typography.
+                            // Theme id unchanged but font/size/density may have
+                            // changed; re-apply overlays so users see updates.
                             let mut overlaid = (**themes_arc.load()).clone();
                             apply_font_overrides(&mut overlaid, &cfg.ui);
+                            apply_density_override(&mut overlaid, cfg.ui.density);
                             shell.apply_theme(&overlaid);
                         }
 
@@ -774,5 +825,23 @@ fn apply_font_overrides(tokens: &mut ThemeTokens, ui: &atlas_config::Ui) {
     }
     if ui.font_size > 0.0 && ui.font_size.is_finite() {
         tokens.typography.font_size_pt = ui.font_size;
+    }
+}
+
+/// Overlay the configured `ui.density` onto the theme's row-height token that
+/// the file-list views actually read (`row_h_default_px`). `Compact` and
+/// `Spacious` copy from the corresponding tokens; `Comfortable` keeps whatever
+/// the theme already provides.
+///
+/// config: reads config.ui.density
+fn apply_density_override(tokens: &mut ThemeTokens, density: atlas_config::Density) {
+    match density {
+        atlas_config::Density::Compact => {
+            tokens.chrome.row_h_default_px = tokens.chrome.row_h_compact_px;
+        }
+        atlas_config::Density::Spacious => {
+            tokens.chrome.row_h_default_px = tokens.chrome.row_h_spacious_px;
+        }
+        atlas_config::Density::Comfortable => {}
     }
 }

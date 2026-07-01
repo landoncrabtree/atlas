@@ -50,6 +50,7 @@ impl Default for Navigation {
         Self {
             history_size: 100,
             remember_last_location: true,
+            last_location: None,
         }
     }
 }

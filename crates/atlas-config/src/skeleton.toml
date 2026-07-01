@@ -77,6 +77,12 @@ history_size = 100
 # Re-open the last visited directory when Atlas starts.
 remember_last_location = true
 
+# Last directory Atlas was viewing when it quit. Written automatically on
+# shutdown when `remember_last_location = true`; consumed on the next
+# startup in place of `general.start_path`. Not intended to be edited
+# by hand.
+# last_location = "/home/user/some/directory"
+
 [indexer]
 # Enable the background file indexer for instant search across all roots.
 enabled = true

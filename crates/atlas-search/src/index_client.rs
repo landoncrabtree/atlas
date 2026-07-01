@@ -294,6 +294,29 @@ impl IndexClient {
     pub async fn ping(&self) -> Result<(), IndexClientError> {
         self.inner.ping().await.map_err(IndexClientError::from)
     }
+
+    /// Ask the daemon to add a new root directory to its watched set.
+    ///
+    /// The daemon walks the root, indexes every entry, and continues watching
+    /// it for filesystem changes. Idempotent — adding a root that is already
+    /// present is a no-op on the daemon side.
+    pub async fn add_root(&self, path: PathBuf) -> Result<(), IndexClientError> {
+        match self
+            .inner
+            .request(Request::AddRoot { path })
+            .await
+            .map_err(IndexClientError::from)?
+        {
+            Response::Ok => Ok(()),
+            Response::Error { code, message } => Err(IndexClientError::Server {
+                code: error_code_name(code).to_owned(),
+                message,
+            }),
+            response => Err(IndexClientError::Encode(format!(
+                "expected Ok response, got {response:?}"
+            ))),
+        }
+    }
 }
 
 /// Errors returned by [`IndexClient`].

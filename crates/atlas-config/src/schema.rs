@@ -233,6 +233,11 @@ pub struct Navigation {
     pub history_size: usize,
     /// Re-open the last visited directory when Atlas starts.
     pub remember_last_location: bool,
+    /// Last directory Atlas was viewing when it quit. Written on shutdown when
+    /// `remember_last_location = true`; consumed on the next startup in place
+    /// of `general.start_path`. Users generally should not edit this by hand.
+    #[serde(default)]
+    pub last_location: Option<PathBuf>,
 }
 
 // ── Indexer ────────────────────────────────────────────────────────────────

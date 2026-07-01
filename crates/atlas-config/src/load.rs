@@ -92,6 +92,10 @@ fn validate(mut cfg: Config) -> Config {
 
     // ── Tilde expansion ────────────────────────────────────────────────────
     cfg.general.start_path = cfg.general.start_path.map(atlas_core::path::expand_tilde);
+    cfg.navigation.last_location = cfg
+        .navigation
+        .last_location
+        .map(atlas_core::path::expand_tilde);
 
     cfg.indexer.roots = cfg
         .indexer
