@@ -14,6 +14,7 @@ members = [
     "crates/atlas-config",
     "crates/atlas-ipc",
     "crates/atlas-thumbs",
+    "crates/atlas-remote",
 ]
 
 [workspace.package]
@@ -39,6 +40,7 @@ atlas-keymap = { path = "crates/atlas-keymap" }
 atlas-config = { path = "crates/atlas-config" }
 atlas-ipc = { path = "crates/atlas-ipc" }
 atlas-thumbs = { path = "crates/atlas-thumbs" }
+atlas-remote = { path = "crates/atlas-remote" }
 
 # UI
 slint = { version = "1.17", default-features = false, features = ["std", "compat-1-2", "backend-default", "renderer-skia", "accessibility"] }
