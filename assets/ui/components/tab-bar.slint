@@ -15,8 +15,14 @@ export component TabBar {
 
     height: Theme.tab-h;
 
+    // Fixed tab width — overflow clips rather than pushing the window
+    // wider. A future v0.2 will replace this with a proper horizontal
+    // scroller + tab dropdown when overflow.
+    property <length> tab-w: 140px;
+
     Rectangle {
         background: Theme.panel-bg;
+        clip: true;
 
         // Bottom border
         Rectangle {
@@ -32,7 +38,7 @@ export component TabBar {
             padding-right: Theme.space-2;
 
             for tab[i] in tabs: tab-outer := Rectangle {
-                width: 150px;
+                width: root.tab-w;
                 height: Theme.tab-h;
                 background: transparent;
 

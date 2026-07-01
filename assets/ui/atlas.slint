@@ -20,8 +20,13 @@ import { MetadataFields } from "views/gallery/gallery-metadata.slint";
 // chord-sequence resolver integrating atlas-keymap is a follow-up todo.
 export component AtlasWindow inherits Window {
     title: "Atlas";
+    // Sensible default and lower bound; content clips/scrolls beyond this
+    // rather than forcing the window to grow with adding tabs, breadcrumbs,
+    // or long paths.
     preferred-width: 1280px;
     preferred-height: 800px;
+    min-width: 720px;
+    min-height: 480px;
     background: Theme.bg;
     default-font-family: Theme.font-family;
     default-font-size: Theme.font-size;
@@ -153,6 +158,11 @@ export component AtlasWindow inherits Window {
     in property <string> status-view-mode: "Details";
     in property <string> sort-by: "Name";
     in property <string> indexer-status: "Stopped";
+
+    // When true, the `hjkl` keys navigate (vim style). When false, only
+    // arrow keys / Enter / Backspace navigate; letter keys pass through
+    // to focused controls. Driven by `config.general.vim_mode`.
+    in property <bool> vim-mode: false;
 
     in property <bool> palette-visible: false;
     in-out property <string> palette-query: "";
@@ -396,11 +406,27 @@ export component AtlasWindow inherits Window {
     changed theme-row-h-spacious => { Theme.row-h-spacious = theme-row-h-spacious; }
 
     FocusScope {
-        // Force the FocusScope to own keyboard focus at startup so global
-        // shortcuts (Cmd+P, arrows, F-keys, etc.) work without the user
-        // first clicking on the address bar. Text inputs will steal focus
-        // when clicked; the palette dismiss handler re-focuses this scope.
+        root-focus := Rectangle {
+            // Zero-size focus anchor: whenever a modal (palette / search /
+            // bulk-rename) closes we call `root-focus.focus()` via a changed
+            // handler so the FocusScope regains keyboard input. Without this
+            // the app becomes unresponsive to shortcuts the moment any modal
+            // is dismissed until the user clicks somewhere.
+            width: 0px;
+            height: 0px;
+        }
+
+        // Force initial focus so the first Cmd+P works before any click.
         init => { self.focus(); }
+
+        // Track whether any modal is open so we can re-focus this scope
+        // as soon as the last modal closes (Slint's `changed` handler only
+        // works on properties in the current element, so we mirror the
+        // root properties into a local one first).
+        property <bool> any-modal-visible: root.palette-visible || root.search-panel-visible || root.bulk-rename-visible;
+        changed any-modal-visible => {
+            if !any-modal-visible { self.focus(); }
+        }
 
         key-pressed(event) => {
             if event.text == Key.Escape && palette-visible {
@@ -498,21 +524,23 @@ export component AtlasWindow inherits Window {
             }
 
             // ── View navigation (when no modal has focus) ────────────────
-            // Down arrow / vim j → move focus down
+            // Arrow keys / Enter / Backspace always work; hjkl only when
+            // vim-mode is enabled so letter keys stay available for other
+            // uses (search, typing in the address bar, etc.).
             if !palette-visible && !search-panel-visible && !bulk-rename-visible {
-                if event.text == Key.DownArrow || event.text == "j" {
+                if event.text == Key.DownArrow || (vim-mode && event.text == "j") {
                     root.pane-move-focus(1);
                     return accept;
                 }
-                if event.text == Key.UpArrow || event.text == "k" {
+                if event.text == Key.UpArrow || (vim-mode && event.text == "k") {
                     root.pane-move-focus(-1);
                     return accept;
                 }
-                if event.text == Key.Return || event.text == "\n" || event.text == "l" || event.text == Key.RightArrow {
+                if event.text == Key.Return || event.text == "\n" || (vim-mode && event.text == "l") || event.text == Key.RightArrow {
                     root.pane-activate-focused();
                     return accept;
                 }
-                if event.text == Key.Backspace || event.text == "h" || event.text == Key.LeftArrow {
+                if event.text == Key.Backspace || (vim-mode && event.text == "h") || event.text == Key.LeftArrow {
                     root.pane-go-up();
                     return accept;
                 }

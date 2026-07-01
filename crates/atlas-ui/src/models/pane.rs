@@ -51,15 +51,11 @@ impl PaneModel {
     /// Construct a pane model pointing to `location`.
     pub fn new(location: impl Into<PathBuf>) -> Self {
         let location = location.into();
-        let title = location
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| location.to_string_lossy().into_owned());
 
         Self {
-            location,
+            location: location.clone(),
             view_mode: ViewMode::default(),
-            tabs: vec![TabModel::new(title)],
+            tabs: vec![TabModel::at(location)],
             active_tab: 0,
             focused: false,
         }

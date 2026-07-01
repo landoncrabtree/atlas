@@ -416,6 +416,38 @@ impl AppShell {
         self.set_workspace(snapshot);
     }
 
+    /// Enable / disable vim-mode navigation on the Slint FocusScope.
+    ///
+    /// When true, `hjkl` navigates. When false, only arrow keys do.
+    pub fn set_vim_mode(self: &Arc<Self>, enabled: bool) {
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_vim_mode(enabled);
+            }
+        });
+    }
+
+    /// Set which tab is active in `pane` and reload its location. No-op if
+    /// `pane` or `tab` is out of range.
+    pub fn select_tab(self: &Arc<Self>, pane: usize, tab: usize) {
+        let target_location = {
+            let mut ws = self.workspace.write();
+            let Some(p) = ws.panes.get_mut(pane) else {
+                return;
+            };
+            if tab >= p.tabs.len() {
+                return;
+            }
+            p.active_tab = tab;
+            // Read the tab's remembered location (falls back to pane location).
+            p.tabs[tab].location.clone().unwrap_or_else(|| p.location.clone())
+        };
+        let snapshot = self.workspace.read().clone();
+        self.set_workspace(snapshot);
+        self.navigation.navigate(pane, target_location);
+    }
+
     /// Append a new tab to `pane` pointing at the pane's current location.
     /// The new tab becomes active. No-op if `pane` is out of range.
     pub fn new_tab(self: &Arc<Self>, pane: usize) {
@@ -425,12 +457,7 @@ impl AppShell {
                 tracing::debug!(pane, "new_tab: pane out of range");
                 return;
             };
-            let title = p
-                .location
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| p.location.to_string_lossy().into_owned());
-            p.tabs.push(crate::models::TabModel::new(title));
+            p.tabs.push(crate::models::TabModel::at(p.location.clone()));
             p.active_tab = p.tabs.len() - 1;
         }
         let snapshot = self.workspace.read().clone();
@@ -439,9 +466,10 @@ impl AppShell {
 
     /// Remove tab `tab` from `pane`. Refuses to close the last tab
     /// (the pane must always have at least one). Adjusts active_tab
-    /// so that a still-valid tab remains selected.
+    /// so that a still-valid tab remains selected, and if that means
+    /// switching to a different tab, navigates to its location.
     pub fn close_tab(self: &Arc<Self>, pane: usize, tab: usize) {
-        {
+        let switch_to: Option<PathBuf> = {
             let mut ws = self.workspace.write();
             let Some(p) = ws.panes.get_mut(pane) else {
                 tracing::debug!(pane, tab, "close_tab: pane out of range");
@@ -450,15 +478,24 @@ impl AppShell {
             if p.tabs.len() <= 1 || tab >= p.tabs.len() {
                 return;
             }
+            let was_active = tab == p.active_tab;
             p.tabs.remove(tab);
             if p.active_tab >= p.tabs.len() {
                 p.active_tab = p.tabs.len() - 1;
             } else if tab < p.active_tab {
                 p.active_tab -= 1;
             }
-        }
+            if was_active {
+                p.tabs[p.active_tab].location.clone()
+            } else {
+                None
+            }
+        };
         let snapshot = self.workspace.read().clone();
         self.set_workspace(snapshot);
+        if let Some(dest) = switch_to {
+            self.navigation.navigate(pane, dest);
+        }
     }
 
     /// Return the filesystem paths of all selected entries in `pane`.
@@ -567,15 +604,33 @@ impl AppShell {
                 shell.panes_ctrl[1].tree.set_root(path.clone());
                 shell.panes_ctrl[1].miller.set_root(path.clone());
             }
-            let new_pane = PaneModel::new(path);
-            {
+            let new_pane_snapshot: PaneModel = {
                 let mut workspace = shell.workspace.write();
-                if pane < workspace.panes.len() {
-                    workspace.panes[pane] = new_pane;
-                } else if pane == workspace.panes.len() {
-                    workspace.panes.push(new_pane);
+                let cur = workspace.panes.get(pane).cloned();
+                // Preserve existing tab state (tabs + active_tab + view_mode)
+                // when we already had a pane; only refresh the location on
+                // that pane and on its active tab. First-time creation
+                // (pane push) initializes a fresh PaneModel.
+                if let Some(mut existing) = cur {
+                    existing.location = path.clone();
+                    if let Some(active) = existing.tabs.get_mut(existing.active_tab) {
+                        active.location = Some(path.clone());
+                        active.title = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                    }
+                    workspace.panes[pane] = existing.clone();
+                    existing
+                } else {
+                    let fresh = PaneModel::new(path.clone());
+                    if pane == workspace.panes.len() {
+                        workspace.panes.push(fresh.clone());
+                    }
+                    fresh
                 }
-            }
+            };
+            let _ = new_pane_snapshot; // held for clarity; workspace already updated in-place.
             let snapshot = shell.workspace.read().clone();
             shell.set_workspace(snapshot);
 
@@ -808,12 +863,9 @@ impl AppShell {
             });
         }
         {
-            let actions = Arc::clone(&self.actions);
+            let shell = self.clone();
             window.on_pane0_tab_selected(move |tab| {
-                actions.lock().dispatch(UiAction::TabSelected {
-                    pane: 0,
-                    tab: tab as usize,
-                });
+                shell.select_tab(0, tab as usize);
             });
         }
         {
@@ -971,12 +1023,9 @@ impl AppShell {
             });
         }
         {
-            let actions = Arc::clone(&self.actions);
+            let shell = self.clone();
             window.on_pane1_tab_selected(move |tab| {
-                actions.lock().dispatch(UiAction::TabSelected {
-                    pane: 1,
-                    tab: tab as usize,
-                });
+                shell.select_tab(1, tab as usize);
             });
         }
         {

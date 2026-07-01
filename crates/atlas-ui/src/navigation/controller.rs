@@ -7,7 +7,10 @@ use std::{
 };
 
 use atlas_core::path::expand_tilde;
-use atlas_fs::{InMemoryLocationViewModel, OpenOptions};
+use atlas_fs::{
+    Filter, InMemoryLocationViewModel, OpenOptions, SortKey as FsSortKey,
+    SortOrder as FsSortOrder, SortSpec,
+};
 use parking_lot::{Mutex, RwLock};
 use smallvec::SmallVec;
 
@@ -34,13 +37,56 @@ pub struct NavigationController {
     locations: RwLock<SmallVec<[Option<Arc<InMemoryLocationViewModel>>; 2]>>,
     /// Callback invoked when a pane's location changes.
     on_location_changed: RwLock<Option<Box<LocationChangedCallback>>>,
+    /// Default [`OpenOptions`] applied to each newly-opened location. Built
+    /// from `config.general` and `config.view` so hidden-file visibility,
+    /// symlink handling, and sort defaults actually take effect.
+    open_options: RwLock<OpenOptions>,
 }
 
 impl NavigationController {
     /// Construct a new controller, pre-populating the bookmark store from
-    /// `config_bookmarks`.
+    /// `config_bookmarks`. Uses [`OpenOptions::default`] for locations — use
+    /// [`Self::with_config`] to thread user config through.
     #[must_use]
     pub fn new(config_bookmarks: &[atlas_config::Bookmark]) -> Arc<Self> {
+        Self::build(config_bookmarks, OpenOptions::default())
+    }
+
+    /// Construct a new controller with defaults derived from the full
+    /// [`atlas_config::Config`]. Reads `general.follow_symlinks`,
+    /// `view.show_hidden`, `view.natural_sort`, `view.dirs_first`,
+    /// `view.default_sort_key`, `view.default_sort_order`.
+    #[must_use]
+    pub fn with_config(config: &atlas_config::Config) -> Arc<Self> {
+        let opts = OpenOptions {
+            include_hidden: config.view.show_hidden,
+            follow_symlinks: config.general.follow_symlinks,
+            watch: false,
+            sort: SortSpec {
+                key: match config.view.default_sort_key {
+                    atlas_config::SortKey::Name => FsSortKey::Name,
+                    atlas_config::SortKey::Size => FsSortKey::Size,
+                    atlas_config::SortKey::Modified => FsSortKey::Modified,
+                    atlas_config::SortKey::Kind => FsSortKey::Kind,
+                    atlas_config::SortKey::Extension => FsSortKey::Extension,
+                },
+                order: match config.view.default_sort_order {
+                    atlas_config::SortOrder::Asc => FsSortOrder::Asc,
+                    atlas_config::SortOrder::Desc => FsSortOrder::Desc,
+                },
+                dirs_first: config.view.dirs_first,
+                natural: config.view.natural_sort,
+                case_insensitive: true,
+            },
+            filter: Filter::default(),
+        };
+        Self::build(&config.bookmarks, opts)
+    }
+
+    fn build(
+        config_bookmarks: &[atlas_config::Bookmark],
+        open_options: OpenOptions,
+    ) -> Arc<Self> {
         Arc::new(Self {
             stacks: smallvec::smallvec![
                 Mutex::new(BackForwardStack::new(DEFAULT_HISTORY_CAPACITY)),
@@ -49,6 +95,7 @@ impl NavigationController {
             bookmarks: Arc::new(BookmarkStore::from_config(config_bookmarks)),
             locations: RwLock::new(smallvec::smallvec![None, None]),
             on_location_changed: RwLock::new(None),
+            open_options: RwLock::new(open_options),
         })
     }
 
@@ -181,9 +228,10 @@ impl NavigationController {
 
     /// Open a new view model for `path`, store it, and fire the callback.
     fn load_location(&self, pane: usize, path: PathBuf) {
-        // Use open_live so that external filesystem changes (create/delete/rename)
-        // are reflected in the view model without a manual refresh.
-        let vm = InMemoryLocationViewModel::open_live(path, OpenOptions::default());
+        // Clone the config-driven defaults so external mutations to
+        // `open_options` don't race with in-flight opens.
+        let opts = self.open_options.read().clone();
+        let vm = InMemoryLocationViewModel::open_live(path, opts);
 
         {
             let mut locs = self.locations.write();

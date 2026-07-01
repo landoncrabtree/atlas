@@ -132,7 +132,7 @@ fn main() -> Result<()> {
     tracing::info!(layers = ?keymap.layers(), "keymap loaded");
 
     let window = AtlasWindow::new()?;
-    let nav = NavigationController::new(&config.bookmarks);
+    let nav = NavigationController::with_config(&config);
     let search_ctrl = SearchController::new();
 
     // Try to reach the indexer daemon; if it isn't running, auto-launch it
@@ -199,6 +199,9 @@ fn main() -> Result<()> {
 
     // Apply the config's default view mode to pane 0.
     shell.set_view_mode(0, config_view_mode(config.view.default_mode));
+
+    // Push config-driven UI settings into the Slint window.
+    shell.set_vim_mode(config.general.vim_mode);
 
     // Build the keymap dispatcher and register handlers for common action IDs.
     // The palette on_dispatch callback routes through this dispatcher so that
