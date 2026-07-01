@@ -18,6 +18,10 @@ export component Workspace {
     in property <[bool]> pane0-details-selected-mask: [];
     in property <int> pane0-details-selected-anchor: -1;
     in property <int> pane0-details-focused-index: -1;
+    in property <[image]> pane0-grid-thumbnails: [];
+    in property <[bool]> pane0-grid-has-thumbs: [];
+    in property <[bool]> pane0-grid-selected-mask: [];
+    in property <int> pane0-grid-focused-index: -1;
 
     in property <string> pane1-path: "";
     in property <[string]> pane1-segments: [];
@@ -29,6 +33,10 @@ export component Workspace {
     in property <[bool]> pane1-details-selected-mask: [];
     in property <int> pane1-details-selected-anchor: -1;
     in property <int> pane1-details-focused-index: -1;
+    in property <[image]> pane1-grid-thumbnails: [];
+    in property <[bool]> pane1-grid-has-thumbs: [];
+    in property <[bool]> pane1-grid-selected-mask: [];
+    in property <int> pane1-grid-focused-index: -1;
 
     callback pane0-address-submitted(string);
     callback pane0-address-cancelled();
@@ -42,6 +50,11 @@ export component Workspace {
     callback pane0-details-row-context-menu(int, length, length);
     callback pane0-details-header-clicked(int);
     callback pane0-details-header-resize(int, float);
+    callback pane0-grid-entry-clicked(int, bool, bool);
+    callback pane0-grid-entry-double-clicked(int);
+    callback pane0-grid-entry-context-menu(int, length, length);
+    callback pane0-grid-thumbnail-visible(int);
+    callback pane0-grid-columns-changed(int);
 
     callback pane1-address-submitted(string);
     callback pane1-address-cancelled();
@@ -55,6 +68,11 @@ export component Workspace {
     callback pane1-details-row-context-menu(int, length, length);
     callback pane1-details-header-clicked(int);
     callback pane1-details-header-resize(int, float);
+    callback pane1-grid-entry-clicked(int, bool, bool);
+    callback pane1-grid-entry-double-clicked(int);
+    callback pane1-grid-entry-context-menu(int, length, length);
+    callback pane1-grid-thumbnail-visible(int);
+    callback pane1-grid-columns-changed(int);
 
     HorizontalLayout {
         spacing: 0px;
@@ -72,6 +90,10 @@ export component Workspace {
             details-selected-mask: root.pane0-details-selected-mask;
             details-selected-anchor: root.pane0-details-selected-anchor;
             details-focused-index: root.pane0-details-focused-index;
+            grid-thumbnails: root.pane0-grid-thumbnails;
+            grid-has-thumbs: root.pane0-grid-has-thumbs;
+            grid-selected-mask: root.pane0-grid-selected-mask;
+            grid-focused-index: root.pane0-grid-focused-index;
 
             address-submitted(p) => { root.pane0-address-submitted(p); }
             address-cancelled => { root.pane0-address-cancelled(); }
@@ -85,6 +107,11 @@ export component Workspace {
             details-row-context-menu(i, x, y) => { root.pane0-details-row-context-menu(i, x, y); }
             details-header-clicked(i) => { root.pane0-details-header-clicked(i); }
             details-header-resize(i, w) => { root.pane0-details-header-resize(i, w); }
+            grid-entry-clicked(i, ctrl, shift) => { root.pane0-grid-entry-clicked(i, ctrl, shift); }
+            grid-entry-double-clicked(i) => { root.pane0-grid-entry-double-clicked(i); }
+            grid-entry-context-menu(i, x, y) => { root.pane0-grid-entry-context-menu(i, x, y); }
+            grid-thumbnail-visible(i) => { root.pane0-grid-thumbnail-visible(i); }
+            grid-columns-changed(c) => { root.pane0-grid-columns-changed(c); }
         }
 
         if dual-pane : Rectangle {
@@ -105,6 +132,10 @@ export component Workspace {
             details-selected-mask: root.pane1-details-selected-mask;
             details-selected-anchor: root.pane1-details-selected-anchor;
             details-focused-index: root.pane1-details-focused-index;
+            grid-thumbnails: root.pane1-grid-thumbnails;
+            grid-has-thumbs: root.pane1-grid-has-thumbs;
+            grid-selected-mask: root.pane1-grid-selected-mask;
+            grid-focused-index: root.pane1-grid-focused-index;
 
             address-submitted(p) => { root.pane1-address-submitted(p); }
             address-cancelled => { root.pane1-address-cancelled(); }
@@ -118,6 +149,11 @@ export component Workspace {
             details-row-context-menu(i, x, y) => { root.pane1-details-row-context-menu(i, x, y); }
             details-header-clicked(i) => { root.pane1-details-header-clicked(i); }
             details-header-resize(i, w) => { root.pane1-details-header-resize(i, w); }
+            grid-entry-clicked(i, ctrl, shift) => { root.pane1-grid-entry-clicked(i, ctrl, shift); }
+            grid-entry-double-clicked(i) => { root.pane1-grid-entry-double-clicked(i); }
+            grid-entry-context-menu(i, x, y) => { root.pane1-grid-entry-context-menu(i, x, y); }
+            grid-thumbnail-visible(i) => { root.pane1-grid-thumbnail-visible(i); }
+            grid-columns-changed(c) => { root.pane1-grid-columns-changed(c); }
         }
     }
 }

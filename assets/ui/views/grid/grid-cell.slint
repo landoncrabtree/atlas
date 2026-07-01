@@ -1,0 +1,92 @@
+import { Theme } from "../../theme.slint";
+import { EntryRowItem } from "../details/column.slint";
+
+// A single cell in the Grid view.
+//
+// Shows either a thumbnail image (when `has-thumb` is true) layered over a
+// kind-icon glyph placeholder, or just the glyph for non-thumbnailable entries.
+// Label is below the thumbnail area, ellipsized to one line.
+export component GridCell {
+    in property <EntryRowItem> item;
+    in property <image> thumbnail;
+    in property <bool> has-thumb: false;
+    in property <bool> selected: false;
+    in property <bool> focused: false;
+    in property <length> cell-size: 128px;
+    in property <length> label-height: 36px;
+
+    callback clicked(bool /*ctrl*/, bool /*shift*/);
+    callback double-clicked();
+    callback context-menu(length, length);
+    callback became-visible();
+
+    width: cell-size;
+    height: cell-size + label-height;
+    opacity: item.is-hidden ? 0.6 : 1.0;
+
+    bg := Rectangle {
+        background: selected ? Theme.selection-bg : (ta.has-hover ? Theme.panel-bg : transparent);
+        border-width: focused && !selected ? 2px : 0px;
+        border-color: Theme.accent;
+        border-radius: Theme.radius-sm;
+        width: parent.width;
+        height: parent.height;
+
+        // Thumbnail area
+        thumb-area := Rectangle {
+            x: 4px;
+            y: 4px;
+            width: cell-size - 8px;
+            height: cell-size - 8px;
+
+            // Kind-icon glyph — always present as placeholder or sole icon
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: item.kind-icon;
+                font-size: 40px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                color: selected ? Theme.selection-fg : Theme.fg-muted;
+            }
+
+            // Thumbnail image layered on top; invisible when source is default
+            if has-thumb : Image {
+                width: parent.width;
+                height: parent.height;
+                source: thumbnail;
+                image-fit: contain;
+            }
+        }
+
+        // File name label
+        Text {
+            x: 4px;
+            y: cell-size - 4px;
+            width: cell-size - 8px;
+            height: label-height;
+            text: item.name;
+            color: selected ? Theme.selection-fg : (item.is-broken-symlink ? Theme.error : Theme.fg);
+            font-size: Theme.font-size;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+
+        ta := TouchArea {
+            property <bool> mod-ctrl: false;
+            property <bool> mod-shift: false;
+
+            pointer-event(pe) => {
+                if pe.kind == PointerEventKind.down {
+                    self.mod-ctrl = pe.modifiers.control;
+                    self.mod-shift = pe.modifiers.shift;
+                }
+            }
+
+            clicked => { root.clicked(ta.mod-ctrl, ta.mod-shift); }
+            double-clicked => { root.double-clicked(); }
+        }
+    }
+}

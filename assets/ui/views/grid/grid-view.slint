@@ -1,0 +1,73 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EntryRowItem } from "../details/column.slint";
+import { GridCell } from "grid-cell.slint";
+
+// Virtualized icon-grid view.
+//
+// Lays entries out in a scrollable grid. Column count is computed from the
+// available width and kept in `columns` for the Rust controller to read (so
+// arrow-key navigation can move by row). A `columns-changed` callback fires
+// whenever the derived value changes.
+//
+// Virtualization trade-off: cells are laid out with absolute positioning
+// inside a ScrollView; every entry creates a component. At ≤ 10 000 entries
+// this is smooth; full N×N virtualization (only instantiating visible rows)
+// is left as v0.2 polish. The Slint per-row ListView approach was considered
+// but requires a chunked model that complicates the Rust side; the absolute-
+// position approach is simpler and correct for typical directory sizes.
+export component GridView inherits FocusScope {
+    in property <[EntryRowItem]> entries;
+    in property <[image]> thumbnails;
+    in property <[bool]> has-thumbs;
+    in property <[bool]> selected-mask;
+    in property <int> focused-index: -1;
+    in property <int> selected-anchor: -1;
+    in property <length> cell-size: 128px;
+    in property <length> gap: 12px;
+    in property <length> label-height: 36px;
+
+    // Computed column count; exposed as in-out so the Rust controller can
+    // read it for arrow-key navigation. Recomputed on every width change.
+    in-out property <int> columns: max(1, (root.width - gap) / (cell-size + gap));
+
+    callback entry-clicked(int, bool /*ctrl*/, bool /*shift*/);
+    callback entry-double-clicked(int);
+    callback entry-context-menu(int, length, length);
+    // Fires when a cell requests its thumbnail; controller de-dupes.
+    callback thumbnail-visible(int);
+    // Fires when the computed column count changes; controller updates move_focus.
+    callback columns-changed(int);
+
+    changed columns => { root.columns-changed(columns); }
+
+    // Row count for viewport sizing
+    property <int> row-count: max(0, (entries.length + columns - 1) / columns);
+
+    ScrollView {
+        width: parent.width;
+        height: parent.height;
+        viewport-width: parent.width;
+        viewport-height: max(
+            parent.height,
+            gap + row-count * (cell-size + label-height + gap)
+        );
+
+        for item[i] in root.entries : GridCell {
+            x: gap + mod(i, columns) * (cell-size + gap);
+            y: gap + (i / columns) * (cell-size + label-height + gap);
+            cell-size: root.cell-size;
+            label-height: root.label-height;
+            item: item;
+            thumbnail: root.thumbnails[i];
+            has-thumb: root.has-thumbs[i];
+            selected: root.selected-mask[i];
+            focused: root.focused-index == i;
+
+            clicked(ctrl, shift) => { root.entry-clicked(i, ctrl, shift); }
+            double-clicked => { root.entry-double-clicked(i); }
+            context-menu(x, y) => { root.entry-context-menu(i, x, y); }
+            became-visible => { root.thumbnail-visible(i); }
+        }
+    }
+}

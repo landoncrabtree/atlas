@@ -28,9 +28,11 @@ use crate::{
     models::{PaletteModel, PaletteResult, PaneModel, StatusModel, WorkspaceModel},
     navigation::NavigationController,
     palette::{ActionsSource, GotoPathsSource, PaletteController, WalkerPathIndex},
+    search::SearchController,
     theme::{ThemeMode, ThemeTokens},
     theming::defaults,
     views::details::DetailsController,
+    views::grid::GridController,
     AtlasWindow, PaletteEntry, TabEntry,
 };
 
@@ -125,6 +127,8 @@ pub struct AppShell {
     navigation: Arc<NavigationController>,
     palette_ctrl: Arc<PaletteController>,
     details0: Arc<DetailsController>,
+    search: Arc<SearchController>,
+    grid0: Arc<GridController>,
 }
 
 impl AppShell {
@@ -133,10 +137,17 @@ impl AppShell {
         window: &AtlasWindow,
         actions: impl ActionSink,
         nav: Arc<NavigationController>,
+        search: Arc<SearchController>,
     ) -> Arc<Self> {
         let actions: Arc<Mutex<Box<dyn ActionSink>>> = Arc::new(Mutex::new(Box::new(actions)));
+        let thumb_cache = Arc::new(
+            atlas_thumbs::SqliteCache::open_default()
+                .unwrap_or_else(|error| panic!("failed to open thumbnail cache: {error}")),
+        );
         let details0 = DetailsController::new(0, window.as_weak(), Arc::clone(&actions));
+        let grid0 = GridController::new(0, window.as_weak(), Arc::clone(&actions), thumb_cache);
         let palette_ctrl = build_palette_controller(window, Arc::clone(&actions));
+        search.set_action_sink(Arc::clone(&actions));
         let shell = Arc::new(Self {
             window: window.as_weak(),
             workspace: RwLock::new(WorkspaceModel::new_default()),
@@ -146,6 +157,8 @@ impl AppShell {
             navigation: nav,
             palette_ctrl,
             details0,
+            search,
+            grid0,
         });
 
         shell.wire_callbacks(window);
@@ -157,6 +170,12 @@ impl AppShell {
     #[must_use]
     pub fn details_controller(&self) -> Arc<DetailsController> {
         Arc::clone(&self.details0)
+    }
+
+    /// Return the pane-0 grid controller.
+    #[must_use]
+    pub fn grid_controller(&self) -> Arc<GridController> {
+        Arc::clone(&self.grid0)
     }
 
     /// Return the shared navigation controller.
@@ -171,6 +190,12 @@ impl AppShell {
         Arc::clone(&self.palette_ctrl)
     }
 
+    /// Return the shared search controller.
+    #[must_use]
+    pub fn search(&self) -> Arc<SearchController> {
+        Arc::clone(&self.search)
+    }
+
     fn register_nav_callbacks(self: &Arc<Self>) {
         let shell_weak = Arc::downgrade(self);
         self.navigation.on_location_changed(move |pane, vm| {
@@ -179,7 +204,10 @@ impl AppShell {
             };
             let path = vm.location().to_path_buf();
             if pane == 0 {
-                shell.details0.set_location(vm);
+                let vm: Arc<dyn LocationViewModel> = vm;
+                shell.details0.set_location(Arc::clone(&vm));
+                shell.grid0.set_location(vm);
+                shell.search.set_scope(Some(path.clone()));
             }
             let new_pane = PaneModel::new(path);
             {
@@ -233,6 +261,55 @@ impl AppShell {
             let palette_ctrl = Arc::clone(&self.palette_ctrl);
             window.on_open_goto(move || {
                 palette_ctrl.open(1);
+            });
+        }
+
+        {
+            let search_ctrl = Arc::clone(&self.search);
+            let actions = Arc::clone(&self.actions);
+            window.on_search_query_changed(move |query| {
+                actions
+                    .lock()
+                    .dispatch(UiAction::SearchQueryChanged(query.to_string()));
+                search_ctrl.set_query(query.to_string());
+            });
+        }
+        {
+            let search_ctrl = Arc::clone(&self.search);
+            let actions = Arc::clone(&self.actions);
+            window.on_search_confirm(move |index| {
+                actions
+                    .lock()
+                    .dispatch(UiAction::SearchConfirm(index as usize));
+                search_ctrl.confirm(index as usize);
+            });
+        }
+        {
+            let search_ctrl = Arc::clone(&self.search);
+            let actions = Arc::clone(&self.actions);
+            window.on_search_close(move || {
+                actions.lock().dispatch(UiAction::SearchClose);
+                search_ctrl.close();
+            });
+        }
+        {
+            let search_ctrl = Arc::clone(&self.search);
+            let actions = Arc::clone(&self.actions);
+            window.on_toggle_search_panel(move || {
+                actions.lock().dispatch(UiAction::ToggleSearchPanel);
+                if search_ctrl.is_open() {
+                    search_ctrl.close();
+                } else {
+                    search_ctrl.open();
+                }
+            });
+        }
+        {
+            let search_ctrl = Arc::clone(&self.search);
+            let actions = Arc::clone(&self.actions);
+            window.on_open_search_panel(move || {
+                actions.lock().dispatch(UiAction::OpenSearchPanel);
+                search_ctrl.open();
             });
         }
 
@@ -327,6 +404,33 @@ impl AppShell {
             });
         }
 
+        // Grid callbacks — pane 0
+        {
+            let grid = Arc::clone(&self.grid0);
+            window.on_pane0_grid_entry_clicked(move |index, ctrl, shift| {
+                grid.select_index(index as usize, ctrl, shift);
+            });
+        }
+        {
+            let grid = Arc::clone(&self.grid0);
+            window.on_pane0_grid_entry_double_clicked(move |index| {
+                grid.select_index(index as usize, false, false);
+                grid.activate_focused();
+            });
+        }
+        {
+            let grid = Arc::clone(&self.grid0);
+            window.on_pane0_grid_thumbnail_visible(move |index| {
+                grid.thumbnail_visible(index as usize);
+            });
+        }
+        {
+            let grid = Arc::clone(&self.grid0);
+            window.on_pane0_grid_columns_changed(move |cols| {
+                grid.set_columns(cols as usize);
+            });
+        }
+
         {
             let actions = Arc::clone(&self.actions);
             let nav = Arc::clone(&self.navigation);
@@ -372,18 +476,17 @@ impl AppShell {
 
     /// Update the workspace state and schedule a property push on the event loop.
     pub fn set_workspace(self: &Arc<Self>, model: WorkspaceModel) {
-        *self.workspace.write() = model;
-        let shell = Arc::clone(self);
+        *self.workspace.write() = model.clone();
+        let weak = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
-            let workspace = shell.workspace.read();
-            let Some(window) = shell.window.upgrade() else {
+            let Some(window) = weak.upgrade() else {
                 return;
             };
 
-            window.set_dual_pane(workspace.dual_pane);
-            window.set_focus_index(workspace.focused_pane as i32);
+            window.set_dual_pane(model.dual_pane);
+            window.set_focus_index(model.focused_pane as i32);
 
-            if let Some(pane0) = workspace.panes.first() {
+            if let Some(pane0) = model.panes.first() {
                 let pane0_path = pane0.location.to_string_lossy().into_owned();
                 let pane0_view_mode = pane0.view_mode.to_string();
                 window.set_pane0_path(pane0_path.into());
@@ -393,7 +496,7 @@ impl AppShell {
                 window.set_pane0_active_tab(pane0.active_tab as i32);
             }
 
-            if let Some(pane1) = workspace.panes.get(1) {
+            if let Some(pane1) = model.panes.get(1) {
                 let pane1_path = pane1.location.to_string_lossy().into_owned();
                 let pane1_view_mode = pane1.view_mode.to_string();
                 window.set_pane1_path(pane1_path.into());
@@ -413,32 +516,30 @@ impl AppShell {
 
     /// Update palette state.
     pub fn set_palette(self: &Arc<Self>, model: PaletteModel) {
-        *self.palette.write() = model;
-        let shell = Arc::clone(self);
+        *self.palette.write() = model.clone();
+        let weak = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
-            let palette = shell.palette.read();
-            let Some(window) = shell.window.upgrade() else {
+            let Some(window) = weak.upgrade() else {
                 return;
             };
-            window.set_palette_visible(palette.visible);
-            window.set_palette_query(SharedString::from(palette.query.as_str()));
-            window.set_palette_results(to_palette_model(&palette.results));
-            window.set_palette_selected(palette.selected as i32);
+            window.set_palette_visible(model.visible);
+            window.set_palette_query(SharedString::from(model.query.as_str()));
+            window.set_palette_results(to_palette_model(&model.results));
+            window.set_palette_selected(model.selected as i32);
         });
     }
 
     /// Update status bar state.
     pub fn set_status(self: &Arc<Self>, model: StatusModel) {
-        *self.status.write() = model;
-        let shell = Arc::clone(self);
+        *self.status.write() = model.clone();
+        let weak = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
-            let status = shell.status.read();
-            let Some(window) = shell.window.upgrade() else {
+            let Some(window) = weak.upgrade() else {
                 return;
             };
-            let indexer_status = status.indexer_state.to_string();
-            window.set_total_entries(status.total_entries as i32);
-            window.set_selected_entries(status.selected_entries as i32);
+            let indexer_status = model.indexer_state.to_string();
+            window.set_total_entries(model.total_entries as i32);
+            window.set_selected_entries(model.selected_entries as i32);
             window.set_indexer_status(indexer_status.into());
         });
     }
@@ -466,13 +567,12 @@ impl AppShell {
     /// event loop via [`slint::invoke_from_event_loop`].
     pub fn apply_theme(self: &Arc<Self>, tokens: &ThemeTokens) {
         let tokens = tokens.clone();
-        let shell = Arc::clone(self);
+        let weak = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
-            let Some(window) = shell.window.upgrade() else {
+            let Some(window) = weak.upgrade() else {
                 return;
             };
 
-            // Colors
             let c = &tokens.colors;
             window.set_theme_bg(c.bg.to_slint_color());
             window.set_theme_panel_bg(c.panel_bg.to_slint_color());
@@ -487,13 +587,11 @@ impl AppShell {
             window.set_theme_success(c.success.to_slint_color());
             window.set_theme_warning(c.warning.to_slint_color());
 
-            // Typography
             let t = &tokens.typography;
             window.set_theme_font_family(t.font_family.as_str().into());
             window.set_theme_monospace(t.monospace_family.as_str().into());
             window.set_theme_font_size(t.font_size_pt);
 
-            // Chrome
             let ch = &tokens.chrome;
             window.set_theme_titlebar_h(ch.titlebar_h_px);
             window.set_theme_statusbar_h(ch.statusbar_h_px);
@@ -505,7 +603,6 @@ impl AppShell {
             window.set_theme_spacing_md(ch.spacing_md_px);
             window.set_theme_spacing_lg(ch.spacing_lg_px);
 
-            // Dark-mode hint
             window.set_dark(tokens.mode.is_dark());
         });
     }

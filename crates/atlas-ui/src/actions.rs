@@ -15,6 +15,16 @@ use crate::models::ViewMode;
 pub enum UiAction {
     /// Open or close the command palette.
     TogglePalette,
+    /// Toggle the search panel open/closed.
+    ToggleSearchPanel,
+    /// Open the search panel (with focus on the query input).
+    OpenSearchPanel,
+    /// User changed the search query.
+    SearchQueryChanged(String),
+    /// User confirmed a search result.
+    SearchConfirm(usize),
+    /// User closed the search panel.
+    SearchClose,
     /// Close the command palette without confirming.
     DismissPalette,
     /// User typed in the palette query field.

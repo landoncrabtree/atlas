@@ -40,16 +40,16 @@ pub struct Selection {
 }
 
 impl Selection {
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.mask.fill(false);
         self.anchor = None;
     }
 
-    fn resize(&mut self, len: usize) {
+    pub(crate) fn resize(&mut self, len: usize) {
         self.mask.resize(len, false);
     }
 
-    fn select_single(&mut self, index: usize) {
+    pub(crate) fn select_single(&mut self, index: usize) {
         self.clear();
         if index < self.mask.len() {
             self.mask[index] = true;
@@ -57,14 +57,14 @@ impl Selection {
         self.anchor = Some(index);
     }
 
-    fn toggle(&mut self, index: usize) {
+    pub(crate) fn toggle(&mut self, index: usize) {
         if index < self.mask.len() {
             self.mask[index] = !self.mask[index];
         }
         self.anchor = Some(index);
     }
 
-    fn select_range(&mut self, from: usize, to: usize) {
+    pub(crate) fn select_range(&mut self, from: usize, to: usize) {
         if self.mask.is_empty() {
             self.anchor = Some(to);
             return;

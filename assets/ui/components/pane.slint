@@ -4,6 +4,7 @@ import { Breadcrumbs } from "breadcrumbs.slint";
 import { TabBar, TabEntry } from "tab-bar.slint";
 import { EmptyView } from "../views/empty-view.slint";
 import { DetailsView } from "../views/details/details-view.slint";
+import { GridView } from "../views/grid/grid-view.slint";
 import { EntryRowItem, ColumnSpec } from "../views/details/column.slint";
 
 // A single pane: address bar + breadcrumbs + tab bar + content view.
@@ -25,6 +26,12 @@ export component Pane {
     in property <int> details-selected-anchor: -1;
     in property <int> details-focused-index: -1;
 
+    // Grid view properties
+    in property <[image]> grid-thumbnails: [];
+    in property <[bool]> grid-has-thumbs: [];
+    in property <[bool]> grid-selected-mask: [];
+    in property <int> grid-focused-index: -1;
+
     callback address-submitted(string);
     callback address-cancelled();
     callback breadcrumb-clicked(int);
@@ -38,6 +45,13 @@ export component Pane {
     callback details-row-context-menu(int, length, length);
     callback details-header-clicked(int);
     callback details-header-resize(int, float);
+
+    // Grid view callbacks
+    callback grid-entry-clicked(int, bool, bool);
+    callback grid-entry-double-clicked(int);
+    callback grid-entry-context-menu(int, length, length);
+    callback grid-thumbnail-visible(int);
+    callback grid-columns-changed(int);
 
     TouchArea {
         clicked => { root.pane-clicked(); }
@@ -95,7 +109,22 @@ export component Pane {
                     header-resize(i, w) => { root.details-header-resize(i, w); }
                 }
 
-                if root.view-mode != "Details" : EmptyView {
+                if root.view-mode == "Grid" : GridView {
+                    vertical-stretch: 1;
+                    entries: root.details-rows;
+                    thumbnails: root.grid-thumbnails;
+                    has-thumbs: root.grid-has-thumbs;
+                    selected-mask: root.grid-selected-mask;
+                    focused-index: root.grid-focused-index;
+
+                    entry-clicked(i, ctrl, shift) => { root.grid-entry-clicked(i, ctrl, shift); }
+                    entry-double-clicked(i) => { root.grid-entry-double-clicked(i); }
+                    entry-context-menu(i, x, y) => { root.grid-entry-context-menu(i, x, y); }
+                    thumbnail-visible(i) => { root.grid-thumbnail-visible(i); }
+                    columns-changed(c) => { root.grid-columns-changed(c); }
+                }
+
+                if root.view-mode != "Details" && root.view-mode != "Grid" : EmptyView {
                     view-mode: root.view-mode;
                     vertical-stretch: 1;
                 }

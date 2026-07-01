@@ -1,0 +1,160 @@
+import { Theme } from "../theme.slint";
+
+export struct SearchRow {
+    path: string,
+    label: string,
+    snippet: string,
+    kind: string,
+}
+
+export component SearchPanel inherits Rectangle {
+    in property <bool> visible-panel;
+    in property <string> query;
+    in property <[SearchRow]> rows;
+    in property <int> selected-index;
+    in property <string> status-text;
+    callback query-changed(string);
+    callback confirm(int);
+    callback close();
+
+    if visible-panel : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: Theme.panel-bg;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        VerticalLayout {
+            padding: Theme.spacing-md;
+            spacing: Theme.spacing-sm;
+
+            HorizontalLayout {
+                height: 32px;
+
+                Text {
+                    text: "Search";
+                    color: Theme.fg;
+                    font-size: 16px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                Rectangle {
+                    width: 24px;
+                    height: 24px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: Theme.radius-sm;
+                    background: Theme.bg;
+
+                    TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        clicked => { root.close(); }
+                    }
+
+                    Text {
+                        text: "×";
+                        color: Theme.fg-muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 36px;
+                border-width: 1px;
+                border-color: Theme.accent;
+                border-radius: Theme.radius-sm;
+                background: Theme.bg;
+
+                HorizontalLayout {
+                    padding-left: Theme.spacing-sm;
+                    padding-right: Theme.spacing-sm;
+
+                    TextInput {
+                        text: root.query;
+                        color: Theme.fg;
+                        font-size: Theme.font-size;
+                        vertical-alignment: center;
+                        single-line: true;
+                        edited => { root.query-changed(self.text); }
+                        accepted => {
+                            if rows.length > 0 {
+                                root.confirm(selected-index);
+                            }
+                        }
+                        key-pressed(event) => {
+                            if event.text == Key.Escape {
+                                root.close();
+                                return accept;
+                            }
+                            reject;
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.border; }
+
+            Rectangle {
+                vertical-stretch: 1;
+                clip: true;
+
+                if rows.length == 0 : Text {
+                    text: query == "" ? "Type to search…" : "No results";
+                    color: Theme.fg-muted;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    height: 60px;
+                }
+
+                for row[i] in rows : Rectangle {
+                    height: 56px;
+                    background: i == selected-index ? Theme.selection-bg : Theme.panel-bg;
+                    border-radius: Theme.radius-sm;
+
+                    TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        double-clicked => { root.confirm(i); }
+                    }
+
+                    VerticalLayout {
+                        padding-left: Theme.spacing-sm;
+                        padding-right: Theme.spacing-sm;
+                        alignment: center;
+                        spacing: 2px;
+
+                        Text {
+                            text: row.label;
+                            color: i == selected-index ? Theme.selection-fg : Theme.fg;
+                            font-size: 13px;
+                        }
+
+                        Text {
+                            text: row.snippet;
+                            color: i == selected-index ? Theme.selection-fg : Theme.fg-muted;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.border; }
+
+            Text {
+                text: status-text;
+                color: Theme.fg-muted;
+                font-size: 11px;
+                height: 18px;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

@@ -25,6 +25,7 @@ use tracing_subscriber::EnvFilter;
 use atlas_ui::{
     actions::{ActionSink, UiAction},
     models::{PaletteModel, StatusModel},
+    search::SearchController,
     shell::AppShell,
     theme::{ThemeLoader, ThemeTokens, ThemeWatcher},
     theming::ThemeEvent,
@@ -50,16 +51,30 @@ fn main() -> Result<()> {
 
     tracing::info!("starting atlas");
 
-    // Load configuration; fall back to defaults on any parse/IO error.
     let config = atlas_config::load().unwrap_or_default();
     let theme_id = config.ui.theme.clone();
 
     let window = AtlasWindow::new()?;
     let nav = NavigationController::new(&config.bookmarks);
-    let shell: Arc<AppShell> = AppShell::new(&window, LoggingActionSink, Arc::clone(&nav));
+    let search_ctrl = SearchController::new();
+    let index_client = search_ctrl
+        .runtime_handle()
+        .block_on(atlas_search::IndexClient::connect_default())
+        .map(Arc::new)
+        .map_err(|error| {
+            tracing::warn!(%error, "search index not available");
+            error
+        })
+        .ok();
+    search_ctrl.set_index_client(index_client);
+    search_ctrl.attach_window(window.as_weak());
+    let shell: Arc<AppShell> = AppShell::new(
+        &window,
+        LoggingActionSink,
+        Arc::clone(&nav),
+        Arc::clone(&search_ctrl),
+    );
 
-    // ── Theme chain ─────────────────────────────────────────────────────────
-    // Resolve the theme ID from config, fall back to "atlas-dark" if missing.
     let loader = ThemeLoader::new();
     let (theme_watcher, themes_arc, theme_events) = ThemeWatcher::start(loader, &theme_id)
         .unwrap_or_else(|e| {
@@ -68,25 +83,20 @@ fn main() -> Result<()> {
                 .expect("built-in atlas-dark must always load")
         });
 
-    // Push initial tokens before the window is shown.
     shell.apply_theme(&themes_arc.load());
-
-    // Drain hot-reload events and re-apply the swapped tokens.
     spawn_theme_event_thread(Arc::clone(&shell), Arc::clone(&themes_arc), theme_events);
-    // ────────────────────────────────────────────────────────────────────────
 
     let start_path = config.general.start_path.clone().unwrap_or_else(|| {
         env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/"))
     });
+    search_ctrl.set_scope(Some(start_path.clone()));
     nav.navigate(0, start_path);
     shell.set_status(StatusModel::default());
     shell.set_palette(PaletteModel::default());
 
     window.run()?;
-
-    // Best-effort cleanup — stop the FS watcher on normal exit.
     theme_watcher.stop();
 
     Ok(())

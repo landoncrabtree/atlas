@@ -3,6 +3,7 @@ import { Titlebar } from "components/titlebar.slint";
 import { Workspace } from "components/workspace.slint";
 import { StatusBar } from "components/status-bar.slint";
 import { CommandPalette, PaletteEntry } from "components/command-palette.slint";
+import { SearchPanel, SearchRow } from "components/search-panel.slint";
 import { TabEntry } from "components/tab-bar.slint";
 import { EntryRowItem, ColumnSpec } from "views/details/column.slint";
 
@@ -61,6 +62,10 @@ export component AtlasWindow inherits Window {
     in property <[bool]> pane0-details-selected-mask: [];
     in property <int> pane0-details-selected-anchor: -1;
     in property <int> pane0-details-focused-index: -1;
+    in property <[image]> pane0-grid-thumbnails: [];
+    in property <[bool]> pane0-grid-has-thumbs: [];
+    in property <[bool]> pane0-grid-selected-mask: [];
+    in property <int> pane0-grid-focused-index: -1;
 
     in property <string> pane1-path: "";
     in property <[string]> pane1-segments: [];
@@ -72,6 +77,10 @@ export component AtlasWindow inherits Window {
     in property <[bool]> pane1-details-selected-mask: [];
     in property <int> pane1-details-selected-anchor: -1;
     in property <int> pane1-details-focused-index: -1;
+    in property <[image]> pane1-grid-thumbnails: [];
+    in property <[bool]> pane1-grid-has-thumbs: [];
+    in property <[bool]> pane1-grid-selected-mask: [];
+    in property <int> pane1-grid-focused-index: -1;
 
     in property <int> total-entries: 0;
     in property <int> selected-entries: 0;
@@ -84,9 +93,20 @@ export component AtlasWindow inherits Window {
     in property <[PaletteEntry]> palette-results: [];
     in property <int> palette-selected: 0;
 
+    in property <bool> search-panel-visible: false;
+    in-out property <string> search-panel-query: "";
+    in property <[SearchRow]> search-panel-rows: [];
+    in property <int> search-panel-selected: 0;
+    in property <string> search-panel-status: "";
+
     callback palette-query-changed(string);
     callback palette-confirm(string);
     callback palette-dismiss();
+    callback search-query-changed(string);
+    callback search-confirm(int);
+    callback search-close();
+    callback toggle-search-panel();
+    callback open-search-panel();
 
     callback pane0-address-submitted(string);
     callback pane0-address-cancelled();
@@ -100,6 +120,11 @@ export component AtlasWindow inherits Window {
     callback pane0-details-row-context-menu(int, length, length);
     callback pane0-details-header-clicked(int);
     callback pane0-details-header-resize(int, float);
+    callback pane0-grid-entry-clicked(int, bool, bool);
+    callback pane0-grid-entry-double-clicked(int);
+    callback pane0-grid-entry-context-menu(int, length, length);
+    callback pane0-grid-thumbnail-visible(int);
+    callback pane0-grid-columns-changed(int);
 
     callback pane1-address-submitted(string);
     callback pane1-address-cancelled();
@@ -113,6 +138,11 @@ export component AtlasWindow inherits Window {
     callback pane1-details-row-context-menu(int, length, length);
     callback pane1-details-header-clicked(int);
     callback pane1-details-header-resize(int, float);
+    callback pane1-grid-entry-clicked(int, bool, bool);
+    callback pane1-grid-entry-double-clicked(int);
+    callback pane1-grid-entry-context-menu(int, length, length);
+    callback pane1-grid-thumbnail-visible(int);
+    callback pane1-grid-columns-changed(int);
 
     callback toggle-palette();
     callback open-goto();
@@ -196,6 +226,18 @@ export component AtlasWindow inherits Window {
                 root.cycle-pane-focus();
                 return accept;
             }
+            if event.text == Key.Escape && search-panel-visible {
+                root.search-close();
+                return accept;
+            }
+            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && (event.text == "f" || event.text == "F") {
+                root.toggle-search-panel();
+                return accept;
+            }
+            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "f" || event.text == "F") {
+                root.open-search-panel();
+                return accept;
+            }
             reject;
         }
 
@@ -222,6 +264,10 @@ export component AtlasWindow inherits Window {
                 pane0-details-selected-mask: root.pane0-details-selected-mask;
                 pane0-details-selected-anchor: root.pane0-details-selected-anchor;
                 pane0-details-focused-index: root.pane0-details-focused-index;
+                pane0-grid-thumbnails: root.pane0-grid-thumbnails;
+                pane0-grid-has-thumbs: root.pane0-grid-has-thumbs;
+                pane0-grid-selected-mask: root.pane0-grid-selected-mask;
+                pane0-grid-focused-index: root.pane0-grid-focused-index;
 
                 pane1-path: root.pane1-path;
                 pane1-segments: root.pane1-segments;
@@ -233,6 +279,10 @@ export component AtlasWindow inherits Window {
                 pane1-details-selected-mask: root.pane1-details-selected-mask;
                 pane1-details-selected-anchor: root.pane1-details-selected-anchor;
                 pane1-details-focused-index: root.pane1-details-focused-index;
+                pane1-grid-thumbnails: root.pane1-grid-thumbnails;
+                pane1-grid-has-thumbs: root.pane1-grid-has-thumbs;
+                pane1-grid-selected-mask: root.pane1-grid-selected-mask;
+                pane1-grid-focused-index: root.pane1-grid-focused-index;
 
                 pane0-address-submitted(p) => { root.pane0-address-submitted(p); }
                 pane0-address-cancelled => { root.pane0-address-cancelled(); }
@@ -246,6 +296,11 @@ export component AtlasWindow inherits Window {
                 pane0-details-row-context-menu(i, x, y) => { root.pane0-details-row-context-menu(i, x, y); }
                 pane0-details-header-clicked(i) => { root.pane0-details-header-clicked(i); }
                 pane0-details-header-resize(i, w) => { root.pane0-details-header-resize(i, w); }
+                pane0-grid-entry-clicked(i, ctrl, shift) => { root.pane0-grid-entry-clicked(i, ctrl, shift); }
+                pane0-grid-entry-double-clicked(i) => { root.pane0-grid-entry-double-clicked(i); }
+                pane0-grid-entry-context-menu(i, x, y) => { root.pane0-grid-entry-context-menu(i, x, y); }
+                pane0-grid-thumbnail-visible(i) => { root.pane0-grid-thumbnail-visible(i); }
+                pane0-grid-columns-changed(c) => { root.pane0-grid-columns-changed(c); }
 
                 pane1-address-submitted(p) => { root.pane1-address-submitted(p); }
                 pane1-address-cancelled => { root.pane1-address-cancelled(); }
@@ -259,6 +314,11 @@ export component AtlasWindow inherits Window {
                 pane1-details-row-context-menu(i, x, y) => { root.pane1-details-row-context-menu(i, x, y); }
                 pane1-details-header-clicked(i) => { root.pane1-details-header-clicked(i); }
                 pane1-details-header-resize(i, w) => { root.pane1-details-header-resize(i, w); }
+                pane1-grid-entry-clicked(i, ctrl, shift) => { root.pane1-grid-entry-clicked(i, ctrl, shift); }
+                pane1-grid-entry-double-clicked(i) => { root.pane1-grid-entry-double-clicked(i); }
+                pane1-grid-entry-context-menu(i, x, y) => { root.pane1-grid-entry-context-menu(i, x, y); }
+                pane1-grid-thumbnail-visible(i) => { root.pane1-grid-thumbnail-visible(i); }
+                pane1-grid-columns-changed(c) => { root.pane1-grid-columns-changed(c); }
             }
 
             StatusBar {
@@ -282,6 +342,21 @@ export component AtlasWindow inherits Window {
             query-changed(q) => { root.palette-query-changed(q); }
             confirm(id) => { root.palette-confirm(id); }
             dismiss => { root.palette-dismiss(); }
+        }
+
+        SearchPanel {
+            x: parent.width * 0.6;
+            y: 0px;
+            width: parent.width * 0.4;
+            height: parent.height;
+            visible-panel: root.search-panel-visible;
+            query: root.search-panel-query;
+            rows: root.search-panel-rows;
+            selected-index: root.search-panel-selected;
+            status-text: root.search-panel-status;
+            query-changed(q) => { root.search-query-changed(q); }
+            confirm(i) => { root.search-confirm(i); }
+            close => { root.search-close(); }
         }
     }
 }

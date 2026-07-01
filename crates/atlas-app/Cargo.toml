@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 atlas-ui.workspace = true
+atlas-search.workspace = true
 atlas-fs.workspace = true
 atlas-config.workspace = true
 slint.workspace = true

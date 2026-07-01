@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 atlas-core.workspace = true
+atlas-index.workspace = true
+atlas-ipc.workspace = true
 
 anyhow.workspace = true
 thiserror.workspace = true
@@ -25,7 +27,9 @@ crossbeam-channel.workspace = true
 regex.workspace = true
 futures.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 parking_lot.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
