@@ -17,3 +17,6 @@ serde.workspace = true
 tracing.workspace = true
 smallvec.workspace = true
 ahash.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

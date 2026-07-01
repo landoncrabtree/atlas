@@ -1,16 +1,16 @@
 //! Back/forward navigation history stack.
 
-use std::path::{Path, PathBuf};
+use atlas_core::Location;
 
 /// A bounded back/forward navigation history stack.
 ///
 /// Maintains a current location and two ordered stacks (back and forward).
-/// Pushing a new path clears the forward stack.
+/// Pushing a new location clears the forward stack.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BackForwardStack {
-    back: Vec<PathBuf>,
-    current: Option<PathBuf>,
-    forward: Vec<PathBuf>,
+    back: Vec<Location>,
+    current: Option<Location>,
+    forward: Vec<Location>,
     capacity: usize,
 }
 
@@ -28,8 +28,8 @@ impl BackForwardStack {
 
     /// The current location, if any.
     #[must_use]
-    pub fn current(&self) -> Option<&Path> {
-        self.current.as_deref()
+    pub fn current(&self) -> Option<&Location> {
+        self.current.as_ref()
     }
 
     /// Push a new location.
@@ -37,7 +37,7 @@ impl BackForwardStack {
     /// The previous current is moved to the back stack. The forward stack is
     /// cleared. If the back stack exceeds `capacity`, the oldest entry is
     /// dropped.
-    pub fn push(&mut self, path: PathBuf) {
+    pub fn push(&mut self, location: Location) {
         if let Some(current) = self.current.take() {
             self.back.push(current);
             if self.capacity > 0 && self.back.len() > self.capacity {
@@ -45,11 +45,11 @@ impl BackForwardStack {
             }
         }
         self.forward.clear();
-        self.current = Some(path);
+        self.current = Some(location);
     }
 
-    /// Navigate back; returns the new current path or `None` if no back history.
-    pub fn back(&mut self) -> Option<PathBuf> {
+    /// Navigate back; returns the new current location or `None` if no back history.
+    pub fn back(&mut self) -> Option<Location> {
         let prev = self.back.pop()?;
         if let Some(current) = self.current.take() {
             self.forward.push(current);
@@ -58,8 +58,8 @@ impl BackForwardStack {
         Some(prev)
     }
 
-    /// Navigate forward; returns the new current path or `None` if no forward history.
-    pub fn forward(&mut self) -> Option<PathBuf> {
+    /// Navigate forward; returns the new current location or `None` if no forward history.
+    pub fn forward(&mut self) -> Option<Location> {
         let next = self.forward.pop()?;
         if let Some(current) = self.current.take() {
             self.back.push(current);
@@ -94,7 +94,7 @@ impl BackForwardStack {
 
     /// A snapshot of the back stack, oldest-first.
     #[must_use]
-    pub fn back_history(&self) -> Vec<PathBuf> {
+    pub fn back_history(&self) -> Vec<Location> {
         self.back.clone()
     }
 }
@@ -103,54 +103,58 @@ impl BackForwardStack {
 mod tests {
     use super::*;
 
+    fn loc(path: &str) -> Location {
+        Location::local(path)
+    }
+
     #[test]
     fn push_sets_current() {
         let mut s = BackForwardStack::new(10);
-        s.push(PathBuf::from("/a"));
-        assert_eq!(s.current(), Some(Path::new("/a")));
+        s.push(loc("/a"));
+        assert_eq!(s.current(), Some(&loc("/a")));
     }
 
     #[test]
     fn back_returns_previous() {
         let mut s = BackForwardStack::new(10);
-        s.push(PathBuf::from("/a"));
-        s.push(PathBuf::from("/b"));
+        s.push(loc("/a"));
+        s.push(loc("/b"));
         let prev = s.back();
-        assert_eq!(prev, Some(PathBuf::from("/a")));
-        assert_eq!(s.current(), Some(Path::new("/a")));
+        assert_eq!(prev, Some(loc("/a")));
+        assert_eq!(s.current(), Some(&loc("/a")));
     }
 
     #[test]
     fn push_clears_forward() {
         let mut s = BackForwardStack::new(10);
-        s.push(PathBuf::from("/a"));
-        s.push(PathBuf::from("/b"));
+        s.push(loc("/a"));
+        s.push(loc("/b"));
         s.back();
-        s.push(PathBuf::from("/c"));
+        s.push(loc("/c"));
         assert!(!s.can_go_forward());
-        assert_eq!(s.current(), Some(Path::new("/c")));
+        assert_eq!(s.current(), Some(&loc("/c")));
     }
 
     #[test]
     fn forward_after_back() {
         let mut s = BackForwardStack::new(10);
-        s.push(PathBuf::from("/a"));
-        s.push(PathBuf::from("/b"));
+        s.push(loc("/a"));
+        s.push(loc("/b"));
         s.back();
         let fwd = s.forward();
-        assert_eq!(fwd, Some(PathBuf::from("/b")));
-        assert_eq!(s.current(), Some(Path::new("/b")));
+        assert_eq!(fwd, Some(loc("/b")));
+        assert_eq!(s.current(), Some(&loc("/b")));
     }
 
     #[test]
     fn capacity_trims_oldest() {
         let mut s = BackForwardStack::new(2);
-        s.push(PathBuf::from("/a"));
-        s.push(PathBuf::from("/b"));
-        s.push(PathBuf::from("/c"));
-        s.push(PathBuf::from("/d"));
+        s.push(loc("/a"));
+        s.push(loc("/b"));
+        s.push(loc("/c"));
+        s.push(loc("/d"));
         assert_eq!(s.back.len(), 2);
-        assert_eq!(s.back[0], PathBuf::from("/b"));
+        assert_eq!(s.back[0], loc("/b"));
     }
 
     #[test]
@@ -158,8 +162,8 @@ mod tests {
         let mut s = BackForwardStack::new(10);
         assert!(!s.can_go_back());
         assert!(!s.can_go_forward());
-        s.push(PathBuf::from("/a"));
-        s.push(PathBuf::from("/b"));
+        s.push(loc("/a"));
+        s.push(loc("/b"));
         assert!(s.can_go_back());
         assert!(!s.can_go_forward());
         s.back();

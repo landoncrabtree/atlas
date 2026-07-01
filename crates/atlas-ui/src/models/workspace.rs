@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 
 use ahash::AHashMap;
+use atlas_core::Location;
 use directories::BaseDirs;
 
 use crate::models::{
@@ -52,7 +53,7 @@ impl WorkspaceModel {
             .map(|dirs| dirs.home_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from("/"));
         let id = PaneId(1);
-        let initial = PaneState::new(id, TabModel::at(home), ViewMode::default());
+        let initial = PaneState::new(id, TabModel::at(Location::local(home)), ViewMode::default());
         Self::new(initial)
     }
 
@@ -104,7 +105,7 @@ impl WorkspaceModel {
         initial_view_mode: Option<ViewMode>,
     ) -> PaneId {
         let focused = self.focused;
-        let active_location = self.focused_pane().active_location().to_path_buf();
+        let active_location = self.focused_pane().active_location();
         let view_mode = initial_view_mode.unwrap_or(self.focused_pane().view_mode);
         let new_id = self.allocate_id();
         let new_pane = PaneState::new(new_id, TabModel::at(active_location), view_mode);
@@ -147,7 +148,12 @@ mod tests {
     fn initial_pane(id: PaneId, path: &str, view_mode: ViewMode) -> PaneState {
         PaneState::new(
             id,
-            TabModel::new(path, 16, SortSpec::default(), Filter::default()),
+            TabModel::new(
+                Location::local(path),
+                16,
+                SortSpec::default(),
+                Filter::default(),
+            ),
             view_mode,
         )
     }
@@ -167,7 +173,10 @@ mod tests {
             .map(|dirs| dirs.home_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from("/"));
         assert_eq!(workspace.focused, PaneId(1));
-        assert_eq!(workspace.focused_pane().active_location(), home.as_path());
+        assert_eq!(
+            workspace.focused_pane().active_location(),
+            Location::local(home)
+        );
     }
 
     #[test]
@@ -180,7 +189,7 @@ mod tests {
         assert_eq!(workspace.focused, new_id);
         assert_eq!(
             workspace.pane(new_id).map(PaneState::active_location),
-            Some(std::path::Path::new("/a"))
+            Some(Location::local("/a"))
         );
         assert_eq!(
             workspace.pane(new_id).map(|pane| pane.view_mode),

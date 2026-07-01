@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use atlas_core::Location;
+
 use crate::models::{pane::ViewMode, split::PaneId, tab::TabModel};
 
 /// Full state owned by a single pane in the split workspace.
@@ -40,10 +42,28 @@ impl PaneState {
         &mut self.tabs[self.active_tab]
     }
 
-    /// Return the active tab's location, or `.` when unset.
+    /// Return the active tab's location.
+    ///
+    /// Returns a synthetic `Location::Local(".")` when the active tab has
+    /// no location yet — matches the historical `PathBuf`-returning API
+    /// and keeps callers on the fast path.
     #[must_use]
-    pub fn active_location(&self) -> &Path {
-        self.active().location.as_deref().unwrap_or(Path::new("."))
+    pub fn active_location(&self) -> Location {
+        self.active()
+            .location
+            .clone()
+            .unwrap_or_else(|| Location::local("."))
+    }
+
+    /// Return the active tab's location as a local [`Path`], if it is
+    /// [`Location::Local`]. Returns `None` for remote locations.
+    ///
+    /// TODO(remote): review each caller — some (thumbnails, native trash,
+    /// clipboard) will need explicit "not supported on remote" handling
+    /// once remote backends are wired end-to-end.
+    #[must_use]
+    pub fn active_local_path(&self) -> Option<&Path> {
+        self.active().location.as_ref().and_then(Location::as_local)
     }
 
     /// Append `tab` and make it active.
@@ -77,8 +97,6 @@ impl PaneState {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use atlas_fs::{Filter, SortSpec};
 
     use super::*;
@@ -88,7 +106,7 @@ mod tests {
         let mut pane = PaneState::new(
             PaneId(1),
             TabModel::new(
-                PathBuf::from("/a"),
+                Location::local("/a"),
                 8,
                 SortSpec::default(),
                 Filter::default(),
@@ -97,7 +115,7 @@ mod tests {
         );
 
         pane.add_tab(TabModel::new(
-            PathBuf::from("/b"),
+            Location::local("/b"),
             8,
             SortSpec::default(),
             Filter::default(),
@@ -105,7 +123,7 @@ mod tests {
 
         assert_eq!(pane.tabs.len(), 2);
         assert_eq!(pane.active_tab, 1);
-        assert_eq!(pane.active_location(), Path::new("/b"));
+        assert_eq!(pane.active_location(), Location::local("/b"));
     }
 
     #[test]
@@ -113,7 +131,7 @@ mod tests {
         let mut pane = PaneState::new(
             PaneId(1),
             TabModel::new(
-                PathBuf::from("/a"),
+                Location::local("/a"),
                 8,
                 SortSpec::default(),
                 Filter::default(),
@@ -130,7 +148,7 @@ mod tests {
         let mut pane = PaneState::new(
             PaneId(1),
             TabModel::new(
-                PathBuf::from("/a"),
+                Location::local("/a"),
                 8,
                 SortSpec::default(),
                 Filter::default(),
@@ -138,13 +156,13 @@ mod tests {
             ViewMode::Details,
         );
         pane.add_tab(TabModel::new(
-            PathBuf::from("/b"),
+            Location::local("/b"),
             8,
             SortSpec::default(),
             Filter::default(),
         ));
         pane.add_tab(TabModel::new(
-            PathBuf::from("/c"),
+            Location::local("/c"),
             8,
             SortSpec::default(),
             Filter::default(),
@@ -154,6 +172,6 @@ mod tests {
         let removed = pane.close_tab(2);
         assert!(removed.is_some());
         assert_eq!(pane.active_tab, 1);
-        assert_eq!(pane.active_location(), Path::new("/b"));
+        assert_eq!(pane.active_location(), Location::local("/b"));
     }
 }

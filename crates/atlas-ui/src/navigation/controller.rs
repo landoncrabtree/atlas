@@ -7,7 +7,7 @@ use std::{
 };
 
 use ahash::AHashMap;
-use atlas_core::path::expand_tilde;
+use atlas_core::{path::expand_tilde, Location};
 use atlas_fs::{
     Filter, InMemoryLocationViewModel, LocationViewModel, OpenOptions, SortKey as FsSortKey,
     SortOrder as FsSortOrder, SortSpec,
@@ -33,6 +33,13 @@ type PaneLocationChangedCallback = dyn Fn(PaneId, Arc<InMemoryLocationViewModel>
 /// notified via `on_location_changed` whenever a pane loads a new directory.
 ///
 /// Construct with [`NavigationController::new`] and share behind an [`Arc`].
+///
+/// # Remote locations
+///
+/// The controller understands [`Location::Remote`] at the API surface —
+/// callers may pass any [`Location`] to `navigate*` — but until the remote
+/// backend registry lands (Phase 2.2), navigating to a remote location
+/// emits a `warn!` and is a no-op. The local fast path is unchanged.
 pub struct NavigationController {
     /// One back/forward stack per pane.
     stacks: SmallVec<[Mutex<BackForwardStack>; 2]>,
@@ -118,24 +125,36 @@ impl NavigationController {
         })
     }
 
-    /// Navigate pane `pane` to `path`.
+    /// Navigate pane `pane` to `location`.
     ///
-    /// Expands a leading `~`, canonicalizes (best-effort), skips if already at
-    /// the same location, pushes to history, opens a fresh
-    /// [`InMemoryLocationViewModel`], and fires `on_location_changed`.
-    pub fn navigate(&self, pane: usize, path: impl Into<PathBuf>) {
-        let Some(canonical) = self.canonicalize_path(path.into()) else {
+    /// Expands a leading `~` for local paths, canonicalizes (best-effort),
+    /// skips if already at the same location, pushes to history, opens a
+    /// fresh [`InMemoryLocationViewModel`], and fires `on_location_changed`.
+    ///
+    /// Remote locations are accepted at the API level but not yet routed
+    /// through this controller — the caller sees a `warn!` and the pane
+    /// is left unchanged. TODO(remote): wire through the atlas-remote
+    /// backend registry in Phase 2.2.
+    pub fn navigate(&self, pane: usize, location: impl Into<Location>) {
+        let location = location.into();
+        let Some(canonical) = self.resolve_local(location) else {
             return;
         };
 
         if pane < self.stacks.len()
-            && self.stacks[pane].lock().current() == Some(canonical.as_path())
+            && self.stacks[pane]
+                .lock()
+                .current()
+                .and_then(Location::as_local)
+                == Some(canonical.as_path())
         {
             return;
         }
 
         if pane < self.stacks.len() {
-            self.stacks[pane].lock().push(canonical.clone());
+            self.stacks[pane]
+                .lock()
+                .push(Location::local(canonical.clone()));
         }
 
         self.load_location(pane, canonical);
@@ -153,8 +172,12 @@ impl NavigationController {
             self.stacks[pane].lock().forward()
         };
 
-        let Some(path) = target else { return };
-        self.load_location(pane, path);
+        let Some(location) = target else { return };
+        let Some(local) = location.into_local() else {
+            tracing::warn!("navigation: back/forward to remote location is not yet supported");
+            return;
+        };
+        self.load_location(pane, local);
     }
 
     /// Navigate to the parent directory of the current location.
@@ -196,16 +219,16 @@ impl NavigationController {
         self.navigate(pane, target);
     }
 
-    /// Navigate `pane` to `path` using the PaneId-based API.
+    /// Navigate `pane` to `location` using the PaneId-based API.
     ///
     /// This API does not modify tab history; callers own that state.
-    pub fn navigate_pane(&self, pane: PaneId, path: impl Into<PathBuf>) {
-        self.navigate_pane_impl(pane, path.into(), true);
+    pub fn navigate_pane(&self, pane: PaneId, location: impl Into<Location>) {
+        self.navigate_pane_impl(pane, location.into(), true);
     }
 
-    /// Navigate `pane` to `path` without emitting the PaneId callback.
-    pub fn navigate_pane_no_push(&self, pane: PaneId, path: impl Into<PathBuf>) {
-        self.navigate_pane_impl(pane, path.into(), false);
+    /// Navigate `pane` to `location` without emitting the PaneId callback.
+    pub fn navigate_pane_no_push(&self, pane: PaneId, location: impl Into<Location>) {
+        self.navigate_pane_impl(pane, location.into(), false);
     }
 
     /// Register a callback that fires whenever a PaneId-based location changes.
@@ -232,7 +255,12 @@ impl NavigationController {
     #[must_use]
     pub fn history(&self, pane: usize) -> Vec<PathBuf> {
         if pane < self.stacks.len() {
-            self.stacks[pane].lock().back_history()
+            self.stacks[pane]
+                .lock()
+                .back_history()
+                .into_iter()
+                .filter_map(Location::into_local)
+                .collect()
         } else {
             Vec::new()
         }
@@ -258,8 +286,8 @@ impl NavigationController {
         *self.on_location_changed.write() = Some(Box::new(f));
     }
 
-    fn navigate_pane_impl(&self, pane: PaneId, path: PathBuf, emit_callback: bool) {
-        let Some(canonical) = self.canonicalize_path(path) else {
+    fn navigate_pane_impl(&self, pane: PaneId, location: Location, emit_callback: bool) {
+        let Some(canonical) = self.resolve_local(location) else {
             return;
         };
 
@@ -277,7 +305,29 @@ impl NavigationController {
         if pane >= self.stacks.len() {
             return None;
         }
-        self.stacks[pane].lock().current().map(Path::to_path_buf)
+        self.stacks[pane]
+            .lock()
+            .current()
+            .and_then(Location::as_local)
+            .map(Path::to_path_buf)
+    }
+
+    /// Resolve a [`Location`] down to a canonical local [`PathBuf`], or
+    /// `None` if the location is remote (TODO(remote)) or cannot be
+    /// canonicalized.
+    fn resolve_local(&self, location: Location) -> Option<PathBuf> {
+        let path = match location {
+            Location::Local(path) => path,
+            Location::Remote(uri, _) => {
+                tracing::warn!(
+                    uri = %uri,
+                    "navigation: remote locations are not yet wired through NavigationController; \
+                     remote::Connect will land the plumbing in Phase 2.2"
+                );
+                return None;
+            }
+        };
+        self.canonicalize_path(path)
     }
 
     fn canonicalize_path(&self, path: PathBuf) -> Option<PathBuf> {
@@ -516,5 +566,16 @@ mod tests {
                 .map(|vm| vm.location().to_path_buf()),
             Some(b)
         );
+    }
+
+    #[test]
+    fn navigate_pane_ignores_remote_location_with_warning() {
+        let ctrl = NavigationController::new(&[]);
+        // Should NOT panic and should NOT install a location.
+        ctrl.navigate_pane(
+            PaneId(42),
+            <Location as std::str::FromStr>::from_str("sftp://user@host/tmp").expect("uri parses"),
+        );
+        assert!(ctrl.location_for_pane(PaneId(42)).is_none());
     }
 }

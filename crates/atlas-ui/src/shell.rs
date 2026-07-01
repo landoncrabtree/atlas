@@ -17,7 +17,7 @@ use std::{
 };
 
 use ahash::AHashMap;
-use atlas_core::path::expand_tilde;
+use atlas_core::{path::expand_tilde, Location};
 use atlas_fs::LocationViewModel;
 use atlas_keymap::{defaults::default_actions, ActionRegistry, Keymap};
 use directories::UserDirs;
@@ -28,7 +28,7 @@ use crate::{
     actions::{ActionSink, UiAction},
     models::{
         split::{Cardinal, PaneId, Rect, SplitDirection, SplitLayout},
-        PaletteModel, PaletteResult, StatusModel, TabModel, ViewMode, WorkspaceModel,
+        PaletteModel, PaletteResult, PaneState, StatusModel, TabModel, ViewMode, WorkspaceModel,
     },
     navigation::NavigationController,
     ops::OpsController,
@@ -57,21 +57,6 @@ fn to_palette_model(results: &[PaletteResult]) -> ModelRc<PaletteEntry> {
         })
         .collect();
     ModelRc::new(VecModel::from(entries))
-}
-
-/// Split a path into breadcrumb segments (equivalent to the legacy
-/// `PaneModel::path_segments`). Always yields at least one segment.
-fn path_segments_for(path: &Path) -> Vec<String> {
-    let mut segments: Vec<String> = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect();
-
-    if segments.is_empty() {
-        segments.push("/".to_owned());
-    }
-
-    segments
 }
 
 /// Return a "NN GB free of NN TB" string for the volume that contains `path`.
@@ -1326,11 +1311,7 @@ impl AppShell {
         let (new_id, new_location) = {
             let mut ws = self.workspace.write();
             let new_id = ws.split_focused(direction, None);
-            let loc = ws
-                .pane(new_id)
-                .expect("just created")
-                .active_location()
-                .to_path_buf();
+            let loc = ws.pane(new_id).expect("just created").active_location();
             (new_id, loc)
         };
 
@@ -1488,13 +1469,30 @@ impl AppShell {
         }
     }
 
-    /// Return the current directory path for `id`, if available.
+    /// Return the current location for `id`, if available.
+    ///
+    /// This returns the local [`PathBuf`] for [`Location::Local`] panes
+    /// and `None` for remote panes. Use [`Self::pane_location_full`] to
+    /// receive the full [`Location`] regardless of backend.
+    ///
+    /// TODO(remote): review callers — most will migrate to the full
+    /// [`Location`] once remote backends are wired end-to-end.
     #[must_use]
     pub fn pane_location(&self, id: PaneId) -> Option<PathBuf> {
         self.workspace
             .read()
             .pane(id)
-            .map(|p| p.active_location().to_path_buf())
+            .and_then(|p| p.active_local_path().map(Path::to_path_buf))
+    }
+
+    /// Return the current [`Location`] for `id`, if the pane exists.
+    /// Unlike [`Self::pane_location`], this returns remote locations too.
+    #[must_use]
+    pub fn pane_location_full(&self, id: PaneId) -> Option<Location> {
+        self.workspace
+            .read()
+            .pane(id)
+            .map(PaneState::active_location)
     }
 
     /// Set the view mode for pane `id` and push the change to the UI.
@@ -1538,7 +1536,7 @@ impl AppShell {
                 return;
             }
             p.set_active(tab);
-            Some(p.active_location().to_path_buf())
+            Some(p.active_location())
         };
         self.project_workspace_to_slint();
         if let Some(loc) = target {
@@ -1619,7 +1617,7 @@ impl AppShell {
                 self.workspace
                     .read()
                     .pane(id)
-                    .map(|p| p.active_location().to_path_buf())
+                    .map(PaneState::active_location)
             } else {
                 None
             }
@@ -1679,7 +1677,10 @@ impl AppShell {
                 return;
             }
             let src = &p.tabs[tab];
-            let loc = src.location.clone().unwrap_or_else(dirs_home);
+            let loc = src
+                .location
+                .clone()
+                .unwrap_or_else(|| Location::local(dirs_home()));
             (loc, src.sort.clone(), src.filter.clone())
         };
         // Build the duplicate: fresh history, inherited sort + filter.
@@ -1715,7 +1716,7 @@ impl AppShell {
                 .filter_map(|(i, t)| (i != keep).then_some(t))
                 .collect();
             p.active_tab = 0;
-            let dest = p.active_location().to_path_buf();
+            let dest = p.active_location();
             (dest, closed)
         };
         {
@@ -1745,7 +1746,7 @@ impl AppShell {
             let closed: Vec<TabModel> = p.tabs.drain(from + 1..).collect();
             let navigated = if p.active_tab > from {
                 p.active_tab = from;
-                Some(p.active_location().to_path_buf())
+                Some(p.active_location())
             } else {
                 None
             };
@@ -1776,7 +1777,10 @@ impl AppShell {
             ct.get_mut(&pane).and_then(VecDeque::pop_front)
         };
         let Some(tab) = reopened else { return };
-        let loc = tab.location.clone().unwrap_or_else(dirs_home);
+        let loc = tab
+            .location
+            .clone()
+            .unwrap_or_else(|| Location::local(dirs_home()));
         {
             let mut ws = self.workspace.write();
             let Some(p) = ws.pane_mut(pane) else { return };
@@ -2299,7 +2303,7 @@ impl AppShell {
             let mut workspace = self.workspace.write();
             if let Some(pane_state) = workspace.pane_mut(pane_id) {
                 let tab = pane_state.active_mut();
-                tab.location = Some(path.clone());
+                tab.location = Some(Location::local(path.clone()));
                 tab.title = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -3263,11 +3267,11 @@ impl AppShell {
                         y: rect.y,
                         width: rect.width,
                         height: rect.height,
-                        path: location.to_string_lossy().into_owned(),
+                        path: location.display_path(),
                         view_mode: pane.view_mode.to_string(),
                         tabs: pane.tabs.clone(),
                         active_tab: pane.active_tab as i32,
-                        segments: path_segments_for(location),
+                        segments: location.breadcrumb_segments(),
                     }
                 })
                 .collect();

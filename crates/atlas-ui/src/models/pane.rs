@@ -1,6 +1,6 @@
 //! Pane model — a single file-explorer pane with its own location and tabs.
 
-use std::path::PathBuf;
+use atlas_core::Location;
 
 use crate::models::tab::TabModel;
 
@@ -35,8 +35,10 @@ impl std::fmt::Display for ViewMode {
 /// State for a single pane in the workspace.
 #[derive(Debug, Clone)]
 pub struct PaneModel {
-    /// Filesystem path currently shown in this pane.
-    pub location: PathBuf,
+    /// Location currently shown in this pane. Local paths use
+    /// [`Location::Local`]; remote backends (SFTP, S3, WebDAV, FTP) use
+    /// [`Location::Remote`].
+    pub location: Location,
     /// Active rendering mode.
     pub view_mode: ViewMode,
     /// Ordered tab list.
@@ -49,7 +51,7 @@ pub struct PaneModel {
 
 impl PaneModel {
     /// Construct a pane model pointing to `location`.
-    pub fn new(location: impl Into<PathBuf>) -> Self {
+    pub fn new(location: impl Into<Location>) -> Self {
         let location = location.into();
 
         Self {
@@ -61,19 +63,14 @@ impl PaneModel {
         }
     }
 
-    /// Split `self.location` into path segments for the breadcrumb bar.
+    /// Split the pane location into breadcrumb segments.
+    ///
+    /// For local locations this is the historical path component list.
+    /// For remote locations the first segment is the URI root
+    /// (`sftp://user@host:port`) and subsequent segments are path
+    /// components. See [`Location::breadcrumb_segments`].
     pub fn path_segments(&self) -> Vec<String> {
-        let mut segments: Vec<String> = self
-            .location
-            .components()
-            .map(|component| component.as_os_str().to_string_lossy().into_owned())
-            .collect();
-
-        if segments.is_empty() {
-            segments.push("/".to_owned());
-        }
-
-        segments
+        self.location.breadcrumb_segments()
     }
 }
 
@@ -91,9 +88,21 @@ mod tests {
     }
 
     #[test]
-    fn pane_model_new_segments() {
-        let pane = PaneModel::new("/Users/alice/Downloads");
+    fn pane_model_new_local_segments() {
+        let pane = PaneModel::new(Location::local("/Users/alice/Downloads"));
         let segments = pane.path_segments();
         assert!(segments.contains(&"Downloads".to_owned()));
+    }
+
+    #[test]
+    fn pane_model_new_remote_segments_start_with_uri_root() {
+        use std::str::FromStr;
+        let loc = Location::from_str("sftp://alice@host/var/log").unwrap();
+        let pane = PaneModel::new(loc);
+        let segments = pane.path_segments();
+        assert_eq!(
+            segments.first().map(String::as_str),
+            Some("sftp://alice@host")
+        );
     }
 }
