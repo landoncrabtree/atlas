@@ -181,7 +181,9 @@ impl NavigationController {
 
     /// Open a new view model for `path`, store it, and fire the callback.
     fn load_location(&self, pane: usize, path: PathBuf) {
-        let vm = InMemoryLocationViewModel::open(path, OpenOptions::default());
+        // Use open_live so that external filesystem changes (create/delete/rename)
+        // are reflected in the view model without a manual refresh.
+        let vm = InMemoryLocationViewModel::open_live(path, OpenOptions::default());
 
         {
             let mut locs = self.locations.write();
