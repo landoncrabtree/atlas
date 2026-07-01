@@ -381,6 +381,310 @@ pub struct PaneRenderCache {
     /// e.g. `"590 GB free of 926 GB"`. Empty when unavailable
     /// (unmounted volume, no cwd yet).
     pub status_free_space_text: String,
+
+    // ── Cross-push identity preservation ─────────────────────────────────
+    //
+    // Monotonically bumped every time a `publish_*` method mutates one of
+    // the fields above that shows up in `push_pane_data_to_slint`
+    // (details rows, columns, thumbnails, tree nodes, miller columns,
+    // gallery images, tabs, breadcrumbs, active-tab, per-pane status).
+    //
+    // The UI-thread side (`PANE_MODEL_HANDLES` in `shell.rs`) caches the
+    // `ModelRc<T>` it built for each pane last push and reuses them when
+    // `data_epoch` is unchanged. That preserves inner `ModelRc` identity
+    // for panes whose data did not change since the last push, which in
+    // turn preserves `ListView.viewport-y` for those panes — a full
+    // rebuild would drop the ListView's model subscription and reset
+    // scroll to zero.
+    //
+    // Bumped by [`AppShell::mark_pane_data_dirty`]. Selection-only
+    // publishers do NOT bump this — they route through the parallel
+    // `push_pane_selection_to_slint` path which never touches the row
+    // models.
+    pub data_epoch: u64,
+}
+
+/// UI-thread cache of the last-published `ModelRc<T>` handles for a single
+/// pane, plus the [`PaneRenderCache::data_epoch`] they were built from.
+///
+/// See [`AppShell::push_pane_data_to_slint`] for the identity-preservation
+/// rationale. Only touched from inside `slint::invoke_from_event_loop`
+/// closures — the `ModelRc<T>` inside is `!Send`.
+///
+/// Handles default to empty `ModelRc<T>` sentinels; `epoch: None`
+/// distinguishes an unbuilt entry from a built one with epoch 0. All
+/// fields are overwritten on the first call to [`Self::rebuild_from`].
+#[derive(Default, Clone)]
+struct PaneSlintModelHandles {
+    /// Epoch this entry was built from; `None` means "never built".
+    epoch: Option<u64>,
+    tabs: ModelRc<TabEntry>,
+    segments: ModelRc<SharedString>,
+    details_rows: ModelRc<EntryRowItem>,
+    details_columns: ModelRc<crate::ColumnSpec>,
+    grid_thumbnails: ModelRc<slint::Image>,
+    grid_has_thumbs: ModelRc<bool>,
+    gallery_strip_thumbs: ModelRc<slint::Image>,
+    tree_nodes: ModelRc<crate::TreeNode>,
+    miller_columns: ModelRc<crate::MillerColData>,
+}
+
+impl PaneSlintModelHandles {
+    /// Rebuild every cached ModelRc from `snap`. Called only when
+    /// [`PaneRenderCache::data_epoch`] indicates the pane's data has
+    /// changed since the last build.
+    fn rebuild_from(&mut self, snap: &PaneRenderCache) {
+        self.tabs = ModelRc::new(VecModel::from(snap.tabs.clone()));
+        self.segments = ModelRc::new(VecModel::from(snap.segments.clone()));
+        self.details_rows = ModelRc::new(VecModel::from(snap.details_rows.clone()));
+        self.details_columns = ModelRc::new(VecModel::from(snap.details_columns.clone()));
+
+        let grid_images: Vec<slint::Image> = snap
+            .grid_thumbs
+            .iter()
+            .map(|opt| {
+                opt.as_ref()
+                    .map(crate::views::grid::thumbs::decoded_to_slint)
+                    .unwrap_or_default()
+            })
+            .collect();
+        self.grid_thumbnails = ModelRc::new(VecModel::from(grid_images));
+        self.grid_has_thumbs = ModelRc::new(VecModel::from(snap.grid_has_thumbs.clone()));
+
+        let strip_images: Vec<slint::Image> = snap
+            .gallery_strip_thumbs
+            .iter()
+            .map(|opt| {
+                opt.as_ref()
+                    .map(crate::views::gallery::thumbs::decoded_to_slint)
+                    .unwrap_or_default()
+            })
+            .collect();
+        self.gallery_strip_thumbs = ModelRc::new(VecModel::from(strip_images));
+
+        self.tree_nodes = ModelRc::new(VecModel::from(snap.tree_nodes.clone()));
+
+        let miller_cols: Vec<crate::MillerColData> = snap
+            .miller_columns
+            .iter()
+            .map(|c| crate::MillerColData {
+                title: SharedString::from(c.title.as_str()),
+                entries: ModelRc::new(VecModel::from(c.entries.clone())),
+                focused: c.focused,
+                loading: c.loading,
+            })
+            .collect();
+        self.miller_columns = ModelRc::new(VecModel::from(miller_cols));
+    }
+}
+
+thread_local! {
+    /// UI-thread cache of per-pane `ModelRc<T>` handles. See
+    /// [`AppShell::push_pane_data_to_slint`] and
+    /// [`PaneSlintModelHandles`] for the design rationale.
+    ///
+    /// Only accessed from inside `slint::invoke_from_event_loop`
+    /// closures. Entries are pruned when their pane leaves the layout.
+    static PANE_MODEL_HANDLES: std::cell::RefCell<AHashMap<PaneId, PaneSlintModelHandles>> =
+        std::cell::RefCell::default();
+
+    /// UI-thread cache of the outer per-property `VecModel`s that back
+    /// every `panes-*: [T]` window property (plus the root `panes` and
+    /// `split-handles` models).
+    ///
+    /// # Why persistent outer models
+    ///
+    /// Slint's `for pane[i] in panes: Pane { ... }` iterator binds to
+    /// the *identity* of the outer `panes` `ModelRc`. If a subsequent
+    /// `set_panes(new_model)` call replaces the outer model, Slint
+    /// treats every row as new and tears down / re-creates every `Pane`
+    /// instance — including their inner `ListView`s, which reset
+    /// `viewport-y` to zero.
+    ///
+    /// The same holds one layer deeper: `pane.details-rows` is bound to
+    /// `panes-details-rows[i]`. If `panes-details-rows` (the outer
+    /// `ModelRc<ModelRc<EntryRowItem>>`) is replaced, Slint may
+    /// re-evaluate the indexed access and produce a fresh `ModelRc`
+    /// even when the underlying data hasn't changed.
+    ///
+    /// By caching each outer property's [`VecModel`] behind an [`Rc`]
+    /// and binding the property to `ModelRc::from(rc.clone())` **once**
+    /// (via [`OuterPaneModels::ensure_bound`]), subsequent pushes only
+    /// mutate rows in place through [`sync_vec_model`]. Rows whose
+    /// value hasn't changed skip the `set_row_data` call entirely —
+    /// combined with [`PaneSlintModelHandles`] preserving inner
+    /// `ModelRc` identity across pushes, this means an untouched pane's
+    /// `ListView` never sees a model-changed notification and keeps its
+    /// scroll offset when the *other* pane navigates.
+    ///
+    /// See Bug 1 in the July 2026 regression run for the user-facing
+    /// symptom this addresses.
+    static OUTER_PANE_MODELS: std::cell::RefCell<OuterPaneModels> =
+        std::cell::RefCell::new(OuterPaneModels::default());
+}
+
+/// In-place synchronisation of a persistent [`VecModel<T>`] to match `desired`.
+///
+/// Only fires `row_changed` for rows whose value actually differs from the
+/// current model contents (per `T: PartialEq`), so `ModelRc<T>` fields whose
+/// inner `Rc` identity is preserved by the caller (see
+/// [`PaneSlintModelHandles`]) will skip the notification entirely and Slint
+/// will not re-evaluate bindings that depend on those rows.
+///
+/// Trims excess rows from the tail with `remove(row_count - 1)` and appends
+/// new rows via `push` when the model is too short.
+fn sync_vec_model<T>(model: &std::rc::Rc<VecModel<T>>, desired: &[T])
+where
+    T: 'static + Clone + PartialEq,
+{
+    let current_len = <VecModel<T> as slint::Model>::row_count(model);
+    let desired_len = desired.len();
+    let overlap = current_len.min(desired_len);
+    for (i, item) in desired.iter().take(overlap).enumerate() {
+        let cur = <VecModel<T> as slint::Model>::row_data(model, i);
+        if cur.as_ref() != Some(item) {
+            <VecModel<T> as slint::Model>::set_row_data(model, i, item.clone());
+        }
+    }
+    while <VecModel<T> as slint::Model>::row_count(model) > desired_len {
+        let last = <VecModel<T> as slint::Model>::row_count(model) - 1;
+        model.remove(last);
+    }
+    for item in desired.iter().skip(current_len) {
+        model.push(item.clone());
+    }
+}
+
+/// Owner of the persistent outer [`VecModel`]s bound to each `panes-*`
+/// window property.
+///
+/// See the [`OUTER_PANE_MODELS`] doc for why these live on the UI thread
+/// and why every push routes through [`sync_vec_model`] rather than
+/// building a fresh [`VecModel`] each time.
+struct OuterPaneModels {
+    // Root `panes` list + split handle descriptors, driven by
+    // `project_workspace_to_slint`.
+    panes: std::rc::Rc<VecModel<PaneSlintData>>,
+    split_handles: std::rc::Rc<VecModel<SplitHandle>>,
+
+    // Per-pane data models, driven by `push_pane_data_to_slint`.
+    tabs: std::rc::Rc<VecModel<ModelRc<TabEntry>>>,
+    segments: std::rc::Rc<VecModel<ModelRc<SharedString>>>,
+    active_tab: std::rc::Rc<VecModel<i32>>,
+    details_rows: std::rc::Rc<VecModel<ModelRc<EntryRowItem>>>,
+    details_columns: std::rc::Rc<VecModel<ModelRc<crate::ColumnSpec>>>,
+    details_selected_mask: std::rc::Rc<VecModel<ModelRc<bool>>>,
+    details_selected_anchor: std::rc::Rc<VecModel<i32>>,
+    details_focused_index: std::rc::Rc<VecModel<i32>>,
+    grid_thumbnails: std::rc::Rc<VecModel<ModelRc<slint::Image>>>,
+    grid_has_thumbs: std::rc::Rc<VecModel<ModelRc<bool>>>,
+    grid_selected_mask: std::rc::Rc<VecModel<ModelRc<bool>>>,
+    grid_focused_index: std::rc::Rc<VecModel<i32>>,
+    gallery_strip_thumbnails: std::rc::Rc<VecModel<ModelRc<slint::Image>>>,
+    gallery_preview_image: std::rc::Rc<VecModel<slint::Image>>,
+    gallery_preview_loading: std::rc::Rc<VecModel<bool>>,
+    gallery_preview_fallback_glyph: std::rc::Rc<VecModel<SharedString>>,
+    gallery_focused_index: std::rc::Rc<VecModel<i32>>,
+    gallery_metadata: std::rc::Rc<VecModel<crate::MetadataFields>>,
+    tree_nodes: std::rc::Rc<VecModel<ModelRc<crate::TreeNode>>>,
+    tree_focused_index: std::rc::Rc<VecModel<i32>>,
+    tree_selected_index: std::rc::Rc<VecModel<i32>>,
+    miller_columns: std::rc::Rc<VecModel<ModelRc<crate::MillerColData>>>,
+    miller_focused_col: std::rc::Rc<VecModel<i32>>,
+
+    // Per-pane status bar arrays, driven by `push_pane_selection_to_slint`.
+    status_folder_count: std::rc::Rc<VecModel<i32>>,
+    status_file_count: std::rc::Rc<VecModel<i32>>,
+    status_total_size_text: std::rc::Rc<VecModel<SharedString>>,
+    status_free_space_text: std::rc::Rc<VecModel<SharedString>>,
+
+    /// Whether every property has been bound to its underlying `Rc<VecModel>`
+    /// yet. Guards [`Self::ensure_bound`] so we only issue `set_*` calls once.
+    bound: bool,
+}
+
+impl Default for OuterPaneModels {
+    fn default() -> Self {
+        Self {
+            panes: std::rc::Rc::new(VecModel::default()),
+            split_handles: std::rc::Rc::new(VecModel::default()),
+            tabs: std::rc::Rc::new(VecModel::default()),
+            segments: std::rc::Rc::new(VecModel::default()),
+            active_tab: std::rc::Rc::new(VecModel::default()),
+            details_rows: std::rc::Rc::new(VecModel::default()),
+            details_columns: std::rc::Rc::new(VecModel::default()),
+            details_selected_mask: std::rc::Rc::new(VecModel::default()),
+            details_selected_anchor: std::rc::Rc::new(VecModel::default()),
+            details_focused_index: std::rc::Rc::new(VecModel::default()),
+            grid_thumbnails: std::rc::Rc::new(VecModel::default()),
+            grid_has_thumbs: std::rc::Rc::new(VecModel::default()),
+            grid_selected_mask: std::rc::Rc::new(VecModel::default()),
+            grid_focused_index: std::rc::Rc::new(VecModel::default()),
+            gallery_strip_thumbnails: std::rc::Rc::new(VecModel::default()),
+            gallery_preview_image: std::rc::Rc::new(VecModel::default()),
+            gallery_preview_loading: std::rc::Rc::new(VecModel::default()),
+            gallery_preview_fallback_glyph: std::rc::Rc::new(VecModel::default()),
+            gallery_focused_index: std::rc::Rc::new(VecModel::default()),
+            gallery_metadata: std::rc::Rc::new(VecModel::default()),
+            tree_nodes: std::rc::Rc::new(VecModel::default()),
+            tree_focused_index: std::rc::Rc::new(VecModel::default()),
+            tree_selected_index: std::rc::Rc::new(VecModel::default()),
+            miller_columns: std::rc::Rc::new(VecModel::default()),
+            miller_focused_col: std::rc::Rc::new(VecModel::default()),
+            status_folder_count: std::rc::Rc::new(VecModel::default()),
+            status_file_count: std::rc::Rc::new(VecModel::default()),
+            status_total_size_text: std::rc::Rc::new(VecModel::default()),
+            status_free_space_text: std::rc::Rc::new(VecModel::default()),
+            bound: false,
+        }
+    }
+}
+
+impl OuterPaneModels {
+    /// Bind every `panes-*` window property to its persistent
+    /// [`Rc<VecModel>`] the first time this runs. Subsequent calls are
+    /// no-ops.
+    fn ensure_bound(&mut self, window: &AtlasWindow) {
+        if self.bound {
+            return;
+        }
+        window.set_panes(ModelRc::from(self.panes.clone()));
+        window.set_split_handles(ModelRc::from(self.split_handles.clone()));
+        window.set_panes_tabs(ModelRc::from(self.tabs.clone()));
+        window.set_panes_segments(ModelRc::from(self.segments.clone()));
+        window.set_panes_active_tab(ModelRc::from(self.active_tab.clone()));
+        window.set_panes_details_rows(ModelRc::from(self.details_rows.clone()));
+        window.set_panes_details_columns(ModelRc::from(self.details_columns.clone()));
+        window.set_panes_details_selected_mask(ModelRc::from(self.details_selected_mask.clone()));
+        window
+            .set_panes_details_selected_anchor(ModelRc::from(self.details_selected_anchor.clone()));
+        window.set_panes_details_focused_index(ModelRc::from(self.details_focused_index.clone()));
+        window.set_panes_grid_thumbnails(ModelRc::from(self.grid_thumbnails.clone()));
+        window.set_panes_grid_has_thumbs(ModelRc::from(self.grid_has_thumbs.clone()));
+        window.set_panes_grid_selected_mask(ModelRc::from(self.grid_selected_mask.clone()));
+        window.set_panes_grid_focused_index(ModelRc::from(self.grid_focused_index.clone()));
+        window.set_panes_gallery_strip_thumbnails(ModelRc::from(
+            self.gallery_strip_thumbnails.clone(),
+        ));
+        window.set_panes_gallery_preview_image(ModelRc::from(self.gallery_preview_image.clone()));
+        window
+            .set_panes_gallery_preview_loading(ModelRc::from(self.gallery_preview_loading.clone()));
+        window.set_panes_gallery_preview_fallback_glyph(ModelRc::from(
+            self.gallery_preview_fallback_glyph.clone(),
+        ));
+        window.set_panes_gallery_focused_index(ModelRc::from(self.gallery_focused_index.clone()));
+        window.set_panes_gallery_metadata(ModelRc::from(self.gallery_metadata.clone()));
+        window.set_panes_tree_nodes(ModelRc::from(self.tree_nodes.clone()));
+        window.set_panes_tree_focused_index(ModelRc::from(self.tree_focused_index.clone()));
+        window.set_panes_tree_selected_index(ModelRc::from(self.tree_selected_index.clone()));
+        window.set_panes_miller_columns(ModelRc::from(self.miller_columns.clone()));
+        window.set_panes_miller_focused_col(ModelRc::from(self.miller_focused_col.clone()));
+        window.set_panes_status_folder_count(ModelRc::from(self.status_folder_count.clone()));
+        window.set_panes_status_file_count(ModelRc::from(self.status_file_count.clone()));
+        window.set_panes_status_total_size_text(ModelRc::from(self.status_total_size_text.clone()));
+        window.set_panes_status_free_space_text(ModelRc::from(self.status_free_space_text.clone()));
+        self.bound = true;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2975,11 +3279,20 @@ impl AppShell {
 
         // Update the tabs / segments / active-tab entries in the pane cache so
         // push_pane_data_to_slint sees the freshest values when it runs.
+        //
+        // Compare-and-set: only bump `data_epoch` for panes whose light
+        // data actually changed. Every navigation triggers a
+        // `project_workspace_to_slint` for the whole workspace; blindly
+        // rewriting the cache would bump every pane's epoch and defeat
+        // the UI-thread ModelRc cache — the untouched pane's inner
+        // `panes-*[i]` ModelRcs would still be rebuilt on every push,
+        // resetting its `ListView.viewport-y` to zero.
+        // See the doc on [`PaneRenderCache::data_epoch`].
         {
             let mut cache = self.pane_cache.write();
             for p in &pane_data {
                 let entry = cache.entry(p.id).or_default();
-                entry.tabs = p
+                let new_tabs: Vec<TabEntry> = p
                     .tabs
                     .iter()
                     .map(|t| TabEntry {
@@ -2987,12 +3300,27 @@ impl AppShell {
                         dirty: t.dirty,
                     })
                     .collect();
-                entry.segments = p
+                let new_segments: Vec<SharedString> = p
                     .segments
                     .iter()
                     .map(|s| SharedString::from(s.as_str()))
                     .collect();
-                entry.active_tab = p.active_tab;
+                let mut changed = false;
+                if entry.tabs != new_tabs {
+                    entry.tabs = new_tabs;
+                    changed = true;
+                }
+                if entry.segments != new_segments {
+                    entry.segments = new_segments;
+                    changed = true;
+                }
+                if entry.active_tab != p.active_tab {
+                    entry.active_tab = p.active_tab;
+                    changed = true;
+                }
+                if changed {
+                    entry.data_epoch = entry.data_epoch.wrapping_add(1);
+                }
             }
         }
 
@@ -3017,9 +3345,6 @@ impl AppShell {
                     active_tab: p.active_tab,
                 })
                 .collect();
-            window.set_panes(ModelRc::new(VecModel::from(slint_panes)));
-            window.set_focused_pane_id(focused_id);
-            window.set_focus_index(focus_idx);
 
             // Split-handle descriptors.
             let slint_handles: Vec<SplitHandle> = handle_data
@@ -3033,7 +3358,21 @@ impl AppShell {
                     horizontal: h.horizontal,
                 })
                 .collect();
-            window.set_split_handles(ModelRc::new(VecModel::from(slint_handles)));
+
+            // Route through the persistent outer models so we mutate the
+            // existing `panes` / `split-handles` VecModels in place
+            // rather than replacing them. See the [`OUTER_PANE_MODELS`]
+            // doc for why this preserves per-pane `ListView` scroll
+            // offsets across cross-pane navigations.
+            OUTER_PANE_MODELS.with(|cell| {
+                let mut outer = cell.borrow_mut();
+                outer.ensure_bound(&window);
+                sync_vec_model(&outer.panes, &slint_panes);
+                sync_vec_model(&outer.split_handles, &slint_handles);
+            });
+
+            window.set_focused_pane_id(focused_id);
+            window.set_focus_index(focus_idx);
         });
 
         // Push the freshest cache snapshot (tabs/segments/heavy data) to Slint.
@@ -3081,15 +3420,33 @@ impl AppShell {
         apply(entry);
     }
 
+    /// Variant of [`Self::with_cache`] that bumps `data_epoch` after
+    /// `apply` runs. Used by every publisher that follows up with a call
+    /// to [`Self::push_pane_data_to_slint`] so the UI-thread ModelRc
+    /// cache can distinguish "pane `id` really did change" from
+    /// "another pane changed and this pane just got dragged along in the
+    /// push". See the module comment above `with_cache` and the doc on
+    /// `PaneRenderCache::data_epoch` for the scroll-preservation
+    /// rationale.
+    fn with_cache_data<F>(&self, id: PaneId, apply: F)
+    where
+        F: FnOnce(&mut PaneRenderCache),
+    {
+        let mut cache = self.pane_cache.write();
+        let entry = cache.entry(id).or_default();
+        apply(entry);
+        entry.data_epoch = entry.data_epoch.wrapping_add(1);
+    }
+
     /// Publish the Details view row list for pane `id`.
     pub fn publish_details_rows(self: &Arc<Self>, id: PaneId, rows: Vec<EntryRowItem>) {
-        self.with_cache(id, |c| c.details_rows = rows);
+        self.with_cache_data(id, |c| c.details_rows = rows);
         self.push_pane_data_to_slint();
     }
 
     /// Publish the Details view column specs for pane `id`.
     pub fn publish_details_columns(self: &Arc<Self>, id: PaneId, columns: Vec<crate::ColumnSpec>) {
-        self.with_cache(id, |c| c.details_columns = columns);
+        self.with_cache_data(id, |c| c.details_columns = columns);
         self.push_pane_data_to_slint();
     }
 
@@ -3125,13 +3482,13 @@ impl AppShell {
         id: PaneId,
         thumbs: Vec<Option<crate::views::grid::thumbs::DecodedPixels>>,
     ) {
-        self.with_cache(id, |c| c.grid_thumbs = thumbs);
+        self.with_cache_data(id, |c| c.grid_thumbs = thumbs);
         self.push_pane_data_to_slint();
     }
 
     /// Publish the Grid view has-thumb flags for pane `id`.
     pub fn publish_grid_has_thumbs(self: &Arc<Self>, id: PaneId, has: Vec<bool>) {
-        self.with_cache(id, |c| c.grid_has_thumbs = has);
+        self.with_cache_data(id, |c| c.grid_has_thumbs = has);
         self.push_pane_data_to_slint();
     }
 
@@ -3157,7 +3514,7 @@ impl AppShell {
         id: PaneId,
         thumbs: Vec<Option<crate::views::gallery::thumbs::DecodedPixels>>,
     ) {
-        self.with_cache(id, |c| c.gallery_strip_thumbs = thumbs);
+        self.with_cache_data(id, |c| c.gallery_strip_thumbs = thumbs);
         self.push_pane_data_to_slint();
     }
 
@@ -3169,7 +3526,7 @@ impl AppShell {
         loading: bool,
         fallback_glyph: String,
     ) {
-        self.with_cache(id, |c| {
+        self.with_cache_data(id, |c| {
             c.gallery_preview = preview;
             c.gallery_preview_loading = loading;
             c.gallery_preview_fallback_glyph = fallback_glyph;
@@ -3187,13 +3544,13 @@ impl AppShell {
 
     /// Publish the Gallery metadata sidebar for pane `id`.
     pub fn publish_gallery_metadata(self: &Arc<Self>, id: PaneId, metadata: crate::MetadataFields) {
-        self.with_cache(id, |c| c.gallery_metadata = metadata);
+        self.with_cache_data(id, |c| c.gallery_metadata = metadata);
         self.push_pane_data_to_slint();
     }
 
     /// Publish the Tree view visible node list for pane `id`.
     pub fn publish_tree_nodes(self: &Arc<Self>, id: PaneId, nodes: Vec<crate::TreeNode>) {
-        self.with_cache(id, |c| c.tree_nodes = nodes);
+        self.with_cache_data(id, |c| c.tree_nodes = nodes);
         self.push_pane_data_to_slint();
     }
 
@@ -3215,7 +3572,7 @@ impl AppShell {
 
     /// Publish the Miller columns snapshot for pane `id`.
     pub fn publish_miller_columns(self: &Arc<Self>, id: PaneId, columns: Vec<MillerColumnCache>) {
-        self.with_cache(id, |c| c.miller_columns = columns);
+        self.with_cache_data(id, |c| c.miller_columns = columns);
         self.push_pane_data_to_slint();
     }
 
@@ -3233,6 +3590,30 @@ impl AppShell {
     /// Runs the actual property writes inside `invoke_from_event_loop` so it
     /// is safe to call from any thread. Cheap because per-pane state is
     /// shallow-cloned once and Slint only redraws affected rows.
+    ///
+    /// # Cross-pane scroll preservation
+    ///
+    /// The UI-thread body consults a `thread_local!` cache of inner
+    /// [`ModelRc`] handles keyed by `PaneId`. Each pane's cache entry
+    /// remembers the `data_epoch` at the last build; if the current
+    /// snapshot's `data_epoch` matches, we reuse **the exact same
+    /// `ModelRc` handles** (`Rc::clone`) — including inner ModelRcs
+    /// nested inside `panes-miller-columns`. If the epoch changed, we
+    /// rebuild every ModelRc for that pane and replace the cached
+    /// entry.
+    ///
+    /// This matters because `Slint`'s `ListView` (and every virtualised
+    /// derivative) keys its child instances off the *identity* of the
+    /// row model. Before this cache, any full push (e.g. one triggered
+    /// by pane R navigating to a new folder) would replace pane L's
+    /// `panes-details-rows[i]` with a fresh `ModelRc<EntryRowItem>` of
+    /// identical contents — the ListView would drop its subscription,
+    /// re-subscribe to the new model, and reset `viewport-y` to 0. The
+    /// user reported this as "the other pane silently scrolls to the
+    /// top when I navigate the focused pane." The cache means unchanged
+    /// panes get their previous ModelRcs back unchanged, so Slint's
+    /// value-equality check on the property binding sees no delta and
+    /// the ListView never resubscribes.
     pub fn push_pane_data_to_slint(self: &Arc<Self>) {
         // Snapshot the DFS leaf order under a short read lock so we do not
         // hold the workspace lock while touching the cache or the UI thread.
@@ -3249,6 +3630,11 @@ impl AppShell {
                 .map(|id| cache.get(id).cloned().unwrap_or_default())
                 .collect()
         };
+        // Also pass PaneIds through so the UI-thread cache can key by
+        // stable id (leaves are in DFS-leaf layout order, which changes
+        // when the workspace layout mutates; PaneId is stable across
+        // splits and resizes).
+        let leaf_ids = leaves.clone();
 
         let weak = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
@@ -3256,168 +3642,160 @@ impl AppShell {
                 return;
             };
 
-            // Tabs / segments / active-tab.
-            let tabs: Vec<ModelRc<TabEntry>> = snapshots
-                .iter()
-                .map(|s| ModelRc::new(VecModel::from(s.tabs.clone())))
-                .collect();
-            window.set_panes_tabs(ModelRc::new(VecModel::from(tabs)));
+            // Resolve — for each pane — either a reused ModelRc from the
+            // last push (epoch unchanged) or a freshly-built one (epoch
+            // bumped). This is the identity-preservation trick that keeps
+            // the untouched pane's `ListView.viewport-y` intact on a
+            // cross-pane action.
+            let resolved: Vec<PaneSlintModelHandles> = PANE_MODEL_HANDLES.with(|cell| {
+                let mut cache = cell.borrow_mut();
+                // Drop cache entries for panes no longer in the layout so
+                // the cache doesn't leak across splits.
+                cache.retain(|id, _| leaf_ids.contains(id));
+                leaf_ids
+                    .iter()
+                    .zip(snapshots.iter())
+                    .map(|(id, snap)| {
+                        let entry = cache.entry(*id).or_default();
+                        if entry.epoch != Some(snap.data_epoch) {
+                            entry.rebuild_from(snap);
+                            entry.epoch = Some(snap.data_epoch);
+                        }
+                        entry.clone()
+                    })
+                    .collect()
+            });
 
-            let segments: Vec<ModelRc<SharedString>> = snapshots
-                .iter()
-                .map(|s| ModelRc::new(VecModel::from(s.segments.clone())))
-                .collect();
-            window.set_panes_segments(ModelRc::new(VecModel::from(segments)));
+            // Every `set_panes_*(...)` call below is routed through the
+            // persistent `OuterPaneModels` cache: on the first push we
+            // bind each window property to a fixed `Rc<VecModel<T>>`
+            // once, and every subsequent push mutates rows in place via
+            // `sync_vec_model`. Combined with the inner ModelRc cache
+            // above, an untouched pane's entire slot in `panes-*`
+            // resolves to the same `ModelRc<T>` as before → Slint's
+            // property system sees no change → its `ListView` /
+            // `GridView` / etc. keep their scroll offsets. See the
+            // [`OUTER_PANE_MODELS`] doc for the full rationale.
+            OUTER_PANE_MODELS.with(|cell| {
+                let mut outer = cell.borrow_mut();
+                outer.ensure_bound(&window);
 
-            let active_tab: Vec<i32> = snapshots.iter().map(|s| s.active_tab).collect();
-            window.set_panes_active_tab(ModelRc::new(VecModel::from(active_tab)));
+                // Tabs / segments / active-tab.
+                let tabs: Vec<ModelRc<TabEntry>> =
+                    resolved.iter().map(|r| r.tabs.clone()).collect();
+                sync_vec_model(&outer.tabs, &tabs);
 
-            // Details.
-            let d_rows: Vec<ModelRc<EntryRowItem>> = snapshots
-                .iter()
-                .map(|s| ModelRc::new(VecModel::from(s.details_rows.clone())))
-                .collect();
-            window.set_panes_details_rows(ModelRc::new(VecModel::from(d_rows)));
+                let segments: Vec<ModelRc<SharedString>> =
+                    resolved.iter().map(|r| r.segments.clone()).collect();
+                sync_vec_model(&outer.segments, &segments);
 
-            let d_cols: Vec<ModelRc<crate::ColumnSpec>> = snapshots
-                .iter()
-                .map(|s| ModelRc::new(VecModel::from(s.details_columns.clone())))
-                .collect();
-            window.set_panes_details_columns(ModelRc::new(VecModel::from(d_cols)));
+                let active_tab: Vec<i32> = snapshots.iter().map(|s| s.active_tab).collect();
+                sync_vec_model(&outer.active_tab, &active_tab);
 
-            let d_mask: Vec<ModelRc<bool>> = snapshots
-                .iter()
-                .map(|s| ModelRc::new(VecModel::from(s.details_selected_mask.clone())))
-                .collect();
-            window.set_panes_details_selected_mask(ModelRc::new(VecModel::from(d_mask)));
+                // Details.
+                let d_rows: Vec<ModelRc<EntryRowItem>> =
+                    resolved.iter().map(|r| r.details_rows.clone()).collect();
+                sync_vec_model(&outer.details_rows, &d_rows);
 
-            let d_anchor: Vec<i32> = snapshots
-                .iter()
-                .map(|s| s.details_selected_anchor)
-                .collect();
-            window.set_panes_details_selected_anchor(ModelRc::new(VecModel::from(d_anchor)));
+                let d_cols: Vec<ModelRc<crate::ColumnSpec>> =
+                    resolved.iter().map(|r| r.details_columns.clone()).collect();
+                sync_vec_model(&outer.details_columns, &d_cols);
 
-            let d_focus: Vec<i32> = snapshots.iter().map(|s| s.details_focused_index).collect();
-            window.set_panes_details_focused_index(ModelRc::new(VecModel::from(d_focus)));
+                let d_mask: Vec<ModelRc<bool>> = snapshots
+                    .iter()
+                    .map(|s| ModelRc::new(VecModel::from(s.details_selected_mask.clone())))
+                    .collect();
+                sync_vec_model(&outer.details_selected_mask, &d_mask);
 
-            // Grid.
-            let g_thumbs: Vec<ModelRc<slint::Image>> = snapshots
-                .iter()
-                .map(|s| {
-                    let images: Vec<slint::Image> = s
-                        .grid_thumbs
-                        .iter()
-                        .map(|opt| {
-                            opt.as_ref()
-                                .map(crate::views::grid::thumbs::decoded_to_slint)
-                                .unwrap_or_default()
-                        })
-                        .collect();
-                    ModelRc::new(VecModel::from(images))
-                })
-                .collect();
-            window.set_panes_grid_thumbnails(ModelRc::new(VecModel::from(g_thumbs)));
+                let d_anchor: Vec<i32> = snapshots
+                    .iter()
+                    .map(|s| s.details_selected_anchor)
+                    .collect();
+                sync_vec_model(&outer.details_selected_anchor, &d_anchor);
 
-            let g_has: Vec<ModelRc<bool>> = snapshots
-                .iter()
-                .map(|s| ModelRc::new(VecModel::from(s.grid_has_thumbs.clone())))
-                .collect();
-            window.set_panes_grid_has_thumbs(ModelRc::new(VecModel::from(g_has)));
+                let d_focus: Vec<i32> = snapshots.iter().map(|s| s.details_focused_index).collect();
+                sync_vec_model(&outer.details_focused_index, &d_focus);
 
-            let g_mask: Vec<ModelRc<bool>> = snapshots
-                .iter()
-                .map(|s| ModelRc::new(VecModel::from(s.grid_selected_mask.clone())))
-                .collect();
-            window.set_panes_grid_selected_mask(ModelRc::new(VecModel::from(g_mask)));
+                // Grid.
+                let g_thumbs: Vec<ModelRc<slint::Image>> =
+                    resolved.iter().map(|r| r.grid_thumbnails.clone()).collect();
+                sync_vec_model(&outer.grid_thumbnails, &g_thumbs);
 
-            let g_focus: Vec<i32> = snapshots.iter().map(|s| s.grid_focused_index).collect();
-            window.set_panes_grid_focused_index(ModelRc::new(VecModel::from(g_focus)));
+                let g_has: Vec<ModelRc<bool>> =
+                    resolved.iter().map(|r| r.grid_has_thumbs.clone()).collect();
+                sync_vec_model(&outer.grid_has_thumbs, &g_has);
 
-            // Gallery.
-            let gal_strip: Vec<ModelRc<slint::Image>> = snapshots
-                .iter()
-                .map(|s| {
-                    let images: Vec<slint::Image> = s
-                        .gallery_strip_thumbs
-                        .iter()
-                        .map(|opt| {
-                            opt.as_ref()
-                                .map(crate::views::gallery::thumbs::decoded_to_slint)
-                                .unwrap_or_default()
-                        })
-                        .collect();
-                    ModelRc::new(VecModel::from(images))
-                })
-                .collect();
-            window.set_panes_gallery_strip_thumbnails(ModelRc::new(VecModel::from(gal_strip)));
+                let g_mask: Vec<ModelRc<bool>> = snapshots
+                    .iter()
+                    .map(|s| ModelRc::new(VecModel::from(s.grid_selected_mask.clone())))
+                    .collect();
+                sync_vec_model(&outer.grid_selected_mask, &g_mask);
 
-            let gal_prev: Vec<slint::Image> = snapshots
-                .iter()
-                .map(|s| {
-                    s.gallery_preview
-                        .as_ref()
-                        .map(crate::views::gallery::thumbs::decoded_to_slint)
-                        .unwrap_or_default()
-                })
-                .collect();
-            window.set_panes_gallery_preview_image(ModelRc::new(VecModel::from(gal_prev)));
+                let g_focus: Vec<i32> = snapshots.iter().map(|s| s.grid_focused_index).collect();
+                sync_vec_model(&outer.grid_focused_index, &g_focus);
 
-            let gal_loading: Vec<bool> = snapshots
-                .iter()
-                .map(|s| s.gallery_preview_loading)
-                .collect();
-            window.set_panes_gallery_preview_loading(ModelRc::new(VecModel::from(gal_loading)));
+                // Gallery.
+                let gal_strip: Vec<ModelRc<slint::Image>> = resolved
+                    .iter()
+                    .map(|r| r.gallery_strip_thumbs.clone())
+                    .collect();
+                sync_vec_model(&outer.gallery_strip_thumbnails, &gal_strip);
 
-            let gal_glyph: Vec<SharedString> = snapshots
-                .iter()
-                .map(|s| SharedString::from(s.gallery_preview_fallback_glyph.as_str()))
-                .collect();
-            window
-                .set_panes_gallery_preview_fallback_glyph(ModelRc::new(VecModel::from(gal_glyph)));
+                let gal_prev: Vec<slint::Image> = snapshots
+                    .iter()
+                    .map(|s| {
+                        s.gallery_preview
+                            .as_ref()
+                            .map(crate::views::gallery::thumbs::decoded_to_slint)
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                sync_vec_model(&outer.gallery_preview_image, &gal_prev);
 
-            let gal_focus: Vec<i32> = snapshots.iter().map(|s| s.gallery_focused_index).collect();
-            window.set_panes_gallery_focused_index(ModelRc::new(VecModel::from(gal_focus)));
+                let gal_loading: Vec<bool> = snapshots
+                    .iter()
+                    .map(|s| s.gallery_preview_loading)
+                    .collect();
+                sync_vec_model(&outer.gallery_preview_loading, &gal_loading);
 
-            let gal_meta: Vec<crate::MetadataFields> = snapshots
-                .iter()
-                .map(|s| s.gallery_metadata.clone())
-                .collect();
-            window.set_panes_gallery_metadata(ModelRc::new(VecModel::from(gal_meta)));
+                let gal_glyph: Vec<SharedString> = snapshots
+                    .iter()
+                    .map(|s| SharedString::from(s.gallery_preview_fallback_glyph.as_str()))
+                    .collect();
+                sync_vec_model(&outer.gallery_preview_fallback_glyph, &gal_glyph);
 
-            // Tree.
-            let t_nodes: Vec<ModelRc<crate::TreeNode>> = snapshots
-                .iter()
-                .map(|s| ModelRc::new(VecModel::from(s.tree_nodes.clone())))
-                .collect();
-            window.set_panes_tree_nodes(ModelRc::new(VecModel::from(t_nodes)));
+                let gal_focus: Vec<i32> =
+                    snapshots.iter().map(|s| s.gallery_focused_index).collect();
+                sync_vec_model(&outer.gallery_focused_index, &gal_focus);
 
-            let t_focus: Vec<i32> = snapshots.iter().map(|s| s.tree_focused_index).collect();
-            window.set_panes_tree_focused_index(ModelRc::new(VecModel::from(t_focus)));
+                let gal_meta: Vec<crate::MetadataFields> = snapshots
+                    .iter()
+                    .map(|s| s.gallery_metadata.clone())
+                    .collect();
+                sync_vec_model(&outer.gallery_metadata, &gal_meta);
 
-            let t_sel: Vec<i32> = snapshots.iter().map(|s| s.tree_selected_index).collect();
-            window.set_panes_tree_selected_index(ModelRc::new(VecModel::from(t_sel)));
+                // Tree.
+                let t_nodes: Vec<ModelRc<crate::TreeNode>> =
+                    resolved.iter().map(|r| r.tree_nodes.clone()).collect();
+                sync_vec_model(&outer.tree_nodes, &t_nodes);
 
-            // Miller.
-            let m_cols: Vec<ModelRc<crate::MillerColData>> = snapshots
-                .iter()
-                .map(|s| {
-                    let cols: Vec<crate::MillerColData> = s
-                        .miller_columns
-                        .iter()
-                        .map(|c| crate::MillerColData {
-                            title: SharedString::from(c.title.as_str()),
-                            entries: ModelRc::new(VecModel::from(c.entries.clone())),
-                            focused: c.focused,
-                            loading: c.loading,
-                        })
-                        .collect();
-                    ModelRc::new(VecModel::from(cols))
-                })
-                .collect();
-            window.set_panes_miller_columns(ModelRc::new(VecModel::from(m_cols)));
+                let t_focus: Vec<i32> = snapshots.iter().map(|s| s.tree_focused_index).collect();
+                sync_vec_model(&outer.tree_focused_index, &t_focus);
 
-            let m_focus: Vec<i32> = snapshots.iter().map(|s| s.miller_focused_col).collect();
-            window.set_panes_miller_focused_col(ModelRc::new(VecModel::from(m_focus)));
+                let t_sel: Vec<i32> = snapshots.iter().map(|s| s.tree_selected_index).collect();
+                sync_vec_model(&outer.tree_selected_index, &t_sel);
+
+                // Miller. The outer per-pane ModelRc<MillerColData> is
+                // cached; inner column entries live inside the cached
+                // MillerColData so they're also identity-preserved when
+                // the pane's epoch is unchanged.
+                let m_cols: Vec<ModelRc<crate::MillerColData>> =
+                    resolved.iter().map(|r| r.miller_columns.clone()).collect();
+                sync_vec_model(&outer.miller_columns, &m_cols);
+
+                let m_focus: Vec<i32> = snapshots.iter().map(|s| s.miller_focused_col).collect();
+                sync_vec_model(&outer.miller_focused_col, &m_focus);
+            });
         });
     }
 
@@ -3460,68 +3838,74 @@ impl AppShell {
                 return;
             };
 
-            // Details selection / focus.
-            let d_mask: Vec<ModelRc<bool>> = snapshots
-                .iter()
-                .map(|s| ModelRc::new(VecModel::from(s.details_selected_mask.clone())))
-                .collect();
-            window.set_panes_details_selected_mask(ModelRc::new(VecModel::from(d_mask)));
+            OUTER_PANE_MODELS.with(|cell| {
+                let mut outer = cell.borrow_mut();
+                outer.ensure_bound(&window);
 
-            let d_anchor: Vec<i32> = snapshots
-                .iter()
-                .map(|s| s.details_selected_anchor)
-                .collect();
-            window.set_panes_details_selected_anchor(ModelRc::new(VecModel::from(d_anchor)));
+                // Details selection / focus.
+                let d_mask: Vec<ModelRc<bool>> = snapshots
+                    .iter()
+                    .map(|s| ModelRc::new(VecModel::from(s.details_selected_mask.clone())))
+                    .collect();
+                sync_vec_model(&outer.details_selected_mask, &d_mask);
 
-            let d_focus: Vec<i32> = snapshots.iter().map(|s| s.details_focused_index).collect();
-            window.set_panes_details_focused_index(ModelRc::new(VecModel::from(d_focus)));
+                let d_anchor: Vec<i32> = snapshots
+                    .iter()
+                    .map(|s| s.details_selected_anchor)
+                    .collect();
+                sync_vec_model(&outer.details_selected_anchor, &d_anchor);
 
-            // Grid selection / focus.
-            let g_mask: Vec<ModelRc<bool>> = snapshots
-                .iter()
-                .map(|s| ModelRc::new(VecModel::from(s.grid_selected_mask.clone())))
-                .collect();
-            window.set_panes_grid_selected_mask(ModelRc::new(VecModel::from(g_mask)));
+                let d_focus: Vec<i32> = snapshots.iter().map(|s| s.details_focused_index).collect();
+                sync_vec_model(&outer.details_focused_index, &d_focus);
 
-            let g_focus: Vec<i32> = snapshots.iter().map(|s| s.grid_focused_index).collect();
-            window.set_panes_grid_focused_index(ModelRc::new(VecModel::from(g_focus)));
+                // Grid selection / focus.
+                let g_mask: Vec<ModelRc<bool>> = snapshots
+                    .iter()
+                    .map(|s| ModelRc::new(VecModel::from(s.grid_selected_mask.clone())))
+                    .collect();
+                sync_vec_model(&outer.grid_selected_mask, &g_mask);
 
-            // Gallery focus.
-            let gal_focus: Vec<i32> = snapshots.iter().map(|s| s.gallery_focused_index).collect();
-            window.set_panes_gallery_focused_index(ModelRc::new(VecModel::from(gal_focus)));
+                let g_focus: Vec<i32> = snapshots.iter().map(|s| s.grid_focused_index).collect();
+                sync_vec_model(&outer.grid_focused_index, &g_focus);
 
-            // Tree focus / selection.
-            let t_focus: Vec<i32> = snapshots.iter().map(|s| s.tree_focused_index).collect();
-            window.set_panes_tree_focused_index(ModelRc::new(VecModel::from(t_focus)));
+                // Gallery focus.
+                let gal_focus: Vec<i32> =
+                    snapshots.iter().map(|s| s.gallery_focused_index).collect();
+                sync_vec_model(&outer.gallery_focused_index, &gal_focus);
 
-            let t_sel: Vec<i32> = snapshots.iter().map(|s| s.tree_selected_index).collect();
-            window.set_panes_tree_selected_index(ModelRc::new(VecModel::from(t_sel)));
+                // Tree focus / selection.
+                let t_focus: Vec<i32> = snapshots.iter().map(|s| s.tree_focused_index).collect();
+                sync_vec_model(&outer.tree_focused_index, &t_focus);
 
-            // Miller focused column.
-            let m_focus: Vec<i32> = snapshots.iter().map(|s| s.miller_focused_col).collect();
-            window.set_panes_miller_focused_col(ModelRc::new(VecModel::from(m_focus)));
+                let t_sel: Vec<i32> = snapshots.iter().map(|s| s.tree_selected_index).collect();
+                sync_vec_model(&outer.tree_selected_index, &t_sel);
 
-            // Per-pane status bar — kept parallel-length with `panes` so
-            // Slint's `panes-status-*[i]` indexing is always valid, even
-            // before the first `refresh_pane_status` fires for a newly
-            // opened pane.
-            let s_folders: Vec<i32> = snapshots.iter().map(|s| s.status_folder_count).collect();
-            window.set_panes_status_folder_count(ModelRc::new(VecModel::from(s_folders)));
+                // Miller focused column.
+                let m_focus: Vec<i32> = snapshots.iter().map(|s| s.miller_focused_col).collect();
+                sync_vec_model(&outer.miller_focused_col, &m_focus);
 
-            let s_files: Vec<i32> = snapshots.iter().map(|s| s.status_file_count).collect();
-            window.set_panes_status_file_count(ModelRc::new(VecModel::from(s_files)));
+                // Per-pane status bar — kept parallel-length with `panes`
+                // so Slint's `panes-status-*[i]` indexing is always
+                // valid, even before the first `refresh_pane_status`
+                // fires for a newly opened pane.
+                let s_folders: Vec<i32> = snapshots.iter().map(|s| s.status_folder_count).collect();
+                sync_vec_model(&outer.status_folder_count, &s_folders);
 
-            let s_total: Vec<SharedString> = snapshots
-                .iter()
-                .map(|s| SharedString::from(s.status_total_size_text.as_str()))
-                .collect();
-            window.set_panes_status_total_size_text(ModelRc::new(VecModel::from(s_total)));
+                let s_files: Vec<i32> = snapshots.iter().map(|s| s.status_file_count).collect();
+                sync_vec_model(&outer.status_file_count, &s_files);
 
-            let s_free: Vec<SharedString> = snapshots
-                .iter()
-                .map(|s| SharedString::from(s.status_free_space_text.as_str()))
-                .collect();
-            window.set_panes_status_free_space_text(ModelRc::new(VecModel::from(s_free)));
+                let s_total: Vec<SharedString> = snapshots
+                    .iter()
+                    .map(|s| SharedString::from(s.status_total_size_text.as_str()))
+                    .collect();
+                sync_vec_model(&outer.status_total_size_text, &s_total);
+
+                let s_free: Vec<SharedString> = snapshots
+                    .iter()
+                    .map(|s| SharedString::from(s.status_free_space_text.as_str()))
+                    .collect();
+                sync_vec_model(&outer.status_free_space_text, &s_free);
+            });
         });
     }
 
@@ -3671,23 +4055,31 @@ impl AppShell {
                 return;
             };
 
-            let folders: Vec<i32> = snapshots.iter().map(|s| s.status_folder_count).collect();
-            window.set_panes_status_folder_count(ModelRc::new(VecModel::from(folders)));
+            // Route through the persistent outer models — status arrays
+            // are parallel-length with `panes` and would trigger the
+            // same cross-pane scroll reset if we replaced them.
+            OUTER_PANE_MODELS.with(|cell| {
+                let mut outer = cell.borrow_mut();
+                outer.ensure_bound(&window);
 
-            let files: Vec<i32> = snapshots.iter().map(|s| s.status_file_count).collect();
-            window.set_panes_status_file_count(ModelRc::new(VecModel::from(files)));
+                let folders: Vec<i32> = snapshots.iter().map(|s| s.status_folder_count).collect();
+                sync_vec_model(&outer.status_folder_count, &folders);
 
-            let size_text: Vec<SharedString> = snapshots
-                .iter()
-                .map(|s| SharedString::from(s.status_total_size_text.as_str()))
-                .collect();
-            window.set_panes_status_total_size_text(ModelRc::new(VecModel::from(size_text)));
+                let files: Vec<i32> = snapshots.iter().map(|s| s.status_file_count).collect();
+                sync_vec_model(&outer.status_file_count, &files);
 
-            let free_text: Vec<SharedString> = snapshots
-                .iter()
-                .map(|s| SharedString::from(s.status_free_space_text.as_str()))
-                .collect();
-            window.set_panes_status_free_space_text(ModelRc::new(VecModel::from(free_text)));
+                let size_text: Vec<SharedString> = snapshots
+                    .iter()
+                    .map(|s| SharedString::from(s.status_total_size_text.as_str()))
+                    .collect();
+                sync_vec_model(&outer.status_total_size_text, &size_text);
+
+                let free_text: Vec<SharedString> = snapshots
+                    .iter()
+                    .map(|s| SharedString::from(s.status_free_space_text.as_str()))
+                    .collect();
+                sync_vec_model(&outer.status_free_space_text, &free_text);
+            });
         });
     }
 
