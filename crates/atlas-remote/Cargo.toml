@@ -42,3 +42,6 @@ keyring = { version = "3", default-features = false, features = [
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = "3"
+anyhow.workspace = true
+libc = "0.2"
+rand = "0.8"

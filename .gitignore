@@ -23,3 +23,10 @@ dist/icons/atlas.icns
 dist/icons/atlas.iconset/
 *.dmg
 *.app/
+
+# mock-servers Python virtualenv (uv sync creates this on demand)
+tools/mock-servers/.venv/
+tools/mock-servers/.python-version
+tools/mock-servers/uv.lock
+tools/mock-servers/__pycache__/
+**/__pycache__/
