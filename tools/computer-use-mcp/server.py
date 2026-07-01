@@ -136,13 +136,51 @@ def left_click(x: Optional[int] = None, y: Optional[int] = None) -> str:
 
 @mcp.tool()
 def double_click(x: Optional[int] = None, y: Optional[int] = None) -> str:
-    """Double-left-click at (x, y), or at the current cursor position if omitted."""
-    if x is not None and y is not None:
-        pyautogui.doubleClick(x, y)
-        log.info("double_click x=%d y=%d", x, y)
-    else:
-        pyautogui.doubleClick()
-        log.info("double_click (current pos)")
+    """Double-left-click at (x, y), or at the current cursor position if omitted.
+
+    On macOS we send two Quartz `kCGEventLeftMouseDown/Up` pairs with
+    `kCGMouseEventClickState = 2` on the second pair. pyautogui's default
+    `doubleClick` sends 4 events all with clickState=1, which AppKit /
+    NSEvent do not recognise as a double-click, so double-click callbacks
+    in Slint / Cocoa apps never fire.
+    """
+    if x is None or y is None:
+        pos = pyautogui.position()
+        x, y = int(pos.x), int(pos.y)
+
+    if sys.platform == "darwin":
+        try:
+            import Quartz
+            point = (float(x), float(y))
+            # First click (clickState=1)
+            down1 = Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventLeftMouseDown, point, Quartz.kCGMouseButtonLeft
+            )
+            up1 = Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventLeftMouseUp, point, Quartz.kCGMouseButtonLeft
+            )
+            Quartz.CGEventSetIntegerValueField(down1, Quartz.kCGMouseEventClickState, 1)
+            Quartz.CGEventSetIntegerValueField(up1, Quartz.kCGMouseEventClickState, 1)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, down1)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, up1)
+            # Second click (clickState=2) — this is the key bit.
+            down2 = Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventLeftMouseDown, point, Quartz.kCGMouseButtonLeft
+            )
+            up2 = Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventLeftMouseUp, point, Quartz.kCGMouseButtonLeft
+            )
+            Quartz.CGEventSetIntegerValueField(down2, Quartz.kCGMouseEventClickState, 2)
+            Quartz.CGEventSetIntegerValueField(up2, Quartz.kCGMouseEventClickState, 2)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, down2)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, up2)
+            log.info("double_click x=%d y=%d (Quartz clickState=2)", x, y)
+            return "ok"
+        except ImportError:
+            log.warning("Quartz unavailable, falling back to pyautogui")
+
+    pyautogui.doubleClick(x, y)
+    log.info("double_click x=%d y=%d (pyautogui fallback)", x, y)
     return "ok"
 
 
