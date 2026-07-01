@@ -867,23 +867,9 @@ fn build_dispatcher(
         });
     }
 
-    // ── File-list navigation (bindings j/k/h/l when no vim-mode filter) ──
-    // These are the "Pane" context bindings from the default keymap.
-    {
-        let s = Arc::clone(shell);
-        d.register("pane::MoveLeft", move || {
-            s.go_up(s.focused_pane_id());
-        });
-    }
-    {
-        let s = Arc::clone(shell);
-        d.register("pane::MoveRight", move || {
-            let id = s.focused_pane_id();
-            if let Some(ctrl) = s.pane_by_id(id) {
-                ctrl.details.activate_focused();
-            }
-        });
-    }
+    // ── File-list navigation (arrow keys + vim hjkl) ──────────────────────
+    // Only pane::Activate and pane::GoUp exist as actions; hjkl / arrows
+    // are wired to those in the default keymap.
     {
         let s = Arc::clone(shell);
         d.register("pane::Activate", move || {
@@ -926,20 +912,36 @@ fn build_dispatcher(
         });
     }
 
-    // ── File-system F-keys → invoke the existing Slint callbacks so we
-    //    share their logic (destination-pane resolution, selection lookup,
-    //    ops-controller submission).
+    // ── File-system actions ─────────────────────────────────────────────
+    //
+    // Only clipboard-based Copy / Cut / Paste — the old F5/F6 pane-to-pane
+    // shortcuts were dropped because they don't scale to N-pane workspaces
+    // (which pane is the destination when there are 3+?). Clipboard flow
+    // works identically in 1, 2, or 20 panes.
     let win_weak = shell.window_weak();
     {
-        let w = win_weak.clone();
-        d.register("fs::Copy", move || {
-            if let Some(win) = w.upgrade() { win.invoke_fs_copy(); }
+        let s = Arc::clone(shell);
+        d.register("fs::CopyToClipboard", move || {
+            let paths = s.selected_paths(s.focused_pane_id());
+            s.clipboard().copy(paths);
         });
     }
     {
-        let w = win_weak.clone();
-        d.register("fs::Move", move || {
-            if let Some(win) = w.upgrade() { win.invoke_fs_move(); }
+        let s = Arc::clone(shell);
+        d.register("fs::CutToClipboard", move || {
+            let paths = s.selected_paths(s.focused_pane_id());
+            s.clipboard().cut(paths);
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("fs::PasteFromClipboard", move || {
+            let focused = s.focused_pane_id();
+            let Some(dest) = s.pane_location(focused) else {
+                tracing::warn!(?focused, "fs::PasteFromClipboard: no pane location");
+                return;
+            };
+            s.clipboard().paste(dest);
         });
     }
     {
@@ -1196,15 +1198,15 @@ fn slint_key_text_to_keymap_key(text: &str) -> Option<Key> {
 ///
 /// Curated by hand — not every registered action deserves a chip. Pairs are
 /// `(action_id, short_label)`; the chord is looked up live from the keymap
-/// so user rebindings appear immediately.
+/// so user rebindings appear immediately. Actions with no binding in the
+/// current keymap are silently dropped.
 const FOOTER_ACTIONS: &[(&str, &str)] = &[
+    ("fs::CopyToClipboard", "Copy"),
+    ("fs::CutToClipboard", "Cut"),
+    ("fs::PasteFromClipboard", "Paste"),
     ("fs::Rename", "Rename"),
-    ("fs::View", "View"),
-    ("fs::Edit", "Edit"),
-    ("fs::Copy", "Copy"),
-    ("fs::Move", "Move"),
-    ("fs::Mkdir", "Mkdir"),
-    ("fs::Delete", "Delete"),
+    ("fs::Mkdir", "New Folder"),
+    ("fs::Delete", "Trash"),
     ("goto::Anything", "Goto"),
     ("command_palette::Toggle", "Palette"),
     ("search::Toggle", "Search"),

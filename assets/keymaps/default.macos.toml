@@ -43,17 +43,41 @@ context = "Pane"
 key = "k"
 action = "pane::MoveUp"
 
-# [Pane] Move Left
+# [Pane] Go Up (Parent Directory)
 [[bindings]]
 context = "Pane"
 key = "h"
-action = "pane::MoveLeft"
+action = "pane::GoUp"
 
-# [Pane] Move Right
+# [Pane] Activate
 [[bindings]]
 context = "Pane"
 key = "l"
-action = "pane::MoveRight"
+action = "pane::Activate"
+
+# [Pane] Move Down
+[[bindings]]
+context = "Pane"
+key = "down"
+action = "pane::MoveDown"
+
+# [Pane] Move Up
+[[bindings]]
+context = "Pane"
+key = "up"
+action = "pane::MoveUp"
+
+# [Pane] Activate
+[[bindings]]
+context = "Pane"
+key = "right"
+action = "pane::Activate"
+
+# [Pane] Go Up (Parent Directory)
+[[bindings]]
+context = "Pane"
+key = "left"
+action = "pane::GoUp"
 
 # [Pane] Move to Top
 [[bindings]]
@@ -235,71 +259,41 @@ context = "Pane"
 key = "shift-cmd-e"
 action = "view::Cycle"
 
-# [Pane] Rename
-[[bindings]]
-context = "Pane"
-key = "f2"
-action = "fs::Rename"
-
-# [Pane] View File
-[[bindings]]
-context = "Pane"
-key = "f3"
-action = "fs::View"
-
-# [Pane] Edit File
-[[bindings]]
-context = "Pane"
-key = "f4"
-action = "fs::Edit"
-
 # [Pane] Copy
-[[bindings]]
-context = "Pane"
-key = "f5"
-action = "fs::Copy"
-
-# [Pane] Move
-[[bindings]]
-context = "Pane"
-key = "f6"
-action = "fs::Move"
-
-# [Pane] New Directory
-[[bindings]]
-context = "Pane"
-key = "f7"
-action = "fs::Mkdir"
-
-# [Pane] Delete
-[[bindings]]
-context = "Pane"
-key = "f8"
-action = "fs::Delete"
-
-# [Pane] Copy to Clipboard
 [[bindings]]
 context = "Pane"
 key = "cmd-c"
 action = "fs::CopyToClipboard"
 
-# [Pane] Cut to Clipboard
+# [Pane] Cut
 [[bindings]]
 context = "Pane"
 key = "cmd-x"
 action = "fs::CutToClipboard"
 
-# [Pane] Paste from Clipboard
+# [Pane] Paste
 [[bindings]]
 context = "Pane"
 key = "cmd-v"
 action = "fs::PasteFromClipboard"
 
-# [Pane] New Directory
+# [Pane] Move to Trash
+[[bindings]]
+context = "Pane"
+key = "cmd-backspace"
+action = "fs::Delete"
+
+# [Pane] New Folder
 [[bindings]]
 context = "Pane"
 key = "shift-cmd-n"
 action = "fs::Mkdir"
+
+# [Pane] Rename
+[[bindings]]
+context = "Pane"
+key = "f2"
+action = "fs::Rename"
 
 # [Global] Split Pane Right
 [[bindings]]

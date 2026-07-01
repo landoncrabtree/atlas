@@ -476,6 +476,8 @@ pub struct AppShell {
     ops: Arc<OpsController>,
     /// Bulk rename modal controller.
     bulk_rename: Arc<BulkRenameController>,
+    /// OS-clipboard bridge for Copy / Cut / Paste of file paths.
+    clipboard: Arc<crate::clipboard::ClipboardController>,
     /// Shared thumbnail cache used when building new pane controllers on split.
     thumb_cache: Arc<atlas_thumbs::SqliteCache>,
     /// Thumbnail worker thread count (config: thumbnails.generation_threads).
@@ -535,6 +537,7 @@ impl AppShell {
         ops.attach_window(window.as_weak());
         let bulk_rename = BulkRenameController::new(Arc::clone(&ops), Arc::clone(&actions));
         bulk_rename.attach_window(window.as_weak());
+        let clipboard = crate::clipboard::ClipboardController::new(Arc::clone(&ops));
 
         // Construct the shell cyclically so controllers can hold a weak
         // reference to it (used to route publish_* calls back into the cache).
@@ -569,6 +572,7 @@ impl AppShell {
                 search,
                 ops,
                 bulk_rename,
+                clipboard,
                 thumb_cache,
                 thumb_worker_count,
                 thumb_max_cache_bytes,
@@ -671,6 +675,12 @@ impl AppShell {
     #[must_use]
     pub fn bulk_rename(&self) -> Arc<BulkRenameController> {
         Arc::clone(&self.bulk_rename)
+    }
+
+    /// Return the OS-clipboard bridge for file copy / cut / paste.
+    #[must_use]
+    pub fn clipboard(&self) -> Arc<crate::clipboard::ClipboardController> {
+        Arc::clone(&self.clipboard)
     }
 
     /// Return the focused pane's [`PaneId`].
@@ -2178,72 +2188,14 @@ impl AppShell {
 
         // ── F-key file-operation callbacks ────────────────────────────────────
         // These callbacks are triggered from the atlas.slint FocusScope key
-        // handlers (F2, F5, F6, F7, F8) and routed directly to OpsController
-        // rather than through the ActionSink, matching the pattern used by
+        // handlers (F2, F7, F8) and routed directly to OpsController rather
+        // than through the ActionSink, matching the pattern used by
         // PaletteController and SearchController.
-
-        {
-            let shell = Arc::clone(self);
-            window.on_fs_copy(move || {
-                let focused = shell.focused_pane_id();
-                let sources = shell.selected_paths(focused);
-                if sources.is_empty() {
-                    tracing::warn!(?focused, "fs::Copy (F5): no selection");
-                    return;
-                }
-                // The other pane (second DFS leaf) is the destination.
-                // Single-pane: destination dialog is a post-MVP follow-up.
-                let leaves = shell.workspace.read().layout.all_leaves();
-                let other = leaves.iter().find(|&&id| id != focused).copied();
-                let dest = other.and_then(|id| shell.pane_location(id));
-                match dest {
-                    Some(dest_dir) => {
-                        tracing::info!(
-                            sources = sources.len(),
-                            dest = %dest_dir.display(),
-                            "fs::Copy (F5)"
-                        );
-                        shell.ops.submit_copy(sources, dest_dir);
-                    }
-                    None => {
-                        tracing::warn!(
-                            "fs::Copy (F5): no destination pane; \
-                             a destination-path dialog is a post-MVP follow-up"
-                        );
-                    }
-                }
-            });
-        }
-        {
-            let shell = Arc::clone(self);
-            window.on_fs_move(move || {
-                let focused = shell.focused_pane_id();
-                let sources = shell.selected_paths(focused);
-                if sources.is_empty() {
-                    tracing::warn!(?focused, "fs::Move (F6): no selection");
-                    return;
-                }
-                let leaves = shell.workspace.read().layout.all_leaves();
-                let other = leaves.iter().find(|&&id| id != focused).copied();
-                let dest = other.and_then(|id| shell.pane_location(id));
-                match dest {
-                    Some(dest_dir) => {
-                        tracing::info!(
-                            sources = sources.len(),
-                            dest = %dest_dir.display(),
-                            "fs::Move (F6)"
-                        );
-                        shell.ops.submit_move(sources, dest_dir);
-                    }
-                    None => {
-                        tracing::warn!(
-                            "fs::Move (F6): no destination pane; \
-                             a destination-path dialog is a post-MVP follow-up"
-                        );
-                    }
-                }
-            });
-        }
+        //
+        // Pane-to-pane copy/move (Norton F5/F6) was deleted: it didn't
+        // scale beyond 2 panes ("which one is the destination?") and
+        // clipboard copy/paste (fs::CopyToClipboard / fs::PasteFromClipboard)
+        // covers the same use case with clearer semantics.
         {
             let shell = Arc::clone(self);
             window.on_fs_delete(move || {

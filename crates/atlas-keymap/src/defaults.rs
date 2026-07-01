@@ -70,10 +70,19 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         p(",", ("Global", "app::OpenSettings")),
         p("q", ("Global", "app::Quit")),
         // ── File-list navigation (Pane context) ───────────────────────────
+        //
+        // Vim `hjkl` doubles as file-list navigation when
+        // `general.vim_mode = true`; otherwise the letter keys pass
+        // through to text inputs. Arrow keys / Enter / Backspace are
+        // always active regardless of vim mode.
         b("j", "Pane", "pane::MoveDown"),
         b("k", "Pane", "pane::MoveUp"),
-        b("h", "Pane", "pane::MoveLeft"),
-        b("l", "Pane", "pane::MoveRight"),
+        b("h", "Pane", "pane::GoUp"),
+        b("l", "Pane", "pane::Activate"),
+        b("down", "Pane", "pane::MoveDown"),
+        b("up", "Pane", "pane::MoveUp"),
+        b("right", "Pane", "pane::Activate"),
+        b("left", "Pane", "pane::GoUp"),
         b("g g", "Pane", "pane::MoveToTop"),
         b("shift-g", "Pane", "pane::MoveToBottom"),
         b("/", "Pane", "pane::SearchInPlace"),
@@ -106,18 +115,26 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         pa("4", ("Global", "view::Miller")),
         pa("5", ("Global", "view::Tree")),
         ps("e", ("Pane", "view::Cycle")),
-        // ── File operations (NC/Midnight Commander F-keys) ────────────────
-        b("f2", "Pane", "fs::Rename"),
-        b("f3", "Pane", "fs::View"),
-        b("f4", "Pane", "fs::Edit"),
-        b("f5", "Pane", "fs::Copy"),
-        b("f6", "Pane", "fs::Move"),
-        b("f7", "Pane", "fs::Mkdir"),
-        b("f8", "Pane", "fs::Delete"),
+        // ── File operations (Finder / Explorer / Nautilus conventions) ───
+        //
+        // Copy / cut / paste go through the OS clipboard so the user can
+        // paste into Atlas, Finder, VS Code, TextEdit, anything.
         p("c", ("Pane", "fs::CopyToClipboard")),
         p("x", ("Pane", "fs::CutToClipboard")),
         p("v", ("Pane", "fs::PasteFromClipboard")),
+        // Delete → move to Trash. macOS uses ⌘⌫; Linux/Windows use the
+        // plain Delete key (matching Nautilus / Explorer).
+        match platform {
+            PrettyPlatform::Mac => p("backspace", ("Pane", "fs::Delete")),
+            PrettyPlatform::Linux | PrettyPlatform::Windows => {
+                b("delete", "Pane", "fs::Delete")
+            }
+        },
+        // New folder — Finder ⌘⇧N, Nautilus/Explorer Ctrl+Shift+N.
         ps("n", ("Pane", "fs::Mkdir")),
+        // Rename — F2 is universal (Windows, Nautilus, KDE, and even
+        // Finder if the user has "Show tab bar" style prefs set).
+        b("f2", "Pane", "fs::Rename"),
         // ── Pane split / close / focus ────────────────────────────────────
         p("d", ("Global", "pane::SplitRight")),
         ps("d", ("Global", "pane::SplitDown")),
@@ -170,8 +187,6 @@ pub fn default_actions() -> Vec<ActionMeta> {
         action!("app::Quit", "Quit Atlas", None, &["Global"]),
         action!("pane::MoveDown", "Move Down", None, &["Pane"]),
         action!("pane::MoveUp", "Move Up", None, &["Pane"]),
-        action!("pane::MoveLeft", "Move Left", None, &["Pane"]),
-        action!("pane::MoveRight", "Move Right", None, &["Pane"]),
         action!("pane::MoveToTop", "Move to Top", None, &["Pane"]),
         action!("pane::MoveToBottom", "Move to Bottom", None, &["Pane"]),
         action!("pane::SearchInPlace", "Search in Place", None, &["Pane"]),
@@ -200,18 +215,29 @@ pub fn default_actions() -> Vec<ActionMeta> {
         action!("view::Miller", "View: Miller Columns", None, &["Global"]),
         action!("view::Tree", "View: Tree", None, &["Global"]),
         action!("fs::Rename", "Rename", None, &["Pane"]),
-        action!("fs::View", "View File", None, &["Pane"]),
-        action!("fs::Edit", "Edit File", None, &["Pane"]),
-        action!("fs::Copy", "Copy", None, &["Pane"]),
-        action!("fs::Move", "Move", None, &["Pane"]),
-        action!("fs::Mkdir", "New Directory", None, &["Pane"]),
-        action!("fs::Delete", "Delete", None, &["Pane"]),
-        action!("fs::CopyToClipboard", "Copy to Clipboard", None, &["Pane"]),
-        action!("fs::CutToClipboard", "Cut to Clipboard", None, &["Pane"]),
+        action!("fs::Mkdir", "New Folder", None, &["Pane"]),
+        action!(
+            "fs::Delete",
+            "Move to Trash",
+            Some("Move the selection to the OS trash.".into()),
+            &["Pane"]
+        ),
+        action!(
+            "fs::CopyToClipboard",
+            "Copy",
+            Some("Copy the selection to the OS clipboard as file paths.".into()),
+            &["Pane"]
+        ),
+        action!(
+            "fs::CutToClipboard",
+            "Cut",
+            Some("Copy the selection to the clipboard; paste moves instead of copying.".into()),
+            &["Pane"]
+        ),
         action!(
             "fs::PasteFromClipboard",
-            "Paste from Clipboard",
-            None,
+            "Paste",
+            Some("Paste files from the clipboard into the focused pane's directory.".into()),
             &["Pane"]
         ),
         // ── Pane split / close ────────────────────────────────────────────────

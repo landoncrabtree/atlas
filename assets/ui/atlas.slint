@@ -245,15 +245,11 @@ export component AtlasWindow inherits Window {
     callback ops-close();
     /// Toggle the ops panel open/closed (Ctrl/Cmd+J).
     callback toggle-ops-panel();
-    /// Trigger copy of the current pane's selection to the other pane (F5).
-    callback fs-copy();
-    /// Trigger move of the current pane's selection to the other pane (F6).
-    callback fs-move();
-    /// Trigger deletion (to trash) of the current pane's selection (F8).
+    /// Trigger deletion (to trash) of the current pane's selection.
     callback fs-delete();
-    /// Trigger rename of the focused entry (F2).
+    /// Trigger rename of the focused entry (F2 by default).
     callback fs-rename();
-    /// Trigger mkdir in the current pane (F7).
+    /// Trigger mkdir in the current pane.
     callback fs-mkdir();
 
     // ── Per-pane callbacks (all take pane-id as first argument) ──────────────
@@ -566,29 +562,33 @@ export component AtlasWindow inherits Window {
         // Fallback for keys the dispatcher didn't consume and that no child
         // TextInput handled either. This is the file-list navigation path:
         //
-        //   - Arrow keys / Enter / Backspace: always active (once no
-        //     TextInput has focus).
-        //   - Vim `hjkl` (no modifiers): only when `vim_mode` config is
-        //     true. Deliberately hardcoded here — configurable through
-        //     `general.vim_mode` — so casual users who don't want the
-        //     letter keys hijacked can turn it off.
+        //   - Arrow keys / Enter / Backspace / vim `hjkl`: forwarded to the
+        //     dispatcher under Pane context, so user rebindings apply. The
+        //     `vim-mode` flag gates hjkl at the dispatcher-lookup layer
+        //     (see main.rs) — if disabled, those chords resolve to nothing
+        //     and the reject path lets TextInputs claim the letters.
+        //
+        // Note: this fires only AFTER children have had a chance to handle
+        // the key (Slint's regular key-pressed is bubble-phase). So typing
+        // in the AddressBar TextInput consumes 'j'/'k'/'h'/'l' before the
+        // dispatcher ever sees them.
         key-pressed(event) => {
             if palette-visible || search-panel-visible || bulk-rename-visible {
                 return reject;
             }
-            if vim-mode {
-                if event.text == "j" { root.pane-move-focus(1);       return accept; }
-                if event.text == "k" { root.pane-move-focus(-1);      return accept; }
-                if event.text == "l" { root.pane-activate-focused();  return accept; }
-                if event.text == "h" { root.pane-go-up();             return accept; }
+            // Gate vim letters on the vim-mode flag so users who don't want
+            // hjkl hijacked can turn it off. Named keys (arrows, Enter,
+            // Backspace) always fall through to the dispatcher.
+            if event.text == "j" || event.text == "k" || event.text == "h" || event.text == "l" {
+                if !vim-mode { return reject; }
             }
-            if event.text == Key.DownArrow  { root.pane-move-focus(1);       return accept; }
-            if event.text == Key.UpArrow    { root.pane-move-focus(-1);      return accept; }
-            if event.text == Key.Return
-                || event.text == "\n"
-                || event.text == Key.RightArrow { root.pane-activate-focused();  return accept; }
-            if event.text == Key.Backspace
-                || event.text == Key.LeftArrow  { root.pane-go-up();             return accept; }
+            if root.handle-key-chord(event.text,
+                                     event.modifiers.control,
+                                     event.modifiers.alt,
+                                     event.modifiers.shift,
+                                     event.modifiers.meta) {
+                return accept;
+            }
             reject;
         }
 
