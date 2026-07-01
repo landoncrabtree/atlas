@@ -473,6 +473,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "atlas-core",
+ "atlas-watch",
  "crossbeam-channel",
  "futures",
  "globset",
@@ -627,12 +628,15 @@ name = "atlas-ui"
 version = "0.0.1"
 dependencies = [
  "arc-swap",
+ "atlas-config",
  "atlas-core",
  "atlas-fs",
+ "atlas-keymap",
  "crossbeam-channel",
  "directories",
  "notify",
  "notify-debouncer-full",
+ "nucleo",
  "parking_lot",
  "serde",
  "serial_test",

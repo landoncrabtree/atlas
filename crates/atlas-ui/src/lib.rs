@@ -14,6 +14,7 @@ pub mod actions;
 pub mod focus;
 pub mod models;
 pub mod navigation;
+pub mod palette;
 pub mod shell;
 pub mod theme;
 pub mod theming;

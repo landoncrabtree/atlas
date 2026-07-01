@@ -9,9 +9,15 @@
 //! [`slint::invoke_from_event_loop`] to push property changes onto the Slint
 //! event loop. The inner `RwLock`s guard the Rust-side model copies.
 
-use std::{path::Path, sync::Arc};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use atlas_core::path::expand_tilde;
+use atlas_keymap::{defaults::default_actions, ActionRegistry, Keymap};
+use directories::UserDirs;
 use parking_lot::{Mutex, RwLock};
 use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
@@ -21,6 +27,7 @@ use crate::{
     actions::{ActionSink, UiAction},
     models::{PaletteModel, PaletteResult, PaneModel, StatusModel, WorkspaceModel},
     navigation::NavigationController,
+    palette::{ActionsSource, GotoPathsSource, PaletteController, WalkerPathIndex},
     theme::{ThemeMode, ThemeTokens},
     theming::defaults,
     views::details::DetailsController,
@@ -69,6 +76,40 @@ fn dispatch_navigation(
     });
 }
 
+fn palette_root() -> PathBuf {
+    if let Some(user_dirs) = UserDirs::new() {
+        return user_dirs.home_dir().to_path_buf();
+    }
+
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+fn build_palette_controller(
+    window: &AtlasWindow,
+    actions: Arc<Mutex<Box<dyn ActionSink>>>,
+) -> Arc<PaletteController> {
+    let mut registry = ActionRegistry::new();
+    for action in default_actions() {
+        registry.register(action);
+    }
+
+    let keymap = Arc::new(Keymap::with_defaults());
+    let actions_source = Arc::new(ActionsSource::new(Arc::new(registry), Arc::clone(&keymap)));
+    let path_index = Arc::new(WalkerPathIndex::new(palette_root()));
+    let goto_source = Arc::new(GotoPathsSource::new(path_index));
+
+    let controller = PaletteController::new(actions);
+    controller.attach_window(window.as_weak());
+    controller.register_source(actions_source);
+    controller.register_source(goto_source);
+    controller.set_on_dispatch(|action_id| {
+        tracing::info!(%action_id, "palette action dispatched");
+    });
+    controller
+}
+
 /// Owns Rust-side model state and bridges it to the Slint window.
 ///
 /// Construct with [`AppShell::new`], then call [`AppShell::set_workspace`],
@@ -82,6 +123,7 @@ pub struct AppShell {
     status: RwLock<StatusModel>,
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
     navigation: Arc<NavigationController>,
+    palette_ctrl: Arc<PaletteController>,
     details0: Arc<DetailsController>,
 }
 
@@ -94,6 +136,7 @@ impl AppShell {
     ) -> Arc<Self> {
         let actions: Arc<Mutex<Box<dyn ActionSink>>> = Arc::new(Mutex::new(Box::new(actions)));
         let details0 = DetailsController::new(0, window.as_weak(), Arc::clone(&actions));
+        let palette_ctrl = build_palette_controller(window, Arc::clone(&actions));
         let shell = Arc::new(Self {
             window: window.as_weak(),
             workspace: RwLock::new(WorkspaceModel::new_default()),
@@ -101,6 +144,7 @@ impl AppShell {
             status: RwLock::new(StatusModel::default()),
             actions,
             navigation: nav,
+            palette_ctrl,
             details0,
         });
 
@@ -119,6 +163,12 @@ impl AppShell {
     #[must_use]
     pub fn navigation(&self) -> Arc<NavigationController> {
         Arc::clone(&self.navigation)
+    }
+
+    /// Return the shared palette controller.
+    #[must_use]
+    pub fn palette_controller(&self) -> Arc<PaletteController> {
+        Arc::clone(&self.palette_ctrl)
     }
 
     fn register_nav_callbacks(self: &Arc<Self>) {
@@ -152,28 +202,39 @@ impl AppShell {
         }
 
         {
-            let actions = Arc::clone(&self.actions);
+            let palette_ctrl = Arc::clone(&self.palette_ctrl);
             window.on_palette_query_changed(move |query| {
-                actions
-                    .lock()
-                    .dispatch(UiAction::PaletteQueryChanged(query.into()));
+                palette_ctrl.set_query(query.as_str());
             });
         }
         {
-            let actions = Arc::clone(&self.actions);
-            window.on_palette_confirm(move |action_id| {
-                actions
-                    .lock()
-                    .dispatch(UiAction::PaletteConfirm(action_id.into()));
+            let palette_ctrl = Arc::clone(&self.palette_ctrl);
+            window.on_palette_confirm(move |_action_id| {
+                palette_ctrl.confirm();
             });
         }
         {
-            let actions = Arc::clone(&self.actions);
+            let palette_ctrl = Arc::clone(&self.palette_ctrl);
             window.on_palette_dismiss(move || {
-                actions.lock().dispatch(UiAction::DismissPalette);
+                palette_ctrl.close();
             });
         }
-        window.on_toggle_palette(dispatch!(self.actions, UiAction::TogglePalette));
+        {
+            let palette_ctrl = Arc::clone(&self.palette_ctrl);
+            window.on_toggle_palette(move || {
+                if palette_ctrl.is_visible() {
+                    palette_ctrl.close();
+                } else {
+                    palette_ctrl.open(0);
+                }
+            });
+        }
+        {
+            let palette_ctrl = Arc::clone(&self.palette_ctrl);
+            window.on_open_goto(move || {
+                palette_ctrl.open(1);
+            });
+        }
 
         {
             let actions = Arc::clone(&self.actions);

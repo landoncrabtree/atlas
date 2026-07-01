@@ -115,6 +115,7 @@ export component AtlasWindow inherits Window {
     callback pane1-details-header-resize(int, float);
 
     callback toggle-palette();
+    callback open-goto();
     callback cycle-pane-focus();
 
     pure function location-str() -> string {
@@ -183,12 +184,12 @@ export component AtlasWindow inherits Window {
                 root.palette-dismiss();
                 return accept;
             }
-            if (event.modifiers.meta || event.modifiers.control) && event.text == "p" {
+            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && (event.text == "P" || event.text == "p") {
                 root.toggle-palette();
                 return accept;
             }
-            if (event.modifiers.meta || event.modifiers.control) && event.modifiers.shift && event.text == "p" {
-                root.toggle-palette();
+            if (event.modifiers.meta || event.modifiers.control) && !event.modifiers.shift && event.text == "p" {
+                root.open-goto();
                 return accept;
             }
             if event.text == Key.Tab && dual-pane && !palette-visible {
