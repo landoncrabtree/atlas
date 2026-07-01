@@ -1,5 +1,15 @@
 import { Theme } from "../theme.slint";
 
+/// One shortcut chip: the pretty chord (e.g. `⌘⇧P` on macOS, `Ctrl+Shift+P`
+/// on Linux/Windows) followed by a muted-label action name.
+export struct ShortcutHint {
+    /// Pre-formatted chord glyph string. Rust picks the platform-native
+    /// symbols so we don't do any ⌘/Ctrl swapping in Slint.
+    key: string,
+    /// Human-readable action name (e.g. "Rename", "Palette").
+    label: string,
+}
+
 // One key-hint chip: `key` in accent, `label` in muted foreground.
 component KeyHint {
     in property <string> key;
@@ -23,10 +33,14 @@ component KeyHint {
     }
 }
 
-// Marta/NC-style bottom footer that reminds the user which F-key does what.
-// Static content — a purely visual affordance. The FocusScope in atlas.slint
-// actually handles the keys; this component just documents them.
+// Marta/NC-style bottom footer that reminds the user which chord does what.
+// Content is data-driven: Rust reads the live keymap, picks a curated set of
+// actions to advertise, formats each chord with platform-native modifier
+// symbols, and pushes the result via `hints`. This means user rebindings
+// automatically show up in the footer.
 export component ShortcutFooter {
+    in property <[ShortcutHint]> hints: [];
+
     height: 26px;
 
     Rectangle {
@@ -46,16 +60,10 @@ export component ShortcutFooter {
             spacing: Theme.space-4;
             alignment: center;
 
-            KeyHint { key: "F2"; label: "Rename"; }
-            KeyHint { key: "F3"; label: "View"; }
-            KeyHint { key: "F4"; label: "Edit"; }
-            KeyHint { key: "F5"; label: "Copy"; }
-            KeyHint { key: "F6"; label: "Move"; }
-            KeyHint { key: "F7"; label: "Mkdir"; }
-            KeyHint { key: "F8"; label: "Delete"; }
-            KeyHint { key: "⌘P"; label: "Goto"; }
-            KeyHint { key: "⌘⇧P"; label: "Palette"; }
-            KeyHint { key: "⌘F"; label: "Search"; }
+            for hint in hints : KeyHint {
+                key: hint.key;
+                label: hint.label;
+            }
         }
     }
 }

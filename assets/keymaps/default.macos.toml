@@ -1,9 +1,11 @@
-# Atlas default keymap.
+# Atlas default keymap (macOS).
 # Copy this file to override defaults; add new [[bindings]] entries or
 # suppress a default by setting its `action` to an empty string.
 #
 # Modifier aliases: cmd|meta|super|win, alt|option|opt, ctrl|control, shift.
-# Cross-platform note: `cmd` maps to Cmd on macOS, Ctrl on Linux/Windows.
+# The keymap is literal — a binding for `cmd-c` requires the physical
+# Cmd key on macOS or physical Super/Meta on Linux/Windows. If you want
+# the same shortcut on every platform, use `ctrl-*`.
 
 # [Global] Toggle Command Palette
 [[bindings]]
@@ -129,7 +131,7 @@ action = "tab::Close"
 [[bindings]]
 context = "Global"
 key = "shift-cmd-t"
-action = "tab::ReopenClosed"
+action = "tab::Reopen"
 
 # [Global] Select Tab 1
 [[bindings]]
@@ -185,6 +187,18 @@ context = "Global"
 key = "cmd-9"
 action = "tab::Select9"
 
+# [Pane] Previous Tab
+[[bindings]]
+context = "Pane"
+key = "shift-cmd-["
+action = "tab::CyclePrev"
+
+# [Pane] Next Tab
+[[bindings]]
+context = "Pane"
+key = "shift-cmd-]"
+action = "tab::CycleNext"
+
 # [Global] View: Details
 [[bindings]]
 context = "Global"
@@ -214,6 +228,12 @@ action = "view::Miller"
 context = "Global"
 key = "alt-cmd-5"
 action = "view::Tree"
+
+# [Pane] Cycle View Mode
+[[bindings]]
+context = "Pane"
+key = "shift-cmd-e"
+action = "view::Cycle"
 
 # [Pane] Rename
 [[bindings]]
@@ -275,6 +295,12 @@ context = "Pane"
 key = "cmd-v"
 action = "fs::PasteFromClipboard"
 
+# [Pane] New Directory
+[[bindings]]
+context = "Pane"
+key = "shift-cmd-n"
+action = "fs::Mkdir"
+
 # [Global] Split Pane Right
 [[bindings]]
 context = "Global"
@@ -317,30 +343,6 @@ context = "Pane"
 key = "ctrl-l"
 action = "pane::FocusRight"
 
-# [Pane] Cycle View Mode
-[[bindings]]
-context = "Pane"
-key = "shift-cmd-e"
-action = "view::Cycle"
-
-# [Pane] Previous Tab
-[[bindings]]
-context = "Pane"
-key = "shift-cmd-["
-action = "tab::CyclePrev"
-
-# [Pane] Next Tab
-[[bindings]]
-context = "Pane"
-key = "shift-cmd-]"
-action = "tab::CycleNext"
-
-# [Global] Reopen Closed Tab
-[[bindings]]
-context = "Global"
-key = "shift-cmd-t"
-action = "tab::Reopen"
-
 # [Global] Toggle Search Panel
 [[bindings]]
 context = "Global"
@@ -370,9 +372,3 @@ action = "rename::OpenBulk"
 context = "Global"
 key = "cmd-\\"
 action = "workspace::ToggleDualPane"
-
-# [Pane] New Directory
-[[bindings]]
-context = "Pane"
-key = "shift-cmd-n"
-action = "fs::Mkdir"

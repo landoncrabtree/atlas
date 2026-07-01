@@ -278,9 +278,10 @@ export component TabBar {
                                     animate background { duration: Theme.motion-fast; easing: ease-out; }
 
                                     Text {
-                                        text: "✕";
+                                        text: "×";  // U+00D7 Multiplication Sign — present in almost every font
                                         color: close-ta.has-hover ? Theme.fg : Theme.fg-muted;
-                                        font-size: 10px;
+                                        font-size: 14px;
+                                        font-weight: 600;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                         width: parent.width;
@@ -388,9 +389,10 @@ export component TabBar {
                                         background: ov-close-ta.has-hover ? Theme.border-strong : transparent;
 
                                         Text {
-                                            text: "\u{2715}";
+                                            text: "×";
                                             color: ov-close-ta.has-hover ? Theme.fg : Theme.fg-muted;
-                                            font-size: 10px;
+                                            font-size: 14px;
+                                            font-weight: 600;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                             width: parent.width;

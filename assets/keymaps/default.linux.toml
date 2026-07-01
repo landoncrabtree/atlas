@@ -1,0 +1,374 @@
+# Atlas default keymap (Linux).
+# Copy this file to override defaults; add new [[bindings]] entries or
+# suppress a default by setting its `action` to an empty string.
+#
+# Modifier aliases: cmd|meta|super|win, alt|option|opt, ctrl|control, shift.
+# The keymap is literal — a binding for `cmd-c` requires the physical
+# Cmd key on macOS or physical Super/Meta on Linux/Windows. If you want
+# the same shortcut on every platform, use `ctrl-*`.
+
+# [Global] Toggle Command Palette
+[[bindings]]
+context = "Global"
+key = "ctrl-shift-p"
+action = "command_palette::Toggle"
+
+# [Global] Go to Anything
+[[bindings]]
+context = "Global"
+key = "ctrl-p"
+action = "goto::Anything"
+
+# [Global] Open Settings
+[[bindings]]
+context = "Global"
+key = "ctrl-,"
+action = "app::OpenSettings"
+
+# [Global] Quit Atlas
+[[bindings]]
+context = "Global"
+key = "ctrl-q"
+action = "app::Quit"
+
+# [Pane] Move Down
+[[bindings]]
+context = "Pane"
+key = "j"
+action = "pane::MoveDown"
+
+# [Pane] Move Up
+[[bindings]]
+context = "Pane"
+key = "k"
+action = "pane::MoveUp"
+
+# [Pane] Move Left
+[[bindings]]
+context = "Pane"
+key = "h"
+action = "pane::MoveLeft"
+
+# [Pane] Move Right
+[[bindings]]
+context = "Pane"
+key = "l"
+action = "pane::MoveRight"
+
+# [Pane] Move to Top
+[[bindings]]
+context = "Pane"
+key = "g g"
+action = "pane::MoveToTop"
+
+# [Pane] Move to Bottom
+[[bindings]]
+context = "Pane"
+key = "shift-g"
+action = "pane::MoveToBottom"
+
+# [Pane] Search in Place
+[[bindings]]
+context = "Pane"
+key = "/"
+action = "pane::SearchInPlace"
+
+# [Pane] Activate
+[[bindings]]
+context = "Pane"
+key = "enter"
+action = "pane::Activate"
+
+# [Pane] Go Up (Parent Directory)
+[[bindings]]
+context = "Pane"
+key = "backspace"
+action = "pane::GoUp"
+
+# [Pane] Navigate Back
+[[bindings]]
+context = "Pane"
+key = "alt-left"
+action = "pane::Back"
+
+# [Pane] Navigate Forward
+[[bindings]]
+context = "Pane"
+key = "alt-right"
+action = "pane::Forward"
+
+# [Pane] Toggle Selection
+[[bindings]]
+context = "Pane"
+key = "space"
+action = "pane::ToggleSelection"
+
+# [Pane] Select All
+[[bindings]]
+context = "Pane"
+key = "ctrl-a"
+action = "pane::SelectAll"
+
+# [Pane] Deselect All
+[[bindings]]
+context = "Pane"
+key = "ctrl-shift-a"
+action = "pane::DeselectAll"
+
+# [Global] New Tab
+[[bindings]]
+context = "Global"
+key = "ctrl-t"
+action = "tab::New"
+
+# [Global] Close Tab
+[[bindings]]
+context = "Global"
+key = "ctrl-w"
+action = "tab::Close"
+
+# [Global] Reopen Closed Tab
+[[bindings]]
+context = "Global"
+key = "ctrl-shift-t"
+action = "tab::Reopen"
+
+# [Global] Select Tab 1
+[[bindings]]
+context = "Global"
+key = "ctrl-1"
+action = "tab::Select1"
+
+# [Global] Select Tab 2
+[[bindings]]
+context = "Global"
+key = "ctrl-2"
+action = "tab::Select2"
+
+# [Global] Select Tab 3
+[[bindings]]
+context = "Global"
+key = "ctrl-3"
+action = "tab::Select3"
+
+# [Global] Select Tab 4
+[[bindings]]
+context = "Global"
+key = "ctrl-4"
+action = "tab::Select4"
+
+# [Global] Select Tab 5
+[[bindings]]
+context = "Global"
+key = "ctrl-5"
+action = "tab::Select5"
+
+# [Global] Select Tab 6
+[[bindings]]
+context = "Global"
+key = "ctrl-6"
+action = "tab::Select6"
+
+# [Global] Select Tab 7
+[[bindings]]
+context = "Global"
+key = "ctrl-7"
+action = "tab::Select7"
+
+# [Global] Select Tab 8
+[[bindings]]
+context = "Global"
+key = "ctrl-8"
+action = "tab::Select8"
+
+# [Global] Select Tab 9
+[[bindings]]
+context = "Global"
+key = "ctrl-9"
+action = "tab::Select9"
+
+# [Pane] Previous Tab
+[[bindings]]
+context = "Pane"
+key = "ctrl-shift-["
+action = "tab::CyclePrev"
+
+# [Pane] Next Tab
+[[bindings]]
+context = "Pane"
+key = "ctrl-shift-]"
+action = "tab::CycleNext"
+
+# [Global] View: Details
+[[bindings]]
+context = "Global"
+key = "ctrl-alt-1"
+action = "view::Details"
+
+# [Global] View: Grid
+[[bindings]]
+context = "Global"
+key = "ctrl-alt-2"
+action = "view::Grid"
+
+# [Global] View: Gallery
+[[bindings]]
+context = "Global"
+key = "ctrl-alt-3"
+action = "view::Gallery"
+
+# [Global] View: Miller Columns
+[[bindings]]
+context = "Global"
+key = "ctrl-alt-4"
+action = "view::Miller"
+
+# [Global] View: Tree
+[[bindings]]
+context = "Global"
+key = "ctrl-alt-5"
+action = "view::Tree"
+
+# [Pane] Cycle View Mode
+[[bindings]]
+context = "Pane"
+key = "ctrl-shift-e"
+action = "view::Cycle"
+
+# [Pane] Rename
+[[bindings]]
+context = "Pane"
+key = "f2"
+action = "fs::Rename"
+
+# [Pane] View File
+[[bindings]]
+context = "Pane"
+key = "f3"
+action = "fs::View"
+
+# [Pane] Edit File
+[[bindings]]
+context = "Pane"
+key = "f4"
+action = "fs::Edit"
+
+# [Pane] Copy
+[[bindings]]
+context = "Pane"
+key = "f5"
+action = "fs::Copy"
+
+# [Pane] Move
+[[bindings]]
+context = "Pane"
+key = "f6"
+action = "fs::Move"
+
+# [Pane] New Directory
+[[bindings]]
+context = "Pane"
+key = "f7"
+action = "fs::Mkdir"
+
+# [Pane] Delete
+[[bindings]]
+context = "Pane"
+key = "f8"
+action = "fs::Delete"
+
+# [Pane] Copy to Clipboard
+[[bindings]]
+context = "Pane"
+key = "ctrl-c"
+action = "fs::CopyToClipboard"
+
+# [Pane] Cut to Clipboard
+[[bindings]]
+context = "Pane"
+key = "ctrl-x"
+action = "fs::CutToClipboard"
+
+# [Pane] Paste from Clipboard
+[[bindings]]
+context = "Pane"
+key = "ctrl-v"
+action = "fs::PasteFromClipboard"
+
+# [Pane] New Directory
+[[bindings]]
+context = "Pane"
+key = "ctrl-shift-n"
+action = "fs::Mkdir"
+
+# [Global] Split Pane Right
+[[bindings]]
+context = "Global"
+key = "ctrl-d"
+action = "pane::SplitRight"
+
+# [Global] Split Pane Down
+[[bindings]]
+context = "Global"
+key = "ctrl-shift-d"
+action = "pane::SplitDown"
+
+# [Global] Close Pane
+[[bindings]]
+context = "Global"
+key = "ctrl-shift-w"
+action = "pane::Close"
+
+# [Pane] Focus Left Pane
+[[bindings]]
+context = "Pane"
+key = "ctrl-h"
+action = "pane::FocusLeft"
+
+# [Pane] Focus Below Pane
+[[bindings]]
+context = "Pane"
+key = "ctrl-j"
+action = "pane::FocusDown"
+
+# [Pane] Focus Above Pane
+[[bindings]]
+context = "Pane"
+key = "ctrl-k"
+action = "pane::FocusUp"
+
+# [Pane] Focus Right Pane
+[[bindings]]
+context = "Pane"
+key = "ctrl-l"
+action = "pane::FocusRight"
+
+# [Global] Toggle Search Panel
+[[bindings]]
+context = "Global"
+key = "ctrl-f"
+action = "search::Toggle"
+
+# [Global] Open Search Panel
+[[bindings]]
+context = "Global"
+key = "ctrl-shift-f"
+action = "search::Open"
+
+# [Global] Toggle Operations Panel
+[[bindings]]
+context = "Global"
+key = "ctrl-j"
+action = "ops::TogglePanel"
+
+# [Pane] Open Bulk Rename
+[[bindings]]
+context = "Pane"
+key = "ctrl-shift-f2"
+action = "rename::OpenBulk"
+
+# [Global] Toggle Dual Pane
+[[bindings]]
+context = "Global"
+key = "ctrl-\\"
+action = "workspace::ToggleDualPane"

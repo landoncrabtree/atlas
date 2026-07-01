@@ -6,7 +6,7 @@
 //! View mode switching therefore uses `cmd-alt-1` through `cmd-alt-5` to avoid
 //! collision.
 
-use crate::{ActionId, ActionMeta, Binding, ChordSequence};
+use crate::{ActionId, ActionMeta, Binding, ChordSequence, PrettyPlatform};
 
 /// Parse a chord sequence, panicking with a descriptive message on failure.
 /// Only used at startup with hard-coded strings — a panic here is a programmer error.
@@ -23,13 +23,53 @@ fn b(sequence: &str, context: &str, action: &str) -> Binding {
     }
 }
 
-/// Returns the default bindings shipped with Atlas.
+/// Returns the default bindings shipped with Atlas for the current platform.
+///
+/// The default keymap uses `cmd` shortcuts on macOS (matching every native
+/// mac app) and `ctrl` shortcuts on Linux/Windows (matching GNOME/KDE/Windows
+/// Explorer conventions). Users can override any binding in
+/// `~/.config/atlas/keymaps/default.toml` — the keymap does NOT silently
+/// remap `cmd` → `ctrl` at dispatch time; what the file says is what the
+/// dispatcher matches.
+#[must_use]
 pub fn default_bindings() -> Vec<Binding> {
+    default_bindings_for(PrettyPlatform::current())
+}
+
+/// Returns the default bindings for a specific platform. Split from
+/// [`default_bindings`] so tests can exercise every platform's table
+/// deterministically.
+#[must_use]
+pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
+    // The "primary" modifier is what the platform uses for global
+    // application shortcuts. macOS uses ⌘, Linux/Windows use ⌃.
+    // Vim-style `ctrl+hjkl` pane navigation stays literal on every
+    // platform (users expect the physical Ctrl key).
+    let m = match platform {
+        PrettyPlatform::Mac => "cmd",
+        PrettyPlatform::Windows | PrettyPlatform::Linux => "ctrl",
+    };
+    // Convenience: format a chord using the platform's primary modifier.
+    let p = |modless: &str, action_ctx: (&str, &str)| {
+        let (ctx, action) = action_ctx;
+        b(&format!("{m}-{modless}"), ctx, action)
+    };
+    let ps = |modless: &str, action_ctx: (&str, &str)| {
+        let (ctx, action) = action_ctx;
+        b(&format!("{m}-shift-{modless}"), ctx, action)
+    };
+    let pa = |modless: &str, action_ctx: (&str, &str)| {
+        let (ctx, action) = action_ctx;
+        b(&format!("{m}-alt-{modless}"), ctx, action)
+    };
+
     vec![
-        b("cmd-shift-p", "Global", "command_palette::Toggle"),
-        b("cmd-p", "Global", "goto::Anything"),
-        b("cmd-,", "Global", "app::OpenSettings"),
-        b("cmd-q", "Global", "app::Quit"),
+        // ── Palette / goto / app ──────────────────────────────────────────
+        ps("p", ("Global", "command_palette::Toggle")),
+        p("p", ("Global", "goto::Anything")),
+        p(",", ("Global", "app::OpenSettings")),
+        p("q", ("Global", "app::Quit")),
+        // ── File-list navigation (Pane context) ───────────────────────────
         b("j", "Pane", "pane::MoveDown"),
         b("k", "Pane", "pane::MoveUp"),
         b("h", "Pane", "pane::MoveLeft"),
@@ -42,25 +82,31 @@ pub fn default_bindings() -> Vec<Binding> {
         b("alt-left", "Pane", "pane::Back"),
         b("alt-right", "Pane", "pane::Forward"),
         b("space", "Pane", "pane::ToggleSelection"),
-        b("cmd-a", "Pane", "pane::SelectAll"),
-        b("cmd-shift-a", "Pane", "pane::DeselectAll"),
-        b("cmd-t", "Global", "tab::New"),
-        b("cmd-w", "Global", "tab::Close"),
-        b("cmd-shift-t", "Global", "tab::ReopenClosed"),
-        b("cmd-1", "Global", "tab::Select1"),
-        b("cmd-2", "Global", "tab::Select2"),
-        b("cmd-3", "Global", "tab::Select3"),
-        b("cmd-4", "Global", "tab::Select4"),
-        b("cmd-5", "Global", "tab::Select5"),
-        b("cmd-6", "Global", "tab::Select6"),
-        b("cmd-7", "Global", "tab::Select7"),
-        b("cmd-8", "Global", "tab::Select8"),
-        b("cmd-9", "Global", "tab::Select9"),
-        b("cmd-alt-1", "Global", "view::Details"),
-        b("cmd-alt-2", "Global", "view::Grid"),
-        b("cmd-alt-3", "Global", "view::Gallery"),
-        b("cmd-alt-4", "Global", "view::Miller"),
-        b("cmd-alt-5", "Global", "view::Tree"),
+        p("a", ("Pane", "pane::SelectAll")),
+        ps("a", ("Pane", "pane::DeselectAll")),
+        // ── Tabs ──────────────────────────────────────────────────────────
+        p("t", ("Global", "tab::New")),
+        p("w", ("Global", "tab::Close")),
+        ps("t", ("Global", "tab::Reopen")),
+        p("1", ("Global", "tab::Select1")),
+        p("2", ("Global", "tab::Select2")),
+        p("3", ("Global", "tab::Select3")),
+        p("4", ("Global", "tab::Select4")),
+        p("5", ("Global", "tab::Select5")),
+        p("6", ("Global", "tab::Select6")),
+        p("7", ("Global", "tab::Select7")),
+        p("8", ("Global", "tab::Select8")),
+        p("9", ("Global", "tab::Select9")),
+        ps("[", ("Pane", "tab::CyclePrev")),
+        ps("]", ("Pane", "tab::CycleNext")),
+        // ── View modes ────────────────────────────────────────────────────
+        pa("1", ("Global", "view::Details")),
+        pa("2", ("Global", "view::Grid")),
+        pa("3", ("Global", "view::Gallery")),
+        pa("4", ("Global", "view::Miller")),
+        pa("5", ("Global", "view::Tree")),
+        ps("e", ("Pane", "view::Cycle")),
+        // ── File operations (NC/Midnight Commander F-keys) ────────────────
         b("f2", "Pane", "fs::Rename"),
         b("f3", "Pane", "fs::View"),
         b("f4", "Pane", "fs::Edit"),
@@ -68,32 +114,26 @@ pub fn default_bindings() -> Vec<Binding> {
         b("f6", "Pane", "fs::Move"),
         b("f7", "Pane", "fs::Mkdir"),
         b("f8", "Pane", "fs::Delete"),
-        b("cmd-c", "Pane", "fs::CopyToClipboard"),
-        b("cmd-x", "Pane", "fs::CutToClipboard"),
-        b("cmd-v", "Pane", "fs::PasteFromClipboard"),
-        // ── Pane split / close ────────────────────────────────────────────────
-        b("cmd-d", "Global", "pane::SplitRight"),
-        b("cmd-shift-d", "Global", "pane::SplitDown"),
-        b("cmd-shift-w", "Global", "pane::Close"),
-        // ── Pane focus (vim-style) ─────────────────────────────────────────
+        p("c", ("Pane", "fs::CopyToClipboard")),
+        p("x", ("Pane", "fs::CutToClipboard")),
+        p("v", ("Pane", "fs::PasteFromClipboard")),
+        ps("n", ("Pane", "fs::Mkdir")),
+        // ── Pane split / close / focus ────────────────────────────────────
+        p("d", ("Global", "pane::SplitRight")),
+        ps("d", ("Global", "pane::SplitDown")),
+        ps("w", ("Global", "pane::Close")),
+        // Vim-style pane focus stays on physical Ctrl on every platform
+        // (users muscle-memory-remember Ctrl+H/J/K/L from tmux/vim).
         b("ctrl-h", "Pane", "pane::FocusLeft"),
         b("ctrl-j", "Pane", "pane::FocusDown"),
         b("ctrl-k", "Pane", "pane::FocusUp"),
         b("ctrl-l", "Pane", "pane::FocusRight"),
-        // ── View cycle ───────────────────────────────────────────────────────
-        b("cmd-shift-e", "Pane", "view::Cycle"),
-        // ── Tab cycle ────────────────────────────────────────────────────────
-        b("cmd-shift-[", "Pane", "tab::CyclePrev"),
-        b("cmd-shift-]", "Pane", "tab::CycleNext"),
-        // tab::Reopen supersedes tab::ReopenClosed on cmd-shift-t (last wins).
-        b("cmd-shift-t", "Global", "tab::Reopen"),
-        // ── Search / ops / rename / dual-pane ─────────────────────────────────
-        b("cmd-f", "Global", "search::Toggle"),
-        b("cmd-shift-f", "Global", "search::Open"),
-        b("cmd-j", "Global", "ops::TogglePanel"),
-        b("cmd-shift-f2", "Pane", "rename::OpenBulk"),
-        b("cmd-\\", "Global", "workspace::ToggleDualPane"),
-        b("cmd-shift-n", "Pane", "fs::Mkdir"),
+        // ── Search / ops / bulk-rename / dual-pane ────────────────────────
+        p("f", ("Global", "search::Toggle")),
+        ps("f", ("Global", "search::Open")),
+        p("j", ("Global", "ops::TogglePanel")),
+        ps("f2", ("Pane", "rename::OpenBulk")),
+        p("\\", ("Global", "workspace::ToggleDualPane")),
     ]
 }
 
@@ -232,6 +272,53 @@ mod tests {
     fn test_default_bindings_parse() {
         let bindings = default_bindings();
         assert!(!bindings.is_empty());
+    }
+
+    #[test]
+    fn test_platform_specific_primary_modifier() {
+        // On macOS, `tab::New` binds to `cmd-t`; on Linux/Windows, `ctrl-t`.
+        // This test guards against the platform picker regressing.
+        for (platform, expected_seq) in [
+            (PrettyPlatform::Mac, "cmd-t"),
+            (PrettyPlatform::Linux, "ctrl-t"),
+            (PrettyPlatform::Windows, "ctrl-t"),
+        ] {
+            let bindings = default_bindings_for(platform);
+            let tab_new = bindings
+                .iter()
+                .find(|b| b.action.as_str() == "tab::New")
+                .expect("tab::New must have a default binding");
+            assert_eq!(
+                tab_new.sequence.display(),
+                expected_seq,
+                "{:?}: tab::New should bind to {}",
+                platform,
+                expected_seq
+            );
+        }
+    }
+
+    #[test]
+    fn test_vim_pane_focus_stays_on_ctrl_every_platform() {
+        // Vim-style pane navigation uses physical Ctrl on every platform;
+        // muscle memory from tmux/vim expects this.
+        for platform in [
+            PrettyPlatform::Mac,
+            PrettyPlatform::Linux,
+            PrettyPlatform::Windows,
+        ] {
+            let bindings = default_bindings_for(platform);
+            let focus_right = bindings
+                .iter()
+                .find(|b| b.action.as_str() == "pane::FocusRight")
+                .expect("pane::FocusRight must exist");
+            assert_eq!(
+                focus_right.sequence.display(),
+                "ctrl-l",
+                "{:?}: pane::FocusRight must stay ctrl-l on every platform",
+                platform
+            );
+        }
     }
 
     #[test]

@@ -79,16 +79,27 @@ pub fn save_keymap_toml(bindings: &[Binding]) -> Result<String> {
         .map_err(|error| anyhow::anyhow!("keymap TOML serialization error: {error}").into())
 }
 
-/// Render all default bindings as a heavily-commented TOML string.
+/// Render all default bindings as a heavily-commented TOML string tailored
+/// to the current platform.
 ///
 /// The output matches the schema accepted by [`load_keymap_toml`] and serves
 /// as documentation for users who want to customise their keymap.  Every entry
 /// is annotated with its human-readable action title.
 ///
 /// The string is also the authoritative content written by
-/// [`write_default_keymap_to`] and checked in at `assets/keymaps/default.toml`.
+/// [`write_default_keymap_to`] and checked in at
+/// `assets/keymaps/default.<platform>.toml`.
 pub fn default_keymap_toml_string() -> String {
-    use crate::defaults::{default_actions, default_bindings};
+    default_keymap_toml_string_for(crate::PrettyPlatform::current())
+}
+
+/// Same as [`default_keymap_toml_string`] but for an explicit platform.
+///
+/// Called by [`write_default_keymap_to`] at first launch so users get an
+/// idiomatic macOS / Windows / Linux keymap out of the box, and by tests
+/// to compare against the checked-in reference files.
+pub fn default_keymap_toml_string_for(platform: crate::PrettyPlatform) -> String {
+    use crate::defaults::{default_actions, default_bindings_for};
     use std::collections::HashMap;
 
     let actions = default_actions();
@@ -97,15 +108,23 @@ pub fn default_keymap_toml_string() -> String {
         .map(|a| (a.id.as_str(), a.title.as_str()))
         .collect();
 
+    let platform_label = match platform {
+        crate::PrettyPlatform::Mac => "macOS",
+        crate::PrettyPlatform::Windows => "Windows",
+        crate::PrettyPlatform::Linux => "Linux",
+    };
+
     let mut out = String::with_capacity(4096);
-    out.push_str("# Atlas default keymap.\n");
+    out.push_str(&format!("# Atlas default keymap ({platform_label}).\n"));
     out.push_str("# Copy this file to override defaults; add new [[bindings]] entries or\n");
     out.push_str("# suppress a default by setting its `action` to an empty string.\n");
     out.push_str("#\n");
     out.push_str("# Modifier aliases: cmd|meta|super|win, alt|option|opt, ctrl|control, shift.\n");
-    out.push_str("# Cross-platform note: `cmd` maps to Cmd on macOS, Ctrl on Linux/Windows.\n");
+    out.push_str("# The keymap is literal — a binding for `cmd-c` requires the physical\n");
+    out.push_str("# Cmd key on macOS or physical Super/Meta on Linux/Windows. If you want\n");
+    out.push_str("# the same shortcut on every platform, use `ctrl-*`.\n");
 
-    for binding in &default_bindings() {
+    for binding in &default_bindings_for(platform) {
         out.push('\n');
         let title = title_map
             .get(binding.action.as_str())
@@ -232,37 +251,61 @@ action = ""
         }
     }
 
-    /// Ensures the checked-in `assets/keymaps/default.toml` matches the
-    /// output of [`default_keymap_toml_string`] byte-for-byte.
+    /// Ensures the checked-in per-platform default keymap files match the
+    /// output of [`default_keymap_toml_string_for`] byte-for-byte.
     ///
-    /// If this test fails, regenerate the file by running:
+    /// If this test fails, regenerate the files by running:
     /// ```text
     /// cargo test -p atlas-keymap -- --ignored regen_default_keymap
     /// ```
     #[test]
     fn test_checked_in_default_toml_matches_emitter() {
-        let expected = default_keymap_toml_string();
-        let checked_in = include_str!("../../../assets/keymaps/default.toml");
-        assert_eq!(
-            expected.as_str(),
-            checked_in,
-            "assets/keymaps/default.toml is stale — regenerate it by running \
-             `cargo test -p atlas-keymap -- --ignored regen_default_keymap`"
-        );
+        use crate::PrettyPlatform;
+        let cases = [
+            (
+                PrettyPlatform::Mac,
+                "macos",
+                include_str!("../../../assets/keymaps/default.macos.toml"),
+            ),
+            (
+                PrettyPlatform::Linux,
+                "linux",
+                include_str!("../../../assets/keymaps/default.linux.toml"),
+            ),
+            (
+                PrettyPlatform::Windows,
+                "windows",
+                include_str!("../../../assets/keymaps/default.windows.toml"),
+            ),
+        ];
+        for (platform, name, checked_in) in cases {
+            let expected = default_keymap_toml_string_for(platform);
+            assert_eq!(
+                expected.as_str(),
+                checked_in,
+                "assets/keymaps/default.{name}.toml is stale — regenerate it by running \
+                 `cargo test -p atlas-keymap -- --ignored regen_default_keymap`"
+            );
+        }
     }
 
-    /// Helper to regenerate `assets/keymaps/default.toml` in-tree.
+    /// Helper to regenerate the checked-in per-platform default keymap files.
     ///
     /// Run with: `cargo test -p atlas-keymap -- --ignored regen_default_keymap`
     #[test]
     #[ignore]
     fn regen_default_keymap() {
-        let content = default_keymap_toml_string();
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/keymaps/default.toml");
-        std::fs::write(&path, &content)
-            .unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
-        // Use tracing instead of eprintln to satisfy workspace lint rules.
-        let _ = path; // suppress unused warning in non-test builds
+        use crate::PrettyPlatform;
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/keymaps");
+        for (platform, name) in [
+            (PrettyPlatform::Mac, "macos"),
+            (PrettyPlatform::Linux, "linux"),
+            (PrettyPlatform::Windows, "windows"),
+        ] {
+            let content = default_keymap_toml_string_for(platform);
+            let path = base.join(format!("default.{name}.toml"));
+            std::fs::write(&path, &content)
+                .unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
+        }
     }
 }

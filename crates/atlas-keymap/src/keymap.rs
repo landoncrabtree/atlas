@@ -143,6 +143,21 @@ impl Keymap {
         result
     }
 
+    /// Return the highest-priority chord sequence bound to `action_id` in
+     /// any of the given contexts, or `None` if no binding exists. Useful for
+    /// rendering "action → shortcut" hints (e.g. the bottom shortcut footer).
+    #[must_use]
+    pub fn chord_for_action(
+        &self,
+        action_id: &ActionId,
+        contexts: &[String],
+    ) -> Option<ChordSequence> {
+        self.bindings_for_contexts(contexts)
+            .into_iter()
+            .find(|binding| &binding.action == action_id)
+            .map(|binding| binding.sequence.clone())
+    }
+
     /// Apply the `user` layer from a parsed list of bindings.
     pub fn set_user_bindings(&mut self, bindings: Vec<Binding>) {
         self.add_layer("user", bindings);

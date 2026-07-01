@@ -225,6 +225,113 @@ impl Chord {
         parts.push(&key_str);
         parts.join("-")
     }
+
+    /// Human-facing display string that uses platform-native modifier
+    /// symbols. The `platform` argument controls which glyphs are used:
+    ///
+    /// | Platform | ctrl | alt   | shift | cmd  | separator |
+    /// |----------|------|-------|-------|------|-----------|
+    /// | macOS    | ⌃    | ⌥     | ⇧     | ⌘    | (none, tight-stacked) |
+    /// | Windows  | Ctrl | Alt   | Shift | Win  | +         |
+    /// | Linux    | Ctrl | Alt   | Shift | Super| +         |
+    ///
+    /// Named keys use their canonical short forms (`⏎` for Enter, `⌫` for
+    /// Backspace, `⇥` for Tab, `⎋` for Escape on macOS; the spelled-out
+    /// name otherwise). The letter key itself is uppercased for legibility.
+    ///
+    /// Note: this function only formats — it does NOT do the
+    /// keymap-side `cmd ↔ ctrl` mapping some cross-platform apps perform.
+    /// If a binding literally reads `cmd-c`, we render it as ⌘C on macOS
+    /// and Win+C / Super+C on Windows/Linux. Users who want Ctrl+C on
+    /// every platform should write `ctrl-c` in their keymap.
+    #[must_use]
+    pub fn display_pretty(&self, platform: PrettyPlatform) -> String {
+        let (ctrl_s, alt_s, shift_s, cmd_s, sep) = match platform {
+            PrettyPlatform::Mac => ("⌃", "⌥", "⇧", "⌘", ""),
+            PrettyPlatform::Windows => ("Ctrl", "Alt", "Shift", "Win", "+"),
+            PrettyPlatform::Linux => ("Ctrl", "Alt", "Shift", "Super", "+"),
+        };
+        let mut parts: Vec<String> = Vec::new();
+        if self.modifiers.ctrl {
+            parts.push(ctrl_s.to_owned());
+        }
+        if self.modifiers.alt {
+            parts.push(alt_s.to_owned());
+        }
+        if self.modifiers.shift {
+            parts.push(shift_s.to_owned());
+        }
+        if self.modifiers.cmd {
+            parts.push(cmd_s.to_owned());
+        }
+        parts.push(pretty_key(self.key.clone(), platform));
+        parts.join(sep)
+    }
+}
+
+/// Target platform for [`Chord::display_pretty`] glyph selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrettyPlatform {
+    /// macOS-style symbol glyphs (⌘⌃⌥⇧).
+    Mac,
+    /// Windows names (`Ctrl+Alt+Win+Shift+A`).
+    Windows,
+    /// Linux names (`Ctrl+Alt+Super+Shift+A`).
+    Linux,
+}
+
+impl PrettyPlatform {
+    /// Return the platform of the currently-compiled binary.
+    #[must_use]
+    pub fn current() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            Self::Mac
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Self::Windows
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            Self::Linux
+        }
+    }
+}
+
+/// Format a [`Key`] for [`Chord::display_pretty`] using platform-native
+/// glyphs for named keys where applicable.
+fn pretty_key(key: Key, platform: PrettyPlatform) -> String {
+    match key {
+        Key::Char(c) => c.to_ascii_uppercase().to_string(),
+        Key::Function(n) => format!("F{n}"),
+        Key::Named(named) => pretty_named(named, platform).to_owned(),
+    }
+}
+
+fn pretty_named(k: NamedKey, platform: PrettyPlatform) -> &'static str {
+    match (k, platform) {
+        (NamedKey::Enter, PrettyPlatform::Mac) => "⏎",
+        (NamedKey::Enter, _) => "Enter",
+        (NamedKey::Backspace, PrettyPlatform::Mac) => "⌫",
+        (NamedKey::Backspace, _) => "Backspace",
+        (NamedKey::Tab, PrettyPlatform::Mac) => "⇥",
+        (NamedKey::Tab, _) => "Tab",
+        (NamedKey::Escape, PrettyPlatform::Mac) => "⎋",
+        (NamedKey::Escape, _) => "Esc",
+        (NamedKey::Space, _) => "Space",
+        (NamedKey::Delete, PrettyPlatform::Mac) => "⌦",
+        (NamedKey::Delete, _) => "Del",
+        (NamedKey::Up, _) => "↑",
+        (NamedKey::Down, _) => "↓",
+        (NamedKey::Left, _) => "←",
+        (NamedKey::Right, _) => "→",
+        (NamedKey::Home, _) => "Home",
+        (NamedKey::End, _) => "End",
+        (NamedKey::PageUp, _) => "PgUp",
+        (NamedKey::PageDown, _) => "PgDn",
+        (NamedKey::Insert, _) => "Ins",
+    }
 }
 
 impl FromStr for Chord {
@@ -293,6 +400,17 @@ impl ChordSequence {
         self.0
             .iter()
             .map(Chord::display)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Human-facing display string using platform-native modifier glyphs.
+    /// See [`Chord::display_pretty`] for the glyph mapping.
+    #[must_use]
+    pub fn display_pretty(&self, platform: PrettyPlatform) -> String {
+        self.0
+            .iter()
+            .map(|c| c.display_pretty(platform))
             .collect::<Vec<_>>()
             .join(" ")
     }

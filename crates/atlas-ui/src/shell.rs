@@ -42,7 +42,7 @@ use crate::{
     views::grid::GridController,
     views::miller::MillerController,
     views::tree::TreeController,
-    AtlasWindow, EntryRowItem, PaletteEntry, PaneSlintData, SplitHandle, TabEntry,
+    AtlasWindow, EntryRowItem, PaletteEntry, PaneSlintData, ShortcutHint, SplitHandle, TabEntry,
 };
 
 fn to_palette_model(results: &[PaletteResult]) -> ModelRc<PaletteEntry> {
@@ -727,6 +727,26 @@ impl AppShell {
         if let Some(window) = self.window.upgrade() {
             window.set_theme_animations(enabled);
         }
+    }
+
+    /// Replace the shortcut-footer hints. Each entry is a pre-formatted
+    /// `(chord_display, action_label)` pair. Called at startup and any time
+    /// the keymap changes (hot-reload of `~/.config/atlas/keymaps/default.toml`).
+    pub fn set_shortcut_hints(&self, hints: Vec<(String, String)>) {
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let entries: Vec<ShortcutHint> = hints
+                .into_iter()
+                .map(|(key, label)| ShortcutHint {
+                    key: SharedString::from(key.as_str()),
+                    label: SharedString::from(label.as_str()),
+                })
+                .collect();
+            window.set_shortcut_hints(ModelRc::new(VecModel::from(entries)));
+        });
     }
 
     /// Return a weak reference to the Slint window backing this shell.

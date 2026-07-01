@@ -2,7 +2,7 @@ import { Theme } from "theme.slint";
 import { Titlebar } from "components/titlebar.slint";
 import { Pane } from "components/pane.slint";
 import { StatusBar } from "components/status-bar.slint";
-import { ShortcutFooter } from "components/shortcut-footer.slint";
+import { ShortcutFooter, ShortcutHint } from "components/shortcut-footer.slint";
 import { CommandPalette, PaletteEntry } from "components/command-palette.slint";
 import { SearchPanel, SearchRow } from "components/search-panel.slint";
 import { OpsPanel, OpRow } from "components/ops-panel.slint";
@@ -151,6 +151,10 @@ export component AtlasWindow inherits Window {
     /// Free-space string for the focused pane's volume (e.g. "312 GB free of 1 TB").
     /// Empty string hides the chip entirely.
     in property <string> free-space-text: "";
+
+    /// Rendered shortcut chips for the footer. Populated by Rust from the
+    /// live atlas-keymap Keymap so user rebindings appear automatically.
+    in property <[ShortcutHint]> shortcut-hints: [];
 
     // When true, the `hjkl` keys navigate (vim style). When false, only
     // arrow keys / Enter / Backspace navigate; letter keys pass through
@@ -760,7 +764,7 @@ export component AtlasWindow inherits Window {
                 free-space-text: root.free-space-text;
             }
 
-            ShortcutFooter { }
+            ShortcutFooter { hints: root.shortcut-hints; }
         }
 
         // File-operations tray — auto-shown by Rust when ops are queued.

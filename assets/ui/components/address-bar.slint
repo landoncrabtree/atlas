@@ -45,7 +45,7 @@ export component AddressBar {
             jump-ta := TouchArea {
                 width: 18px;
                 Text {
-                    text: "↵";
+                    text: "→";  // U+2192 covered by Inter + all system fonts
                     color: jump-ta.has-hover ? Theme.fg : Theme.fg-muted;
                     font-size: 13px;
                     vertical-alignment: center;

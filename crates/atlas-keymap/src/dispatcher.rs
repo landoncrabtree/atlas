@@ -73,6 +73,14 @@ impl Dispatcher {
         self.handlers.read().len()
     }
 
+    /// Return a read guard on the current keymap. Callers only need this to
+    /// render "action → chord" hints for UI affordances (e.g. the shortcut
+    /// footer). All actual lookups should go through [`Self::handle_key`] or
+    /// [`Self::dispatch_action`].
+    pub fn keymap(&self) -> parking_lot::RwLockReadGuard<'_, Keymap> {
+        self.keymap.read()
+    }
+
     /// Directly invoke the registered handler for `id`. Returns `true` if a
     /// handler was registered and has been called.
     pub fn dispatch_action(&self, id: &ActionId) -> bool {

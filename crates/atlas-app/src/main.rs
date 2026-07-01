@@ -33,7 +33,7 @@ use arc_swap::ArcSwap;
 use slint::ComponentHandle as _;
 use tracing_subscriber::EnvFilter;
 
-use atlas_keymap::{ActionId, Chord, Dispatcher, Key, Modifiers, NamedKey};
+use atlas_keymap::{ActionId, Chord, Dispatcher, Key, Modifiers, NamedKey, PrettyPlatform};
 use atlas_ui::{
     actions::{ActionSink, UiAction},
     models::{PaletteModel, StatusModel},
@@ -352,6 +352,12 @@ fn main() -> Result<()> {
             hit
         });
     }
+
+    // Populate the bottom shortcut footer from the LIVE keymap. Data-driven
+    // so user rebindings appear automatically; platform-native symbols so
+    // Mac users see `⌘⇧P` and Windows users see `Ctrl+Shift+P` for the
+    // same binding.
+    refresh_shortcut_footer(&shell, &dispatcher);
 
     // ── Quit confirmation ────────────────────────────────────────────────
     // When config.general.confirm_on_quit = true, intercept OS close events
@@ -1184,4 +1190,46 @@ fn slint_key_text_to_keymap_key(text: &str) -> Option<Key> {
         // ── Plain printable character ──────────────────────────────────
         c => Some(Key::Char(c.to_ascii_lowercase())),
     }
+}
+
+/// Actions we advertise in the bottom shortcut footer, in display order.
+///
+/// Curated by hand — not every registered action deserves a chip. Pairs are
+/// `(action_id, short_label)`; the chord is looked up live from the keymap
+/// so user rebindings appear immediately.
+const FOOTER_ACTIONS: &[(&str, &str)] = &[
+    ("fs::Rename", "Rename"),
+    ("fs::View", "View"),
+    ("fs::Edit", "Edit"),
+    ("fs::Copy", "Copy"),
+    ("fs::Move", "Move"),
+    ("fs::Mkdir", "Mkdir"),
+    ("fs::Delete", "Delete"),
+    ("goto::Anything", "Goto"),
+    ("command_palette::Toggle", "Palette"),
+    ("search::Toggle", "Search"),
+];
+
+/// Read the live keymap through the dispatcher, render each
+/// [`FOOTER_ACTIONS`] entry with the platform's native modifier symbols,
+/// and push the result to the Slint shortcut footer.
+///
+/// Called at startup and any time the keymap changes on disk. Silently
+/// skips actions that have no chord bound in either the Global or Pane
+/// context (so if a user unbinds `fs::Copy`, the chip just disappears).
+fn refresh_shortcut_footer(shell: &Arc<AppShell>, dispatcher: &Arc<Dispatcher>) {
+    let contexts = [String::from("Global"), String::from("Pane")];
+    let platform = PrettyPlatform::current();
+    let keymap = dispatcher.keymap();
+    let hints: Vec<(String, String)> = FOOTER_ACTIONS
+        .iter()
+        .filter_map(|(id, label)| {
+            let action = ActionId::new(*id);
+            let seq = keymap.chord_for_action(&action, &contexts)?;
+            Some((seq.display_pretty(platform), (*label).to_owned()))
+        })
+        .collect();
+    drop(keymap);
+    tracing::debug!(count = hints.len(), "shortcut footer: refreshed hints");
+    shell.set_shortcut_hints(hints);
 }
