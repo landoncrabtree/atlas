@@ -17,10 +17,35 @@ typography choice.
 - **License**: MIT — see [`NERD-FONTS-LICENSE`](NERD-FONTS-LICENSE).
   Copyright (c) 2014 Ryan L McIntyre.
 - **Size**: ~2.5 MB.
-- **How it's registered**: bundled via `include_bytes!` and installed
-  into Slint's font registry at startup with
-  `slint::register_font_from_memory` — see
-  `crates/atlas-app/src/main.rs::register_bundled_fonts`.
+- **How it's registered**: embedded at compile time via a top-level
+  Slint `import "../fonts/SymbolsNerdFontMono-Regular.ttf"` in
+  [`assets/ui/atlas.slint`](../ui/atlas.slint). The Slint compiler
+  bakes the raw TTF bytes into a static `&[u8]` inside `atlas-ui`'s
+  generated code and emits a `register_font_from_memory` call at
+  window-construction time — no runtime file I/O, no `include_bytes!`
+  needed in Rust. Cross-platform assurance that the bytes actually
+  round-trip into every `atlas` binary (macOS Mach-O, Linux ELF,
+  Windows PE) is asserted by
+  [`crates/atlas-ui/tests/font_bundle.rs`](../../crates/atlas-ui/tests/font_bundle.rs)
+  — a SHA-256 pin on the on-disk TTF plus a byte-scan of the release
+  binary for the family name string + TrueType table tags.
+
+## Windows escape hatch: `ui.icons.pack = "ascii"`
+
+Hosts that can't register the bundled font at runtime (extremely rare
+— every mainstream Windows/macOS/Linux Slint build ships FreeType,
+which reads the embedded bytes fine) can set
+
+```toml
+[ui.icons]
+pack = "ascii"
+```
+
+in `~/.config/atlas/config.toml` to swap every filetype icon for a
+short bracketed ASCII fallback (`[D]` folder, `[c]` source code, `[i]`
+image, `[v]` video, `[$]` shell script, etc.). See
+`crates/atlas-ui/src/theming/icons.rs` for the full mapping.
+Live-reloadable — edit the file and icons swap without restart.
 
 ## Icon-map attribution
 
