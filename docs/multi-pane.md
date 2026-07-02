@@ -24,19 +24,20 @@ The root container.  Internally represented as a binary `SplitLayout` tree.
 
 ### Pane
 
-A tile in the workspace.  Every pane has:
+A tile in the workspace. Every pane has:
 
 - **Tabs** — one or more location tabs.
-- **View mode** — Details, Grid, Gallery, Miller, or Tree.  Each pane cycles
-  its own view mode independently.
+- **View mode** — Details, Grid, Gallery, Miller, or Tree. Each pane cycles its own view mode independently.
 - **Back/forward history** — per-tab, bounded by `navigation.history_size`.
 - **Selection** — per-pane; drag from one pane to another triggers a copy/move.
+- **Location** — the pane's active tab points at an `atlas_core::Location`. Locations are either `Local(PathBuf)` or `Remote(RemoteUri, BackendKind)` — see [Remote panes](#remote-panes) below.
+- **Status bar** — each pane has its own bottom status bar showing entry counts, free-space (local) or connection chip (remote), view mode, and sort.
 
 ### Tab
 
-A location within a pane.  Each tab remembers:
+A location within a pane. Each tab remembers:
 
-- Its directory location.
+- Its `Location` (Local path or Remote URI).
 - Its own back/forward history.
 - Its sort settings (column + direction, may differ from the global default).
 - Its filter (hidden-file visibility override).
@@ -63,6 +64,8 @@ The core multi-pane bindings are:
 | Cycle tab ← | `Cmd+Shift+[` | Switch to the previous tab |
 | Cycle tab → | `Cmd+Shift+]` | Switch to the next tab |
 | Tab 1–9 | `Cmd+1`…`Cmd+9` | Jump directly to a tab by position |
+| Connect to server | `Cmd+K` (macOS) / `Ctrl+Alt+K` (Linux/Windows) | Open the Connect-to-Server modal to mount an SFTP/FTP/WebDAV/S3 backend in the focused pane |
+| Toggle dual pane | `Cmd+\` | Add a second pane, or close it if one already exists |
 
 ---
 
@@ -120,7 +123,89 @@ Achieved by:
   directory listing → **copy** operation (F5).
 - Hold **Alt** while dragging → **move** operation (F6).
 
-Progress is shown in the ops panel (bottom of the window).
+Progress shows in the operations panel (bottom of the window). Operations that
+take longer than ~250 ms also raise the operation-progress modal with Cancel /
+Background buttons; hitting Background demotes the op back to the panel while
+it keeps running.
+
+Cross-pane copies work across backends too: dragging from a local pane into a
+mounted SFTP/S3/WebDAV pane routes through `atlas_ops::execute_op`, which
+picks the right path (native rename, spawn_blocking primitive, or
+`atlas_remote::stream::stream_copy`) based on the source/destination
+`BackendKind`.
+
+---
+
+## Remote panes
+
+Any pane can hold a remote location instead of a local path. Open the
+Connect-to-Server modal with **Cmd+K** (⌥⌃K on Linux/Windows) or the palette
+entry "Connect to Server". Supported backends:
+
+| Backend | Scheme | Underlying crate |
+|---|---|---|
+| SFTP | `sftp://user@host[:port]/path` | `russh` + `russh-sftp` |
+| FTP  | `ftp://user@host[:port]/path`  | `suppaftp` |
+| WebDAV | `webdav://user@host[:port]/path` | `reqwest` + `quick-xml` |
+| S3   | `s3://bucket[/prefix]` | `object_store` (Apache Arrow) |
+
+The modal parses either the individual form fields (host / port / path /
+username / password / SSH key / IAM keys) or a free-form connection string.
+Hitting **Save to keychain** persists the entry to `~/.config/atlas/servers.toml`
+with a `credential_ref` pointing at the OS keychain — the actual secret never
+touches the config file. Saved servers appear:
+
+- In the connect modal's "Saved servers" list on next open.
+- In the Cmd+P "Go to Anything" palette alongside local paths.
+
+The pane's status bar renders a connection chip while remote:
+
+- 🟢 **connected** — the backend client is healthy.
+- 🟡 **reconnecting…** — the retry envelope in `atlas_remote::retry` is
+  backing off between attempts on a transient network failure.
+- 🔴 **disconnected** — auth failed, TLS/host key rejected, or all retries
+  exhausted.
+
+### TOFU (trust-on-first-use) for SSH host keys
+
+The first time you SFTP to a host whose key is not in
+`~/.config/atlas/known_hosts`, Atlas raises an accent-blue banner in the
+Connect modal showing the offered fingerprint. **Trust always** stores the
+key OpenSSH-compatibly and the pane mounts. If the fingerprint later changes,
+Atlas raises a red-warning banner and refuses the connection until you
+explicitly re-accept the new key.
+
+### Connection pool + retry
+
+Multiple panes / tabs pointing at the same host share a single backend client
+via `atlas_remote::pool::ConnectionPool`. Idle clients evict after a TTL so a
+quick navigate-back reuses the still-authenticated session, but a truly
+dormant tab does not hold a socket open indefinitely.
+
+Every network round-trip is wrapped by `atlas_remote::retry::RetryPolicy` —
+transient `Network` errors retry with exponential backoff + jitter; auth /
+not-found / already-exists errors propagate immediately.
+
+---
+
+## Cross-pane scroll preservation
+
+Scrolling one pane never scrolls the other. Under the hood this is preserved
+by binding each `panes-*` Slint property to a persistent `Rc<VecModel>` **once**
+at startup and mutating rows in place on subsequent pushes (see
+`OuterPaneModels::sync_vec_model` in `crates/atlas-ui/src/shell.rs`). Replacing
+the outer model would invalidate the `ListView`'s scroll offset, so the shell
+never calls `set_panes_*(new VecModel::from(…))` after the initial bind.
+
+## Chord routing across modals and text inputs
+
+Cmd+A / Cmd+C / Cmd+V and other pane chords are routed through a single
+keymap-bypass gate in `atlas.slint`. When any modal is visible **or** any
+text input owns focus (the address bar, palette input, bulk-rename inputs,
+connect-modal fields), the dispatcher restricts to the `Global` context so
+`Pane` bindings return `false` and the key falls through to the input's
+native edit behaviour. See `docs/keymap.md` and
+`.github/instructions/ui-composition.instructions.md` for details.
 
 ---
 
@@ -178,6 +263,17 @@ show_hidden = true
 ```toml
 [search]
 fuzzy_max_results = 100   # default: 50
+```
+
+### Tune search-panel responsiveness
+
+Atlas debounces the search-panel query, requires a minimum length before it hits the index, and caps the number of rendered rows to keep the ListView responsive on very common queries.
+
+```toml
+[search]
+min_query_length    = 2     # default: 2 — chars before the query fires
+max_visible_results = 100   # default: 100 — hard cap on rendered rows
+debounce_ms         = 150   # default: 150 — quiet time before submit
 ```
 
 ### Tune thumbnail generation

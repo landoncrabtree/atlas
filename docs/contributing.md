@@ -77,8 +77,12 @@ Performance is a feature — design for streaming and async; don't block the UI 
 ## Tests
 
 - Use `tempfile::TempDir` for filesystem tests; never read or write outside the workspace.
-- Tests must not depend on each other or on global state. Use `serial_test` if you must mutate env vars.
+- Tests must not depend on each other or on global state. Use `serial_test` if you must mutate env vars (`ATLAS_CONFIG_DIR`, `ATLAS_THEMES_DIR`).
 - Integration tests live in `crates/<crate>/tests/`; unit tests live in `#[cfg(test)] mod tests` blocks.
+- Remote integration tests spawn Python mock servers via `crates/atlas-remote/tests/common/mock.rs` (see `tools/mock-servers/`). Skip them all with `MOCK_SERVERS_SKIP=1 cargo test --workspace` when offline or CI-restricted.
+- If you edit `crates/atlas-keymap/src/defaults.rs`, regenerate the per-OS TOMLs under `assets/keymaps/` with `cargo test -p atlas-keymap regen_default_keymap -- --ignored`. A companion test fails if the checked-in files drift.
+
+See [`docs/developer-setup.md`](developer-setup.md) for the full test + mock-server + MCP tooling walkthrough.
 
 ## UI changes (`.slint`)
 
@@ -86,17 +90,27 @@ Performance is a feature — design for streaming and async; don't block the UI 
 - Use the `Theme` global for colors, spacing, fonts. No hard-coded colors.
 - Rust ↔ Slint state changes go through `AppShell` adapter methods in `atlas-ui`.
 - Every callback dispatches a typed `UiAction`. Add new variants — don't bypass.
+- New modals, panels, view modes, or context menus must follow the canonical flow in [`.github/instructions/ui-composition.instructions.md`](../.github/instructions/ui-composition.instructions.md) — read that first.
+- Live-verify a UI change with the `computer-use-*` MCP tools before shipping. See `docs/developer-setup.md`.
 
 ## Documentation
 
 Source-of-truth docs:
 
 - `README.md` — product-facing: what Atlas is, install, features, quick start.
-- `docs/developer-setup.md` — toolchain, prerequisites, daily commands.
+- `docs/developer-setup.md` — toolchain, prerequisites, daily commands, mock servers, MCP tooling.
 - `docs/contributing.md` — this file.
+- `docs/keymap.md` — full default keymap reference.
+- `docs/multi-pane.md` — user guide to the tiling workspace, remote panes, chord routing.
 - `.github/copilot-instructions.md` — always-on conventions for Copilot and contributors.
 - `.github/instructions/architecture.instructions.md` — crate layout, process model, threading, storage (deep dive).
 - `.github/instructions/performance.instructions.md` — performance goals, principles, anti-patterns, benchmark methodology.
+- `.github/instructions/design.instructions.md` — Apple-HIG-inspired UI/UX tokens and component patterns.
+- `.github/instructions/multi-pane-refactor.instructions.md` — N-pane workspace design contract.
+- `.github/instructions/ui-composition.instructions.md` — canonical modal/panel/keybind/backend flow when adding a new UI surface.
+- `.github/instructions/keybind-authoring.instructions.md` — end-to-end keybind authoring workflow.
+- `.github/instructions/remote-backend-authoring.instructions.md` — end-to-end remote-backend authoring workflow.
+- `.github/skills/*/SKILL.md` — cloud-agent skill files (see [add-skills docs](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/add-skills)).
 
 Update the relevant doc with your change. Keep `README.md` short and product-focused.
 
