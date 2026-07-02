@@ -18,7 +18,7 @@
 pub(crate) mod common;
 pub(crate) mod ftp;
 pub(crate) mod s3;
-pub(crate) mod sftp;
+pub mod sftp;
 pub(crate) mod webdav;
 
 use std::path::{Path, PathBuf};
@@ -166,6 +166,54 @@ impl RemoteLocationViewModel {
             Ok(built)
         })?;
         Ok(Self::from_client(uri, kind, client, opts))
+    }
+
+    /// SFTP-specific opening path that accepts caller-supplied
+    /// [`crate::vm::sftp::SftpOptions`]. This is the seam used by:
+    ///
+    /// * `ConnectController::run_connect` — attaches an interactive
+    ///   [`crate::host_key::HostKeyResolver`] so unknown host keys
+    ///   trigger the modal TOFU prompt.
+    /// * Integration tests — pass
+    ///   [`crate::host_key::KnownHostsMode::AutoTrust`] against the
+    ///   ephemeral paramiko mock server.
+    ///
+    /// The connection is inserted into the same process-wide pool the
+    /// plain [`Self::open_live`] uses, so later cross-backend ops queue
+    /// hits reuse the same handshake for free. Because the pool key
+    /// only fingerprints `(kind, host, port, user, credentials)` — not
+    /// options — a later plain `open_live` for the same target hits the
+    /// already-authorised entry and never invokes the resolver again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::backend::BackendError`] on ill-shaped URI or
+    /// credentials. Handshake failures surface asynchronously via
+    /// [`atlas_fs::ViewModelEvent::Error`], same as `open_live`.
+    pub fn open_live_sftp_with_options(
+        uri: RemoteUri,
+        credentials: crate::backend::Credentials,
+        opts: OpenOptions,
+        sftp_opts: crate::vm::sftp::SftpOptions,
+    ) -> Result<Arc<Self>, crate::backend::BackendError> {
+        let pool = crate::pool::global();
+        let key = crate::pool::PoolKey::new(
+            BackendKind::Sftp,
+            uri.host.clone().unwrap_or_default(),
+            uri.port,
+            uri.username.clone(),
+            &credentials,
+        );
+        let client = pool.get_or_open(&key, || {
+            let built: Arc<dyn BackendClient> =
+                Arc::new(crate::vm::sftp::SftpBackend::with_options(
+                    &uri,
+                    credentials.clone(),
+                    sftp_opts.clone(),
+                )?);
+            Ok(built)
+        })?;
+        Ok(Self::from_client(uri, BackendKind::Sftp, client, opts))
     }
 
     /// Construct a live view model around an already-built backend

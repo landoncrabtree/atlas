@@ -24,12 +24,24 @@
 //! * Anonymous — issues a "none" auth attempt; only succeeds against
 //!   servers that permit it.
 //!
-//! # Known-hosts strategy
+//! # Host-key trust (TOFU)
 //!
-//! Production always rejects unknown host keys. Setting
-//! `ATLAS_SFTP_KNOWN_HOSTS_STRATEGY=accept` in the environment
-//! disables that check — for integration tests against ephemeral
-//! mock servers only. Never set in production.
+//! Host-key handling is delegated to [`crate::known_hosts::KnownHosts`]
+//! and [`crate::host_key::HostKeyResolver`]. The [`SftpBackend`] carries a
+//! [`KnownHostsMode`] discriminator:
+//!
+//! * `Strict` — reject any host key not already in the store. No prompt.
+//! * `Prompt` — default. Consult the store; on cache miss ask the resolver
+//!   (falling back to reject when no resolver is attached).
+//! * `AutoTrust` — accept every host key. Integration-test opt-in only;
+//!   selected via [`SftpBackend::with_options`] from
+//!   `crates/atlas-remote/tests/common/mock.rs`.
+//!
+//! The legacy `ATLAS_SFTP_KNOWN_HOSTS_STRATEGY=accept` env var also forces
+//! [`KnownHostsMode::AutoTrust`]-equivalent behaviour to keep the pre-2.6
+//! integration tests passing until they migrate to the Rust-level test
+//! seam. Slated for removal in the follow-up commit that rips this backdoor
+//! out (see the commit message trail).
 
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
@@ -44,23 +56,51 @@ use tokio::sync::OnceCell;
 
 use crate::backend::{BackendError, Credentials};
 use crate::error::{RemoteError, RemoteErrorKind, RemoteMetadata, RemoteMode, RemoteResult};
+use crate::host_key::{HostKeyDecision, HostKeyRequest, HostKeyResolver, KnownHostsMode};
+use crate::known_hosts::{fingerprint, HostKeyStatus, KnownHosts};
 
 use super::common::{join_path, normalized_list_path, BackendClient, RemoteEntry};
 
-/// Whether the process is in "accept-unknown-host-key" test mode.
-fn accept_any_host_key() -> bool {
+/// Legacy env var backdoor — kept alive one release cycle after
+/// Phase 2.6 lands so any integration script still relying on it
+/// keeps working. Slated for removal in the same series
+/// (`refactor(remote): remove ATLAS_SFTP_KNOWN_HOSTS_STRATEGY env-var
+/// backdoor`).
+fn legacy_env_accept_any() -> bool {
     matches!(
         std::env::var("ATLAS_SFTP_KNOWN_HOSTS_STRATEGY").as_deref(),
         Ok("accept")
     )
 }
 
-/// Server-key handler for the russh client. When the accept-any env
-/// var is set we accept every host key; otherwise we reject any key
-/// we haven't been told about (a full known-hosts implementation is
-/// a later phase — for now, unknown = reject).
+/// Per-connection options for the SFTP backend.
+///
+/// Callers who need the default production behaviour (strict +
+/// atlas-known-hosts + resolver-driven TOFU) can use [`SftpBackend::new`];
+/// tests and specialised UI flows use [`SftpBackend::with_options`] to
+/// inject a custom [`KnownHostsMode`] or attach a [`HostKeyResolver`].
+#[derive(Clone, Default)]
+pub struct SftpOptions {
+    /// Trust strategy for the SSH handshake. Defaults to
+    /// [`KnownHostsMode::Prompt`].
+    pub known_hosts_mode: KnownHostsMode,
+    /// Optional resolver for interactive TOFU prompts. Required when
+    /// `known_hosts_mode = Prompt` and the server is not already trusted;
+    /// production callers attach one supplied by `ConnectController`.
+    pub resolver: Option<HostKeyResolver>,
+}
+
+/// Server-key handler for the russh client.
+///
+/// The handler consults [`crate::known_hosts::KnownHosts`] on every
+/// handshake and — depending on the configured [`KnownHostsMode`] and
+/// whether a [`HostKeyResolver`] is attached — either accepts silently,
+/// prompts the user, or rejects.
 struct HostKeyHandler {
-    accept_any: bool,
+    host: String,
+    port: u16,
+    mode: KnownHostsMode,
+    resolver: Option<HostKeyResolver>,
 }
 
 #[async_trait]
@@ -69,9 +109,112 @@ impl russh::client::Handler for HostKeyHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &key::PublicKey,
+        server_public_key: &key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(self.accept_any)
+        // Legacy env var: unconditional accept. Slated for removal — see
+        // the module docstring.
+        if legacy_env_accept_any() {
+            tracing::debug!(
+                host = %self.host,
+                "sftp: legacy env-var backdoor accepted host key",
+            );
+            return Ok(true);
+        }
+        if matches!(self.mode, KnownHostsMode::AutoTrust) {
+            tracing::debug!(
+                host = %self.host,
+                "sftp: AutoTrust mode accepted host key",
+            );
+            return Ok(true);
+        }
+
+        let store = match KnownHosts::load() {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::warn!(error = %err, "sftp: known_hosts load failed; treating as empty");
+                // Fall back to an "empty" store via load_from_path on a
+                // definitely-missing path. Any I/O failure at this point
+                // means the atlas config dir is unreachable — we still
+                // want to give the resolver a chance to prompt.
+                let missing = std::path::PathBuf::from("/nonexistent");
+                KnownHosts::load_from_path(&missing).unwrap_or_else(|_| {
+                    // Both paths failed; fall through with an empty
+                    // in-memory store constructed via the same route.
+                    KnownHosts::load_from_path(&missing)
+                        .expect("load_from_path on missing path yields empty store")
+                })
+            }
+        };
+        let status = store.check(&self.host, self.port, server_public_key);
+        let offered_fp = fingerprint(server_public_key);
+        tracing::debug!(
+            host = %self.host,
+            port = self.port,
+            offered = %offered_fp,
+            status = ?status,
+            "sftp: host-key check",
+        );
+
+        match &status {
+            HostKeyStatus::Trusted => Ok(true),
+            HostKeyStatus::Unknown | HostKeyStatus::Mismatch { .. } => {
+                if matches!(self.mode, KnownHostsMode::Strict) {
+                    tracing::warn!(
+                        host = %self.host,
+                        "sftp: rejecting host key (Strict mode)",
+                    );
+                    return Ok(false);
+                }
+                let Some(resolver) = self.resolver.as_ref() else {
+                    tracing::warn!(
+                        host = %self.host,
+                        "sftp: no resolver attached; rejecting untrusted host key",
+                    );
+                    return Ok(false);
+                };
+                let request = HostKeyRequest {
+                    host: self.host.clone(),
+                    port: self.port,
+                    offered_fingerprint: offered_fp,
+                    current_status: status.clone(),
+                };
+                let decision = resolver.resolve(request).await;
+                match decision {
+                    HostKeyDecision::TrustOnce => Ok(true),
+                    HostKeyDecision::TrustAlways => {
+                        // Persist the accepted key. Any failure here is
+                        // logged but does not block the connection —
+                        // the user already said "trust always" and it
+                        // would be jarring to error out on a filesystem
+                        // hiccup after the accept.
+                        match KnownHosts::load() {
+                            Ok(mut store) => {
+                                if let Err(err) =
+                                    store.add(&self.host, self.port, server_public_key)
+                                {
+                                    tracing::warn!(error = %err, "sftp: known_hosts add failed");
+                                } else if let Err(err) = store.save() {
+                                    tracing::warn!(error = %err, "sftp: known_hosts save failed");
+                                } else {
+                                    tracing::info!(
+                                        host = %self.host,
+                                        "sftp: host key persisted to known_hosts",
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!(error = %err, "sftp: could not reload known_hosts for save");
+                            }
+                        }
+                        Ok(true)
+                    }
+                    HostKeyDecision::Cancel => {
+                        tracing::info!(host = %self.host, "sftp: user cancelled host-key prompt");
+                        Ok(false)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -95,6 +238,8 @@ pub(crate) struct SftpBackend {
     credentials: Credentials,
     /// Base path — normalised: no leading `/`, may end with `/`.
     root: String,
+    /// Host-key trust configuration used by [`HostKeyHandler`].
+    options: SftpOptions,
     live: OnceCell<Live>,
 }
 
@@ -102,6 +247,18 @@ impl SftpBackend {
     /// Validate the URI + credentials shape. Returns immediately;
     /// no network I/O happens here.
     pub(crate) fn new(uri: &RemoteUri, credentials: Credentials) -> Result<Self, BackendError> {
+        Self::with_options(uri, credentials, SftpOptions::default())
+    }
+
+    /// Same as [`Self::new`] but accepts caller-supplied trust options.
+    /// This is the seam integration tests use to pass
+    /// [`KnownHostsMode::AutoTrust`], and the connect controller uses to
+    /// attach an interactive [`HostKeyResolver`].
+    pub(crate) fn with_options(
+        uri: &RemoteUri,
+        credentials: Credentials,
+        options: SftpOptions,
+    ) -> Result<Self, BackendError> {
         let host = uri
             .host
             .as_deref()
@@ -137,6 +294,7 @@ impl SftpBackend {
             user: user.to_owned(),
             credentials,
             root: normalized_list_path(&uri.path),
+            options,
             live: OnceCell::new(),
         })
     }
@@ -151,7 +309,10 @@ impl SftpBackend {
     async fn connect(&self) -> RemoteResult<Live> {
         let config = Arc::new(russh::client::Config::default());
         let handler = HostKeyHandler {
-            accept_any: accept_any_host_key(),
+            host: self.host.clone(),
+            port: self.port,
+            mode: self.options.known_hosts_mode,
+            resolver: self.options.resolver.clone(),
         };
         let mut session = russh::client::connect(config, (self.host.as_str(), self.port), handler)
             .await

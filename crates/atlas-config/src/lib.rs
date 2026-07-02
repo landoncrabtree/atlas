@@ -30,7 +30,7 @@ pub use schema::{
 pub use load::{load, load_from_file, load_from_str};
 pub use paths::{
     config_dir, config_file_path, ensure_config_dir, keymap_file_path, keymaps_dir,
-    servers_file_path, themes_dir,
+    known_hosts_file_path, servers_file_path, themes_dir,
 };
 pub use save::{save, save_to_string, skeleton_toml};
 pub use servers::{

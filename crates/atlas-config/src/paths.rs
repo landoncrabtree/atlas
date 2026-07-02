@@ -55,6 +55,14 @@ pub fn servers_file_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("servers.toml"))
 }
 
+/// Return the path to `known_hosts`, the persistent OpenSSH-compatible
+/// store of trusted SSH host keys. Consumed by `atlas_remote`'s
+/// `known_hosts` module. Missing on first launch; created after the
+/// first "Trust always" decision in the SFTP TOFU prompt.
+pub fn known_hosts_file_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("known_hosts"))
+}
+
 /// Return the path to the primary keymap file (`keymaps/default.toml`).
 ///
 /// User overrides may add additional keymap files under `keymaps/`; the loader

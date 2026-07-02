@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 atlas-core.workspace = true
+atlas-config.workspace = true
 atlas-fs.workspace = true
 
 anyhow.workspace = true
@@ -56,6 +57,14 @@ keyring = { version = "3", default-features = false, features = [
     "sync-secret-service",
 ] }
 rand = "0.8"
+
+# SSH host-key store (known_hosts) — SHA-256 for fingerprints, HMAC-SHA1 for
+# OpenSSH hashed-hostname parsing. Pulled in as direct deps because they are
+# not already in the workspace dep table; both are widely used, small, and
+# already transitively present via russh/reqwest.
+sha1 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -43,6 +43,8 @@
 
 pub mod backend;
 pub mod error;
+pub mod host_key;
+pub mod known_hosts;
 pub mod pool;
 pub mod retry;
 pub mod secrets;
@@ -52,6 +54,8 @@ pub mod walk;
 
 pub use backend::{open, BackendError, Credentials};
 pub use error::{RemoteError, RemoteErrorKind, RemoteMetadata, RemoteMode};
+pub use host_key::{HostKeyDecision, HostKeyRequest, HostKeyResolver, KnownHostsMode};
+pub use known_hosts::{HostKeyStatus, KnownHosts, KnownHostsError};
 pub use pool::{
     ConnectionPool, PoolConfig, PoolKey, PoolStats, DEFAULT_IDLE_TTL, DEFAULT_MAX_CONNECTIONS,
 };
