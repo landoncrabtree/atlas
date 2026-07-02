@@ -481,6 +481,10 @@ mod tests {
 
     #[test]
     fn actions_source_keybinding_subtitle() {
+        // Build an explicit keymap so the expected chord doesn't depend
+        // on the current OS's defaults table (macOS binds
+        // `shift-cmd-p` → Toggle; Linux/Windows bind `ctrl-shift-p`).
+        use atlas_keymap::{Binding, ChordSequence};
         let mut registry = ActionRegistry::new();
         registry.register(ActionMeta {
             id: ActionId::new("command_palette::Toggle"),
@@ -489,7 +493,18 @@ mod tests {
             contexts: vec![String::from("Global")],
         });
 
-        let source = ActionsSource::new(Arc::new(registry), Arc::new(Keymap::with_defaults()));
+        let chord = ChordSequence::from_str("shift-cmd-p").unwrap();
+        let mut km = Keymap::empty();
+        km.add_layer(
+            "default",
+            vec![Binding::new(
+                chord.clone(),
+                "Global",
+                ActionId::new("command_palette::Toggle"),
+            )],
+        );
+
+        let source = ActionsSource::new(Arc::new(registry), Arc::new(km));
         let mut sink = VecSink(Vec::new());
         source.populate(&mut sink);
 

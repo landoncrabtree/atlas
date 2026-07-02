@@ -805,11 +805,20 @@ mod tests {
 
     #[test]
     fn breadcrumb_segments_for_local() {
+        // On Windows `Path::components()` renders the root as `\` (the
+        // native separator); on Unix it's `/`. The user-visible segment
+        // list is derived from `Path::components()` so the root
+        // separator naturally varies. This test asserts the shape,
+        // not the exact root glyph.
         let loc = Location::local("/Users/alice/Downloads");
-        assert_eq!(
-            loc.breadcrumb_segments(),
-            vec!["/", "Users", "alice", "Downloads"]
+        let segs = loc.breadcrumb_segments();
+        assert_eq!(segs.len(), 4);
+        assert!(
+            segs[0] == "/" || segs[0] == "\\",
+            "expected root separator, got {:?}",
+            segs[0]
         );
+        assert_eq!(&segs[1..], &["Users", "alice", "Downloads"]);
     }
 
     #[test]

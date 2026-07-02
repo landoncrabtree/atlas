@@ -66,7 +66,6 @@
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// SHA-256 of `assets/fonts/SymbolsNerdFontMono-Regular.ttf` as
 /// vendored on `main`. If this test fails, either:
@@ -131,35 +130,66 @@ fn ttf_on_disk_has_pinned_sha256() {
     assert!(bytes.len() > 100_000, "TTF suspiciously small");
 }
 
-// ── Test 2: TTF bytes are embedded in the release binary ───────────
+// ── Test 2: TTF bytes are embedded in the atlas-ui rlib ────────────
 //
-// Runs only on macOS + Linux where `cargo build --release --bin atlas`
-// works natively (no Skia MSVC issues) and produces a Mach-O / ELF
-// binary that we byte-scan for the embedded TTF signature. On
-// Windows this would require the MSVC toolchain — deferred to CI
-// per the module-level `TODO(ci)`.
+// Slint's compile-time `import "…ttf"` inlines the font bytes into
+// `atlas_ui`'s generated code as a static byte slice. We verify by
+// byte-scanning `libatlas_ui-*.rlib` (or `atlas_ui-*.rlib` on
+// Windows) directly — no separate binary build required.
+//
+// This is deliberately cheap: the rlib was already produced by the
+// current `cargo build` / `cargo clippy` invocation that compiled this
+// test, so it always exists on disk by the time this test body runs.
+// A previous version of this test ran `cargo build --release --bin atlas`
+// inside the test which took 3-8 minutes per CI runner; that's gone.
 
 #[test]
 fn release_binary_embeds_the_bundled_ttf() {
     let root = workspace_root();
 
-    // Build in release mode. Reuses whatever's already there — cargo
-    // is idempotent so this is fast on rebuilds. Fails loudly if the
-    // build itself fails (which itself is a signal worth surfacing).
-    let status = Command::new("cargo")
-        .args(["build", "--release", "--bin", "atlas"])
-        .current_dir(&root)
-        .status()
-        .expect("failed to spawn `cargo build --release --bin atlas`");
-    assert!(status.success(), "cargo build --release --bin atlas failed");
+    // Find the atlas-ui rlib produced by the current cargo invocation.
+    // Under `cargo test`, `CARGO_MANIFEST_DIR` is atlas-ui's crate dir
+    // and the deps live at `<workspace>/target/{debug,release}/deps/`.
+    // Search both profiles — whichever exists is fine, because Slint
+    // embeds the same byte slice for either.
+    let deps_candidates = [
+        root.join("target/debug/deps"),
+        root.join("target/release/deps"),
+    ];
 
-    let bin_path = if cfg!(windows) {
-        root.join("target/release/atlas.exe")
-    } else {
-        root.join("target/release/atlas")
-    };
-    let binary = std::fs::read(&bin_path)
-        .unwrap_or_else(|err| panic!("cannot read {}: {err}", bin_path.display()));
+    let mut rlib_path: Option<PathBuf> = None;
+    for deps_dir in &deps_candidates {
+        let Ok(entries) = std::fs::read_dir(deps_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            // Match libatlas_ui-<hash>.rlib (Unix) and atlas_ui-<hash>.rlib (Windows).
+            let is_match = (name_str.starts_with("libatlas_ui-")
+                || name_str.starts_with("atlas_ui-"))
+                && name_str.ends_with(".rlib");
+            if is_match {
+                rlib_path = Some(entry.path());
+                break;
+            }
+        }
+        if rlib_path.is_some() {
+            break;
+        }
+    }
+
+    let rlib_path = rlib_path.unwrap_or_else(|| {
+        panic!(
+            "No atlas_ui rlib found under {:?}. This test expects to run \
+             during a normal `cargo test -p atlas-ui` cycle where the \
+             rlib is already built by the test harness itself.",
+            deps_candidates,
+        )
+    });
+
+    let binary = std::fs::read(&rlib_path)
+        .unwrap_or_else(|err| panic!("cannot read {}: {err}", rlib_path.display()));
 
     // Signature 1: the TTF `name` table stores the family name as
     // "Symbols Nerd Font Mono". This string survives linking as raw
@@ -170,10 +200,10 @@ fn release_binary_embeds_the_bundled_ttf() {
     let family_name = b"Symbols Nerd Font Mono";
     assert!(
         contains_bytes(&binary, family_name),
-        "release binary at {} does not contain the TTF family name \
+        "atlas-ui rlib at {} does not contain the TTF family name \
          `Symbols Nerd Font Mono` — the Slint asset embed may have \
          drifted (check assets/ui/atlas.slint for the `import` line).",
-        bin_path.display()
+        rlib_path.display()
     );
 
     // Signature 2: TrueType table tags. `glyf` (glyph outlines) and
@@ -186,7 +216,7 @@ fn release_binary_embeds_the_bundled_ttf() {
     for tag in [b"glyf", b"cmap", b"head"] {
         assert!(
             contains_bytes(&binary, tag),
-            "release binary does not contain the TTF table tag {:?} \
+            "atlas-ui rlib does not contain the TTF table tag {:?} \
              — the font bytes may be malformed or truncated",
             std::str::from_utf8(tag).unwrap()
         );

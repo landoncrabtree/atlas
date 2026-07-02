@@ -1,13 +1,25 @@
 //! macOS LaunchAgent installation helpers for atlas-indexd.
+//!
+//! The bulk of this module is macOS-only (`launchctl(1)` + LaunchAgent
+//! plists). On other platforms every public entry point returns an
+//! `anyhow` error, so the module-level `use` statements that feed the
+//! macOS impls would otherwise be dead code — hence the `#[cfg]`
+//! gating below.
 
 use std::path::PathBuf;
+
+use anyhow::{bail, Result};
+
+#[cfg(target_os = "macos")]
+use crate::paths;
+#[cfg(target_os = "macos")]
+use anyhow::Context;
+#[cfg(target_os = "macos")]
+use directories::BaseDirs;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
-use directories::BaseDirs;
-
-use crate::paths;
-
+#[cfg(target_os = "macos")]
 const LABEL: &str = "dev.atlas.atlas-indexd";
 
 /// Install and load the atlas-indexd LaunchAgent.

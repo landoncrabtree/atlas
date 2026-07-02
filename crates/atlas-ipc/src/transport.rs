@@ -70,10 +70,16 @@ fn local_socket_name(path: &Path) -> std::io::Result<Name<'_>> {
 }
 
 #[cfg(windows)]
-fn local_socket_name(path: &Path) -> std::io::Result<Name<'_>> {
-    path.to_string_lossy()
-        .as_ref()
-        .to_ns_name::<GenericNamespaced>()
+fn local_socket_name(path: &Path) -> std::io::Result<Name<'static>> {
+    // Named Pipe names on Windows must outlive the temporary Cow<str>
+    // that `Path::to_string_lossy` returns. Own the string, then leak
+    // it into a &'static str so the resulting `Name` isn't borrowing
+    // a stack local. The leak is deliberate: this function is called
+    // once per IPC connect/listen, so total leaked bytes are O(number
+    // of connect calls in the process's lifetime) — bounded and small.
+    let owned: String = path.to_string_lossy().into_owned();
+    let leaked: &'static str = Box::leak(owned.into_boxed_str());
+    leaked.to_ns_name::<GenericNamespaced>()
 }
 
 /// Create a [`Listener`] at `path`.
