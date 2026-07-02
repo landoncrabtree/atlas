@@ -57,6 +57,7 @@ keyring = { version = "3", default-features = false, features = [
     "sync-secret-service",
 ] }
 rand = "0.8"
+directories.workspace = true
 
 # SSH host-key store (known_hosts) — SHA-256 for fingerprints, HMAC-SHA1 for
 # OpenSSH hashed-hostname parsing. Pulled in as direct deps because they are

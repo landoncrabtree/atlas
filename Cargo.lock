@@ -714,6 +714,7 @@ dependencies = [
  "bytes",
  "chrono",
  "crossbeam-channel",
+ "directories",
  "futures",
  "hmac",
  "keyring",
