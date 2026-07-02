@@ -250,6 +250,7 @@ export component ConnectServerModal inherits Rectangle {
                                 font-size: Theme.font-size;
                                 vertical-alignment: center;
                                 single-line: true;
+                                horizontal-stretch: 1;
                                 edited => { root.connection-string-changed(self.text); }
                                 accepted => {
                                     if !root.connecting { root.connect(); }
@@ -310,6 +311,7 @@ export component ConnectServerModal inherits Rectangle {
                                     font-size: Theme.font-size;
                                     vertical-alignment: center;
                                     single-line: true;
+                                    horizontal-stretch: 1;
                                     edited => { root.host-changed(self.text); }
                                     changed has-focus => { host-focus = self.has-focus; }
                                     key-pressed(event) => {
@@ -355,6 +357,7 @@ export component ConnectServerModal inherits Rectangle {
                                     font-size: Theme.font-size;
                                     vertical-alignment: center;
                                     single-line: true;
+                                    horizontal-stretch: 1;
                                     edited => { root.port-changed(self.text); }
                                     changed has-focus => { port-focus = self.has-focus; }
                                     key-pressed(event) => {
@@ -408,6 +411,7 @@ export component ConnectServerModal inherits Rectangle {
                                 font-size: Theme.font-size;
                                 vertical-alignment: center;
                                 single-line: true;
+                                horizontal-stretch: 1;
                                 edited => { root.path-changed(self.text); }
                                 changed has-focus => { path-focus = self.has-focus; }
                                 key-pressed(event) => {
@@ -460,6 +464,7 @@ export component ConnectServerModal inherits Rectangle {
                                 font-size: Theme.font-size;
                                 vertical-alignment: center;
                                 single-line: true;
+                                horizontal-stretch: 1;
                                 edited => { root.s3-endpoint-changed(self.text); }
                                 changed has-focus => { s3-endpoint-focus = self.has-focus; }
                                 key-pressed(event) => {
@@ -621,6 +626,7 @@ export component ConnectServerModal inherits Rectangle {
                                 font-size: Theme.font-size;
                                 vertical-alignment: center;
                                 single-line: true;
+                                horizontal-stretch: 1;
                                 edited => { root.username-changed(self.text); }
                                 changed has-focus => { username-focus = self.has-focus; }
                                 key-pressed(event) => {
@@ -665,6 +671,7 @@ export component ConnectServerModal inherits Rectangle {
                                 font-size: Theme.font-size;
                                 vertical-alignment: center;
                                 single-line: true;
+                                horizontal-stretch: 1;
                                 input-type: InputType.password;
                                 edited => { root.password-changed(self.text); }
                                 changed has-focus => { password-focus = self.has-focus; }
@@ -723,6 +730,7 @@ export component ConnectServerModal inherits Rectangle {
                                     font-size: Theme.font-size;
                                     vertical-alignment: center;
                                     single-line: true;
+                                    horizontal-stretch: 1;
                                     edited => { root.ssh-key-path-changed(self.text); }
                                     changed has-focus => { ssh-key-focus = self.has-focus; }
                                     key-pressed(event) => {
@@ -799,6 +807,7 @@ export component ConnectServerModal inherits Rectangle {
                                     font-size: Theme.font-size;
                                     vertical-alignment: center;
                                     single-line: true;
+                                    horizontal-stretch: 1;
                                     edited => { root.iam-access-key-changed(self.text); }
                                     changed has-focus => { iam-access-focus = self.has-focus; }
                                 }
@@ -833,6 +842,7 @@ export component ConnectServerModal inherits Rectangle {
                                     font-size: Theme.font-size;
                                     vertical-alignment: center;
                                     single-line: true;
+                                    horizontal-stretch: 1;
                                     input-type: InputType.password;
                                     edited => { root.iam-secret-key-changed(self.text); }
                                     changed has-focus => { iam-secret-focus = self.has-focus; }
@@ -868,6 +878,7 @@ export component ConnectServerModal inherits Rectangle {
                                     font-size: Theme.font-size;
                                     vertical-alignment: center;
                                     single-line: true;
+                                    horizontal-stretch: 1;
                                     edited => { root.iam-session-token-changed(self.text); }
                                     changed has-focus => { iam-session-focus = self.has-focus; }
                                 }
@@ -933,6 +944,7 @@ export component ConnectServerModal inherits Rectangle {
                                 font-size: Theme.font-size;
                                 vertical-alignment: center;
                                 single-line: true;
+                                horizontal-stretch: 1;
                                 edited => { root.label-changed(self.text); }
                                 changed has-focus => { label-focus = self.has-focus; }
                                 key-pressed(event) => {
