@@ -188,7 +188,8 @@ impl BulkRenameController {
 
         let rename_count = to_rename.len();
         for (path, new_name) in to_rename {
-            self.ops.submit_rename(path, new_name);
+            self.ops
+                .submit_rename(atlas_core::Location::local(path), new_name);
         }
 
         self.actions

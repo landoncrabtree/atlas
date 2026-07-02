@@ -46,6 +46,7 @@ pub mod error;
 pub mod secrets;
 pub mod stream;
 pub mod vm;
+pub mod walk;
 
 pub use backend::{open, BackendError, Credentials};
 pub use error::{RemoteError, RemoteErrorKind, RemoteMetadata, RemoteMode};
@@ -54,3 +55,4 @@ pub use secrets::{
 };
 pub use stream::{stream_copy, StreamProgress, DEFAULT_CHUNK_BYTES};
 pub use vm::RemoteLocationViewModel;
+pub use walk::{enumerate_recursive, WalkEntry};

@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use atlas_core::Location;
+
 use crate::conflict::ConflictPolicy;
 use crate::undo::UndoToken;
 
@@ -15,45 +17,53 @@ pub(crate) const FLAG_CANCEL: u8 = 1;
 pub(crate) const FLAG_PAUSE: u8 = 2;
 
 /// Supported filesystem operation kinds.
+///
+/// Every op accepts [`Location`] rather than [`PathBuf`] so both local
+/// and remote endpoints (SFTP / S3 / WebDAV / FTP) can be driven through
+/// the same queue. Local-only callers wrap raw paths via
+/// [`Location::local`] at their edge — the ops queue then routes on
+/// backend kind.
 #[derive(Debug, Clone)]
 pub enum OpKind {
     /// Copy one or more sources into a destination directory.
     Copy {
-        /// Source paths to copy.
-        sources: Vec<PathBuf>,
+        /// Source locations to copy.
+        sources: Vec<Location>,
         /// Destination directory.
-        dest_dir: PathBuf,
+        dest_dir: Location,
         /// Conflict policy.
         policy: ConflictPolicy,
     },
     /// Move one or more sources into a destination directory.
     Move {
-        /// Source paths to move.
-        sources: Vec<PathBuf>,
+        /// Source locations to move.
+        sources: Vec<Location>,
         /// Destination directory.
-        dest_dir: PathBuf,
+        dest_dir: Location,
         /// Conflict policy.
         policy: ConflictPolicy,
     },
-    /// Delete one or more paths.
+    /// Delete one or more locations.
     Delete {
-        /// Paths to delete.
-        paths: Vec<PathBuf>,
-        /// Whether to send items to the OS trash.
+        /// Locations to delete.
+        paths: Vec<Location>,
+        /// Whether to send items to the OS trash (local-only; remote
+        /// deletes are always permanent).
         to_trash: bool,
     },
-    /// Rename a path in-place.
+    /// Rename a location in-place.
     Rename {
-        /// Existing path.
-        path: PathBuf,
+        /// Existing location.
+        path: Location,
         /// Replacement file or directory name.
         new_name: String,
     },
     /// Create a directory.
     Mkdir {
-        /// Directory path to create.
-        path: PathBuf,
-        /// Whether to create parents.
+        /// Directory location to create.
+        path: Location,
+        /// Whether to create parents (local only; remote backends
+        /// synthesise intermediate directories as needed regardless).
         parents: bool,
     },
 }
@@ -67,13 +77,13 @@ impl OpKind {
                 sources, dest_dir, ..
             } => OpKindDescriptor {
                 kind: "Copy",
-                summary: format!("{} items → {}", sources.len(), dest_dir.display()),
+                summary: format!("{} items → {}", sources.len(), dest_dir.display_path()),
             },
             Self::Move {
                 sources, dest_dir, ..
             } => OpKindDescriptor {
                 kind: "Move",
-                summary: format!("{} items → {}", sources.len(), dest_dir.display()),
+                summary: format!("{} items → {}", sources.len(), dest_dir.display_path()),
             },
             Self::Delete { paths, to_trash } => OpKindDescriptor {
                 kind: if *to_trash { "Trash" } else { "Delete" },
@@ -81,14 +91,14 @@ impl OpKind {
             },
             Self::Rename { path, new_name } => OpKindDescriptor {
                 kind: "Rename",
-                summary: format!("{} → {}", path.display(), new_name),
+                summary: format!("{} → {}", path.display_path(), new_name),
             },
             Self::Mkdir { path, parents } => OpKindDescriptor {
                 kind: "Mkdir",
                 summary: if *parents {
-                    format!("create {} (with parents)", path.display())
+                    format!("create {} (with parents)", path.display_path())
                 } else {
-                    format!("create {}", path.display())
+                    format!("create {}", path.display_path())
                 },
             },
         }
@@ -123,7 +133,10 @@ pub struct ProgressSnapshot {
     pub bytes_total: u64,
     /// Completed bytes.
     pub bytes_done: u64,
-    /// Current path being processed.
+    /// Current path being processed. For remote locations this is the
+    /// URI path portion (no scheme/host), matching how the ops panel
+    /// currently displays a single "current file" line — the front-end
+    /// only needs the basename.
     pub current_path: Option<PathBuf>,
 }
 
@@ -160,7 +173,9 @@ pub enum OpEvent {
         id: OpId,
         snapshot: ProgressSnapshot,
     },
-    /// Conflict requires user resolution.
+    /// Conflict requires user resolution. Currently only fires for
+    /// local-destination copy/move flows; remote destinations always
+    /// resolve to Overwrite in the MVP adapter.
     Conflict {
         id: OpId,
         source: PathBuf,

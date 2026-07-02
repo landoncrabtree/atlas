@@ -250,6 +250,111 @@ impl Location {
         }
     }
 
+    /// The final path component of this location as a lossless UTF-8 string,
+    /// or `None` when the location has no meaningful last component (empty
+    /// path, `/`, or `.`).
+    ///
+    /// For local locations this delegates to [`Path::file_name`]. For remote
+    /// locations it extracts the last non-empty `/`-delimited segment of the
+    /// URI path.
+    #[must_use]
+    pub fn file_name(&self) -> Option<String> {
+        match self {
+            Self::Local(path) => path
+                .file_name()
+                .map(|osstr| osstr.to_string_lossy().into_owned()),
+            Self::Remote(uri, _) => {
+                let trimmed = uri.path.trim_end_matches('/');
+                let last = trimmed.rsplit('/').next()?;
+                if last.is_empty() {
+                    None
+                } else {
+                    Some(last.to_owned())
+                }
+            }
+        }
+    }
+
+    /// Return a new location produced by appending `child` to the path
+    /// component of this location. `child` is treated as a single path
+    /// segment (no `/` interpretation for URIs), matching
+    /// [`PathBuf::join`] semantics for local paths.
+    #[must_use]
+    pub fn join(&self, child: impl AsRef<str>) -> Self {
+        let child = child.as_ref();
+        match self {
+            Self::Local(path) => Self::Local(path.join(child)),
+            Self::Remote(uri, kind) => {
+                let mut new_uri = uri.clone();
+                if new_uri.path.is_empty() {
+                    new_uri.path = format!("/{child}");
+                } else if new_uri.path.ends_with('/') {
+                    new_uri.path.push_str(child);
+                } else {
+                    new_uri.path.push('/');
+                    new_uri.path.push_str(child);
+                }
+                Self::Remote(new_uri, *kind)
+            }
+        }
+    }
+
+    /// Return a new location whose path is the parent of this location's
+    /// path, or `None` when no parent exists (root local path, empty remote
+    /// path).
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
+        match self {
+            Self::Local(path) => path.parent().map(|p| Self::Local(p.to_path_buf())),
+            Self::Remote(uri, kind) => {
+                let trimmed = uri.path.trim_end_matches('/');
+                let idx = trimmed.rfind('/')?;
+                let parent_path = if idx == 0 {
+                    "/".to_owned()
+                } else {
+                    trimmed[..idx].to_owned()
+                };
+                let mut new_uri = uri.clone();
+                new_uri.path = parent_path;
+                Some(Self::Remote(new_uri, *kind))
+            }
+        }
+    }
+
+    /// Returns `true` when `other` targets the same backend AND the same
+    /// remote authority (host, port, username) as `self`.
+    ///
+    /// Cross-backend movable ops (server-side rename, single-vm copy) are
+    /// only sound when this returns `true`. Two local locations always
+    /// share an "authority" — the local filesystem.
+    #[must_use]
+    pub fn same_backend_as(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Local(_), Self::Local(_)) => true,
+            (Self::Remote(a, ka), Self::Remote(b, kb)) => {
+                ka == kb
+                    && a.scheme == b.scheme
+                    && a.host == b.host
+                    && a.port == b.port
+                    && a.username == b.username
+            }
+            _ => false,
+        }
+    }
+
+    /// The remote path portion of this location, or `None` when the
+    /// location is [`Location::Local`].
+    ///
+    /// Useful when dispatching to a backend that takes a root-relative
+    /// path (e.g. [`atlas_remote::RemoteLocationViewModel::read`]).
+    #[must_use]
+    pub fn remote_path(&self) -> Option<&str> {
+        match self {
+            Self::Remote(uri, _) => Some(uri.path.as_str()),
+            Self::Local(_) => None,
+        }
+    }
+
     /// Split the location into breadcrumb segments. For local paths this
     /// is the component list (matching the historical `PaneModel::path_segments`
     /// behaviour). For remote paths the first segment is the URI root
@@ -989,5 +1094,106 @@ mod tests {
         };
         assert_eq!(kind, BackendKind::Sftp);
         assert_eq!(uri.scheme, "sftp");
+    }
+
+    #[test]
+    fn file_name_local_returns_last_component() {
+        let loc = Location::local("/Users/x/Downloads/report.pdf");
+        assert_eq!(loc.file_name().as_deref(), Some("report.pdf"));
+        let root = Location::local("/");
+        assert_eq!(root.file_name(), None);
+    }
+
+    #[test]
+    fn file_name_remote_returns_last_uri_segment() {
+        let loc = Location::from_str("sftp://a@h/var/log/atlas.log").unwrap();
+        assert_eq!(loc.file_name().as_deref(), Some("atlas.log"));
+        // Trailing slash is tolerated.
+        let with_trailing = Location::from_str("sftp://a@h/var/log/").unwrap();
+        assert_eq!(with_trailing.file_name().as_deref(), Some("log"));
+        // Root path.
+        let root = Location::from_str("sftp://a@h/").unwrap();
+        assert_eq!(root.file_name(), None);
+    }
+
+    #[test]
+    fn join_local_appends_child() {
+        let loc = Location::local("/tmp");
+        let child = loc.join("hello.txt");
+        assert_eq!(child.as_local().unwrap(), Path::new("/tmp/hello.txt"));
+    }
+
+    #[test]
+    fn join_remote_extends_uri_path() {
+        let loc = Location::from_str("sftp://a@h/var").unwrap();
+        let child = loc.join("log");
+        let Location::Remote(uri, _) = child else {
+            panic!()
+        };
+        assert_eq!(uri.path, "/var/log");
+
+        // Trailing-slash root should not double up.
+        let loc = Location::from_str("sftp://a@h/").unwrap();
+        let child = loc.join("etc");
+        let Location::Remote(uri, _) = child else {
+            panic!()
+        };
+        assert_eq!(uri.path, "/etc");
+    }
+
+    #[test]
+    fn parent_local_returns_directory() {
+        let loc = Location::local("/tmp/foo/bar.txt");
+        let parent = loc.parent().unwrap();
+        assert_eq!(parent.as_local().unwrap(), Path::new("/tmp/foo"));
+    }
+
+    #[test]
+    fn parent_remote_returns_prefix() {
+        let loc = Location::from_str("sftp://a@h/var/log/atlas.log").unwrap();
+        let parent = loc.parent().unwrap();
+        let Location::Remote(uri, _) = parent else {
+            panic!()
+        };
+        assert_eq!(uri.path, "/var/log");
+
+        // One segment past root — parent should be `/`.
+        let loc = Location::from_str("sftp://a@h/etc").unwrap();
+        let parent = loc.parent().unwrap();
+        let Location::Remote(uri, _) = parent else {
+            panic!()
+        };
+        assert_eq!(uri.path, "/");
+    }
+
+    #[test]
+    fn same_backend_as_matches_authority() {
+        let a = Location::from_str("sftp://u@h:22/a").unwrap();
+        let b = Location::from_str("sftp://u@h:22/b").unwrap();
+        assert!(a.same_backend_as(&b));
+
+        let c = Location::from_str("sftp://u@h:23/a").unwrap();
+        assert!(!a.same_backend_as(&c));
+
+        let d = Location::from_str("sftp://other@h:22/a").unwrap();
+        assert!(!a.same_backend_as(&d));
+
+        let e = Location::from_str("s3://bucket/prefix").unwrap();
+        assert!(!a.same_backend_as(&e));
+
+        // Two locals always match — they share the "local filesystem"
+        // authority.
+        let l1 = Location::local("/tmp/a");
+        let l2 = Location::local("/var/log");
+        assert!(l1.same_backend_as(&l2));
+    }
+
+    #[test]
+    fn remote_path_returns_uri_path() {
+        let loc = Location::from_str("s3://bucket/prefix/key").unwrap();
+        assert_eq!(loc.remote_path(), Some("/prefix/key"));
+
+        let local = Location::local("/tmp");
+        assert_eq!(local.remote_path(), None);
     }
 }

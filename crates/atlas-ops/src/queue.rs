@@ -4,15 +4,13 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use atlas_core::Location;
 use dashmap::DashMap;
 
+use crate::execute::execute_op;
 use crate::op::{OpEvent, OpId, OpKind, OpStatus, Operation, FLAG_CANCEL, FLAG_PAUSE};
-use crate::primitives::copy::copy_items;
-use crate::primitives::delete::delete_paths;
-use crate::primitives::mkdir::mkdir_op;
-use crate::primitives::move_::move_items;
-use crate::primitives::rename::rename_op;
-use crate::undo::{UndoEntry, UndoStack};
+use crate::runtime::shared_runtime_handle;
+use crate::undo::UndoStack;
 
 /// Runtime options for [`OperationQueue`].
 pub struct QueueOptions {
@@ -39,13 +37,13 @@ struct WorkItem {
     flags: Arc<AtomicU8>,
 }
 
-struct Inner {
+pub(crate) struct Inner {
     next_id: AtomicU64,
     state: DashMap<OpId, Arc<parking_lot::Mutex<Operation>>>,
     flags_map: DashMap<OpId, Arc<AtomicU8>>,
-    event_tx: crossbeam_channel::Sender<OpEvent>,
+    pub(crate) event_tx: crossbeam_channel::Sender<OpEvent>,
     undo_stack: Arc<UndoStack>,
-    progress_interval: Duration,
+    pub(crate) progress_interval: Duration,
 }
 
 /// Multi-worker queue for filesystem operations.
@@ -184,6 +182,17 @@ impl OperationQueue {
     }
 }
 
+fn normalize_location(loc: Location) -> Location {
+    match loc {
+        Location::Local(path) => Location::Local(atlas_core::path::expand_tilde(path)),
+        remote @ Location::Remote(_, _) => remote,
+    }
+}
+
+fn normalize_locations(locs: Vec<Location>) -> Vec<Location> {
+    locs.into_iter().map(normalize_location).collect()
+}
+
 fn normalize_kind(kind: OpKind) -> OpKind {
     match kind {
         OpKind::Copy {
@@ -191,11 +200,8 @@ fn normalize_kind(kind: OpKind) -> OpKind {
             dest_dir,
             policy,
         } => OpKind::Copy {
-            sources: sources
-                .into_iter()
-                .map(atlas_core::path::expand_tilde)
-                .collect(),
-            dest_dir: atlas_core::path::expand_tilde(dest_dir),
+            sources: normalize_locations(sources),
+            dest_dir: normalize_location(dest_dir),
             policy,
         },
         OpKind::Move {
@@ -203,26 +209,20 @@ fn normalize_kind(kind: OpKind) -> OpKind {
             dest_dir,
             policy,
         } => OpKind::Move {
-            sources: sources
-                .into_iter()
-                .map(atlas_core::path::expand_tilde)
-                .collect(),
-            dest_dir: atlas_core::path::expand_tilde(dest_dir),
+            sources: normalize_locations(sources),
+            dest_dir: normalize_location(dest_dir),
             policy,
         },
         OpKind::Delete { paths, to_trash } => OpKind::Delete {
-            paths: paths
-                .into_iter()
-                .map(atlas_core::path::expand_tilde)
-                .collect(),
+            paths: normalize_locations(paths),
             to_trash,
         },
         OpKind::Rename { path, new_name } => OpKind::Rename {
-            path: atlas_core::path::expand_tilde(path),
+            path: normalize_location(path),
             new_name,
         },
         OpKind::Mkdir { path, parents } => OpKind::Mkdir {
-            path: atlas_core::path::expand_tilde(path),
+            path: normalize_location(path),
             parents,
         },
     }
@@ -246,7 +246,20 @@ fn worker_loop(work_rx: crossbeam_channel::Receiver<WorkItem>, inner: Arc<Inner>
         }
         let _ = inner.event_tx.send(OpEvent::Started { id: item.id });
 
-        let result = execute_item(&item, &inner, &op_arc);
+        // Every op goes through `execute_op`. Locally-native ops still run
+        // synchronously inside a `spawn_blocking` — the tokio runtime lets us
+        // treat local and remote paths uniformly without dedicating a second
+        // pool. Remote / cross-backend work uses `atlas-remote` directly.
+        let handle = shared_runtime_handle();
+        let flags = Arc::clone(&item.flags);
+        let event_tx = inner.event_tx.clone();
+        let op_arc_clone = Arc::clone(&op_arc);
+        let progress_interval = inner.progress_interval;
+        let id = item.id;
+        let kind = item.kind.clone();
+        let result = handle.block_on(async move {
+            execute_op(id, kind, flags, event_tx, op_arc_clone, progress_interval).await
+        });
 
         let mut op = op_arc.lock();
         op.finished_at = Some(std::time::Instant::now());
@@ -277,62 +290,6 @@ fn worker_loop(work_rx: crossbeam_channel::Receiver<WorkItem>, inner: Arc<Inner>
                     partial_progress,
                 });
             }
-        }
-    }
-}
-
-fn execute_item(
-    item: &WorkItem,
-    inner: &Inner,
-    op_arc: &Arc<parking_lot::Mutex<Operation>>,
-) -> atlas_core::Result<Option<UndoEntry>> {
-    match &item.kind {
-        OpKind::Copy {
-            sources,
-            dest_dir,
-            policy,
-        } => {
-            copy_items(
-                item.id,
-                sources,
-                dest_dir,
-                *policy,
-                &item.flags,
-                &inner.event_tx,
-                op_arc,
-                inner.progress_interval,
-            )?;
-            Ok(None)
-        }
-        OpKind::Move {
-            sources,
-            dest_dir,
-            policy,
-        } => {
-            move_items(
-                item.id,
-                sources,
-                dest_dir,
-                *policy,
-                &item.flags,
-                &inner.event_tx,
-                op_arc,
-                inner.progress_interval,
-            )?;
-            Ok(None)
-        }
-        OpKind::Delete { paths, to_trash } => delete_paths(
-            item.id,
-            paths,
-            *to_trash,
-            &item.flags,
-            &inner.event_tx,
-            op_arc,
-        ),
-        OpKind::Rename { path, new_name } => Ok(Some(rename_op(path, new_name)?)),
-        OpKind::Mkdir { path, parents } => {
-            mkdir_op(path, *parents)?;
-            Ok(None)
         }
     }
 }

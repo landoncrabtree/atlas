@@ -2,19 +2,22 @@
 //!
 //! Bridges the Atlas file-operations pipeline with the platform clipboard:
 //!
-//! - **Copy** puts a newline-separated list of `file://` URIs on the OS
-//!   clipboard. Pastes into Finder, Explorer, TextEdit, VS Code — anywhere
-//!   that reads text. An internal `mode` flag remembers whether the last
-//!   copy/cut was a cut (so paste-back becomes a move).
+//! - **Copy** puts a newline-separated list of URIs on the OS clipboard.
+//!   For local locations we emit `file:///…` first (so pasting into
+//!   Finder still works), followed by the atlas-scheme
+//!   [`Location::to_string`] form. Remote locations emit only the
+//!   atlas-scheme URI (`sftp://user@host/path`, `s3://bucket/key`, …).
+//!   An internal `mode` flag remembers whether the last copy/cut was a
+//!   cut (so paste-back becomes a move).
 //! - **Cut** is the same but sets the internal flag to `Move`. Note that
 //!   macOS Finder doesn't have a true cut concept; the URIs we place on the
 //!   clipboard still copy when pasted into Finder. Cut is only "smart"
 //!   when the paste target is another Atlas window.
-//! - **Paste** reads the clipboard, parses any lines that look like
-//!   `file://…` URIs (falling back to bare paths on Linux where some apps
-//!   drop the scheme), and submits the resulting sources to the
-//!   [`crate::ops::OpsController`] as a copy or move into the focused pane's
-//!   directory.
+//! - **Paste** reads the clipboard, parses each non-empty line — either
+//!   an atlas-scheme URI (`sftp://…`, `s3://…`, `local:///…`) or a
+//!   legacy `file://…` (mapped to `Location::Local`) — deduplicates,
+//!   and submits the resulting sources to [`crate::ops::OpsController`]
+//!   as a copy or move whose destination is `dest`'s [`Location`].
 //!
 //! Cross-platform note: the "gold standard" for file-clipboard operations
 //! is the platform-native pasteboard format (`NSFilenamesPboardType` on
@@ -24,8 +27,10 @@
 //! (Finder for images copied from Preview, e.g.) is a v0.3 follow-up.
 
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
+use atlas_core::Location;
 use parking_lot::Mutex;
 
 use crate::ops::OpsController;
@@ -68,35 +73,37 @@ impl ClipboardController {
         })
     }
 
-    /// Copy `paths` to the OS clipboard as newline-separated `file://` URIs.
+    /// Copy `locations` to the OS clipboard.
     /// A subsequent [`Self::paste`] will treat this as a copy.
-    pub fn copy(&self, paths: Vec<PathBuf>) {
-        if paths.is_empty() {
+    pub fn copy(&self, locations: Vec<Location>) {
+        if locations.is_empty() {
             tracing::debug!("clipboard: copy called with empty selection");
             return;
         }
-        self.write_uris(&paths);
+        self.write_uris(&locations);
         *self.mode.lock() = ClipboardMode::Copy;
-        tracing::info!(count = paths.len(), "clipboard: copied paths");
+        tracing::info!(count = locations.len(), "clipboard: copied locations");
     }
 
-    /// Cut `paths` to the OS clipboard. A subsequent [`Self::paste`] into
+    /// Cut `locations` to the OS clipboard. A subsequent [`Self::paste`] into
     /// this Atlas window will move rather than copy.
-    pub fn cut(&self, paths: Vec<PathBuf>) {
-        if paths.is_empty() {
+    pub fn cut(&self, locations: Vec<Location>) {
+        if locations.is_empty() {
             tracing::debug!("clipboard: cut called with empty selection");
             return;
         }
-        self.write_uris(&paths);
+        self.write_uris(&locations);
         *self.mode.lock() = ClipboardMode::Cut;
-        tracing::info!(count = paths.len(), "clipboard: cut paths");
+        tracing::info!(count = locations.len(), "clipboard: cut locations");
     }
 
-    /// Paste whatever's on the clipboard into `dest_dir`. Text on the
-    /// clipboard is parsed as one path per line — `file://…` URIs are
-    /// URL-decoded; bare absolute paths are used as-is; everything else
-    /// is skipped.
-    pub fn paste(&self, dest_dir: PathBuf) {
+    /// Paste whatever's on the clipboard into `dest`. Text on the
+    /// clipboard is parsed as one URI per line — atlas-scheme URIs
+    /// (`sftp://`, `s3://`, `local://`, `webdav://`, `ftp://`) map
+    /// straight through [`Location::from_str`]; `file://` URIs are
+    /// percent-decoded into [`Location::Local`]; bare absolute paths
+    /// are treated as local for backwards compatibility.
+    pub fn paste(&self, dest: Location) {
         let text = match self.read_text() {
             Some(t) => t,
             None => {
@@ -104,22 +111,22 @@ impl ClipboardController {
                 return;
             }
         };
-        let sources: Vec<PathBuf> = text.lines().filter_map(parse_clipboard_line).collect();
+        let sources = decode_clipboard(&text);
         if sources.is_empty() {
-            tracing::debug!("clipboard: paste — no file:// URIs or paths found in clipboard text");
+            tracing::debug!("clipboard: paste — no URIs or paths found in clipboard text");
             return;
         }
         let mode = *self.mode.lock();
         tracing::info!(
             count = sources.len(),
             ?mode,
-            dest = %dest_dir.display(),
+            dest = %dest.display_path(),
             "clipboard: pasting"
         );
         match mode {
-            ClipboardMode::Copy => self.ops.submit_copy(sources, dest_dir),
+            ClipboardMode::Copy => self.ops.submit_copy(sources, dest),
             ClipboardMode::Cut => {
-                self.ops.submit_move(sources, dest_dir);
+                self.ops.submit_move(sources, dest);
                 // Cut-paste is one-shot: reset to copy so a second paste
                 // duplicates rather than moving the (now-relocated) items.
                 *self.mode.lock() = ClipboardMode::Copy;
@@ -129,12 +136,8 @@ impl ClipboardController {
 
     // ── Internal helpers ─────────────────────────────────────────────────
 
-    fn write_uris(&self, paths: &[PathBuf]) {
-        let body = paths
-            .iter()
-            .map(|p| path_to_file_uri(p.as_path()))
-            .collect::<Vec<_>>()
-            .join("\n");
+    fn write_uris(&self, locations: &[Location]) {
+        let body = encode_clipboard(locations);
         let mut guard = self.inner.lock();
         let clipboard = guard.get_or_insert_with(|| {
             arboard::Clipboard::new().unwrap_or_else(|err| {
@@ -172,6 +175,78 @@ impl ClipboardController {
     }
 }
 
+/// Serialise `locations` as newline-separated clipboard URIs.
+///
+/// Local locations emit their `file://` form first (so pasting into
+/// Finder / Explorer / native GUIs still works), followed by the
+/// atlas-scheme `local://` form. Remote locations emit only the
+/// atlas-scheme URI.
+pub fn encode_clipboard(locations: &[Location]) -> String {
+    let mut lines: Vec<String> = Vec::with_capacity(locations.len() * 2);
+    // First pass: file:// URIs for locals only — Finder-friendly.
+    for loc in locations {
+        if let Location::Local(path) = loc {
+            lines.push(path_to_file_uri(path.as_path()));
+        }
+    }
+    // Second pass: atlas-scheme URIs for every location.
+    for loc in locations {
+        lines.push(loc.to_string());
+    }
+    lines.join("\n")
+}
+
+/// Parse clipboard text back into a de-duplicated list of
+/// [`Location`]s.
+pub fn decode_clipboard(text: &str) -> Vec<Location> {
+    let mut out: Vec<Location> = Vec::new();
+    let mut seen: Vec<Location> = Vec::new();
+    for line in text.lines() {
+        let Some(loc) = parse_clipboard_line(line) else {
+            continue;
+        };
+        if seen.iter().any(|existing| locations_equal(existing, &loc)) {
+            continue;
+        }
+        seen.push(loc.clone());
+        out.push(loc);
+    }
+    out
+}
+
+/// One clipboard line → [`Location`], if it looks parseable.
+fn parse_clipboard_line(line: &str) -> Option<Location> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("file://") {
+        return percent_decode(rest).map(|p| Location::Local(PathBuf::from(p)));
+    }
+    if trimmed.contains("://") {
+        return Location::from_str(trimmed).ok();
+    }
+    if trimmed.starts_with('/') || trimmed.starts_with('~') {
+        return Some(Location::Local(PathBuf::from(trimmed)));
+    }
+    None
+}
+
+fn locations_equal(a: &Location, b: &Location) -> bool {
+    match (a, b) {
+        (Location::Local(x), Location::Local(y)) => x == y,
+        (Location::Remote(a_uri, a_kind), Location::Remote(b_uri, b_kind)) => {
+            a_kind == b_kind
+                && a_uri.scheme == b_uri.scheme
+                && a_uri.host == b_uri.host
+                && a_uri.port == b_uri.port
+                && a_uri.username == b_uri.username
+                && a_uri.path == b_uri.path
+        }
+        _ => false,
+    }
+}
+
 /// Render `path` as an RFC 8089 `file://` URI, percent-encoding characters
 /// that would otherwise break the URI grammar.
 fn path_to_file_uri(path: &std::path::Path) -> String {
@@ -185,23 +260,6 @@ fn path_to_file_uri(path: &std::path::Path) -> String {
         }
     }
     out
-}
-
-/// Parse one line of clipboard text into a filesystem path, if it looks
-/// like one. Returns `None` for empty lines, lines that don't start with a
-/// path/URI, and any URI that fails to percent-decode.
-fn parse_clipboard_line(line: &str) -> Option<PathBuf> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(rest) = trimmed.strip_prefix("file://") {
-        percent_decode(rest).map(PathBuf::from)
-    } else if trimmed.starts_with('/') || trimmed.starts_with('~') {
-        Some(PathBuf::from(trimmed))
-    } else {
-        None
-    }
 }
 
 fn percent_decode(input: &str) -> Option<String> {
@@ -234,14 +292,21 @@ mod tests {
 
     #[test]
     fn parse_clipboard_line_handles_file_uri() {
-        let p = parse_clipboard_line("file:///tmp/hello%20world.txt").unwrap();
-        assert_eq!(p, PathBuf::from("/tmp/hello world.txt"));
+        let loc = parse_clipboard_line("file:///tmp/hello%20world.txt").unwrap();
+        assert_eq!(loc, Location::Local(PathBuf::from("/tmp/hello world.txt")));
     }
 
     #[test]
     fn parse_clipboard_line_handles_bare_path() {
-        let p = parse_clipboard_line("/tmp/plain.txt").unwrap();
-        assert_eq!(p, PathBuf::from("/tmp/plain.txt"));
+        let loc = parse_clipboard_line("/tmp/plain.txt").unwrap();
+        assert_eq!(loc, Location::Local(PathBuf::from("/tmp/plain.txt")));
+    }
+
+    #[test]
+    fn parse_clipboard_line_handles_atlas_scheme_sftp() {
+        let loc = parse_clipboard_line("sftp://alice@host/var/log").unwrap();
+        assert!(matches!(loc, Location::Remote(..)));
+        assert_eq!(loc.display_path(), "sftp://alice@host/var/log");
     }
 
     #[test]
@@ -249,5 +314,70 @@ mod tests {
         assert!(parse_clipboard_line("").is_none());
         assert!(parse_clipboard_line("hello world").is_none());
         assert!(parse_clipboard_line("http://example.com").is_none());
+    }
+
+    #[test]
+    fn encode_decode_local_roundtrip() {
+        let locs = vec![
+            Location::local("/tmp/a.txt"),
+            Location::local("/Users/alice/report.pdf"),
+        ];
+        let text = encode_clipboard(&locs);
+        let decoded = decode_clipboard(&text);
+        assert_eq!(decoded, locs);
+    }
+
+    #[test]
+    fn encode_decode_sftp_roundtrip() {
+        let locs = vec![Location::from_str("sftp://alice@host:2222/var/log").unwrap()];
+        let text = encode_clipboard(&locs);
+        let decoded = decode_clipboard(&text);
+        assert_eq!(decoded, locs);
+    }
+
+    #[test]
+    fn encode_decode_s3_roundtrip() {
+        let locs = vec![Location::from_str("s3://bucket/prefix/key").unwrap()];
+        let text = encode_clipboard(&locs);
+        let decoded = decode_clipboard(&text);
+        assert_eq!(decoded, locs);
+    }
+
+    #[test]
+    fn encode_decode_webdav_roundtrip() {
+        let locs = vec![Location::from_str("webdav://user@host/dav/files").unwrap()];
+        let text = encode_clipboard(&locs);
+        let decoded = decode_clipboard(&text);
+        assert_eq!(decoded, locs);
+    }
+
+    #[test]
+    fn encode_decode_ftp_roundtrip() {
+        let locs = vec![Location::from_str("ftp://ftp.example.com/pub").unwrap()];
+        let text = encode_clipboard(&locs);
+        let decoded = decode_clipboard(&text);
+        assert_eq!(decoded, locs);
+    }
+
+    #[test]
+    fn encode_local_emits_file_uri_first_then_atlas_scheme() {
+        let locs = vec![Location::local("/tmp/hello world.txt")];
+        let text = encode_clipboard(&locs);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "one file:// line + one atlas line");
+        assert!(lines[0].starts_with("file:///tmp/hello%20world"));
+        assert!(lines[1].starts_with("local:///tmp/hello"));
+    }
+
+    #[test]
+    fn decode_mixed_file_and_atlas_uris_deduplicates() {
+        // Simulate an Atlas → Atlas clipboard payload: local file
+        // shows up twice (file:// + local://), remote shows up once
+        // as sftp://.
+        let text = "file:///tmp/a.txt\nlocal:///tmp/a.txt\nsftp://user@host/tmp/b.txt";
+        let decoded = decode_clipboard(text);
+        assert_eq!(decoded.len(), 2, "duplicate local should be deduped");
+        assert_eq!(decoded[0], Location::local("/tmp/a.txt"));
+        assert!(matches!(decoded[1], Location::Remote(..)));
     }
 }

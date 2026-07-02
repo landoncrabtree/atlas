@@ -25,7 +25,6 @@
 //! for interactive resolution is a post-MVP follow-up.
 
 use std::{
-    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -34,6 +33,7 @@ use std::{
 };
 
 use ahash::AHashMap;
+use atlas_core::Location;
 use atlas_ops::{
     ConflictDecision, ConflictPolicy, OpEvent, OpId, OpKind, OpKindDescriptor, OperationQueue,
     QueueOptions,
@@ -118,10 +118,10 @@ impl OpsController {
 
     /// Submit a Copy operation.
     ///
-    /// `sources` are the paths to copy; `dest_dir` is the destination
+    /// `sources` are the locations to copy; `dest_dir` is the destination
     /// directory. Conflicts default to [`ConflictPolicy::RenameWithSuffix`]
     /// (non-destructive).
-    pub fn submit_copy(&self, sources: Vec<PathBuf>, dest_dir: PathBuf) {
+    pub fn submit_copy(&self, sources: Vec<Location>, dest_dir: Location) {
         self.queue.submit(OpKind::Copy {
             sources,
             dest_dir,
@@ -132,7 +132,7 @@ impl OpsController {
     /// Submit a Move operation.
     ///
     /// Conflicts default to [`ConflictPolicy::RenameWithSuffix`].
-    pub fn submit_move(&self, sources: Vec<PathBuf>, dest_dir: PathBuf) {
+    pub fn submit_move(&self, sources: Vec<Location>, dest_dir: Location) {
         self.queue.submit(OpKind::Move {
             sources,
             dest_dir,
@@ -143,8 +143,8 @@ impl OpsController {
     /// Submit a Delete operation.
     ///
     /// When `to_trash` is `true` (the default for F8), items are sent to the
-    /// OS trash rather than permanently deleted.
-    pub fn submit_delete(&self, paths: Vec<PathBuf>, to_trash: bool) {
+    /// OS trash rather than permanently deleted. Remote paths always hard-delete.
+    pub fn submit_delete(&self, paths: Vec<Location>, to_trash: bool) {
         self.queue.submit(OpKind::Delete { paths, to_trash });
     }
 
@@ -156,12 +156,12 @@ impl OpsController {
     /// operation directly with the provided `new_name`. Callers (e.g. the F2
     /// handler) should obtain the new name from an inline text input or modal
     /// before calling this method. The F2 binding logs and skips for now.
-    pub fn submit_rename(&self, path: PathBuf, new_name: String) {
+    pub fn submit_rename(&self, path: Location, new_name: String) {
         self.queue.submit(OpKind::Rename { path, new_name });
     }
 
     /// Submit a Mkdir operation, creating parent directories as needed.
-    pub fn submit_mkdir(&self, path: PathBuf) {
+    pub fn submit_mkdir(&self, path: Location) {
         self.queue.submit(OpKind::Mkdir {
             path,
             parents: true,
@@ -687,8 +687,8 @@ mod tests {
         std::fs::write(src_dir.path().join("test.txt"), b"hello").expect("write");
 
         ctrl.submit_copy(
-            vec![src_dir.path().join("test.txt")],
-            dst_dir.path().to_owned(),
+            vec![Location::local(src_dir.path().join("test.txt"))],
+            Location::local(dst_dir.path()),
         );
 
         // Give the queue and event thread time to process.
@@ -706,7 +706,7 @@ mod tests {
     fn event_drain_progresses_to_done() {
         let ctrl = OpsController::new();
         let dir = tempfile::tempdir().expect("tempdir");
-        ctrl.submit_mkdir(dir.path().join("ops_test_newdir"));
+        ctrl.submit_mkdir(Location::local(dir.path().join("ops_test_newdir")));
 
         wait(300);
         let rows = ctrl.rows_snapshot();
@@ -739,7 +739,7 @@ mod tests {
         // mkdir is near-instant; to test cancel we submit it then immediately cancel.
         // Even if it finishes first, the row will be terminal (Done not Cancelled).
         // What we verify here is that calling cancel() doesn't panic/error.
-        ctrl.submit_mkdir(dir.path().join("cancel_test_dir"));
+        ctrl.submit_mkdir(Location::local(dir.path().join("cancel_test_dir")));
         let rows = ctrl.rows_snapshot();
         if !rows.is_empty() {
             ctrl.cancel(rows[0].id);
@@ -755,7 +755,7 @@ mod tests {
     fn dismiss_removes_terminal_row() {
         let ctrl = OpsController::new();
         let dir = tempfile::tempdir().expect("tempdir");
-        ctrl.submit_mkdir(dir.path().join("dismiss_test_dir"));
+        ctrl.submit_mkdir(Location::local(dir.path().join("dismiss_test_dir")));
 
         wait(300);
         let rows = ctrl.rows_snapshot();
@@ -792,7 +792,7 @@ mod tests {
         // must remain `None` and the modal must never appear.
         let ctrl = OpsController::new();
         let dir = tempfile::tempdir().expect("tempdir");
-        ctrl.submit_mkdir(dir.path().join("fast_op"));
+        ctrl.submit_mkdir(Location::local(dir.path().join("fast_op")));
 
         // Wait past the 250ms defer *plus* debounce slack.
         wait(400);
@@ -811,7 +811,7 @@ mod tests {
     fn background_and_clear_completed() {
         let ctrl = OpsController::new();
         let dir = tempfile::tempdir().expect("tempdir");
-        ctrl.submit_mkdir(dir.path().join("bg_test_dir"));
+        ctrl.submit_mkdir(Location::local(dir.path().join("bg_test_dir")));
         wait(300);
         // Nothing to background (no foreground was ever set); the call must
         // be a benign no-op.

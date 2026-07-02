@@ -33,6 +33,7 @@ use arc_swap::ArcSwap;
 use slint::ComponentHandle as _;
 use tracing_subscriber::EnvFilter;
 
+use atlas_core::Location;
 use atlas_keymap::{ActionId, Chord, Dispatcher, Key, Modifiers, NamedKey, PrettyPlatform};
 use atlas_ui::{
     actions::{ActionSink, UiAction},
@@ -1112,21 +1113,23 @@ fn build_dispatcher(
         let s = Arc::clone(shell);
         d.register("fs::Copy", move || {
             let paths = s.selected_paths(s.focused_pane_id());
-            s.clipboard().copy(paths);
+            let locs: Vec<Location> = paths.into_iter().map(Location::local).collect();
+            s.clipboard().copy(locs);
         });
     }
     {
         let s = Arc::clone(shell);
         d.register("fs::Cut", move || {
             let paths = s.selected_paths(s.focused_pane_id());
-            s.clipboard().cut(paths);
+            let locs: Vec<Location> = paths.into_iter().map(Location::local).collect();
+            s.clipboard().cut(locs);
         });
     }
     {
         let s = Arc::clone(shell);
         d.register("fs::Paste", move || {
             let focused = s.focused_pane_id();
-            let Some(dest) = s.pane_location(focused) else {
+            let Some(dest) = s.pane_location_full(focused) else {
                 tracing::warn!(?focused, "fs::Paste: no pane location");
                 return;
             };

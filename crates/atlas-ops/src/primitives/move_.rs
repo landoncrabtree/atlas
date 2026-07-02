@@ -95,15 +95,17 @@ pub(crate) fn move_items(
 /// Test helper that exercises the move copy-delete fallback path directly.
 #[doc(hidden)]
 pub fn move_via_copy_delete_for_tests(source: &Path, dest: &Path) -> atlas_core::Result<()> {
+    use atlas_core::Location;
     let (event_tx, _event_rx) = crossbeam_channel::unbounded();
     let op_arc = Arc::new(parking_lot::Mutex::new(Operation {
         id: 0,
         kind: crate::op::OpKind::Move {
-            sources: vec![source.to_path_buf()],
-            dest_dir: dest
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf(),
+            sources: vec![Location::local(source)],
+            dest_dir: Location::local(
+                dest.parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf(),
+            ),
             policy: ConflictPolicy::Overwrite,
         },
         status: crate::op::OpStatus::Running,

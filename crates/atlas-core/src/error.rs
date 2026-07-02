@@ -19,6 +19,19 @@ pub enum AtlasError {
     #[error("operation cancelled")]
     Cancelled,
 
+    /// A remote backend rejected our credentials, or the current
+    /// session has become unauthorized. Distinct from a generic
+    /// `Other` so higher layers (e.g. the ops panel's status chip)
+    /// can suggest "Reconnect" without regex-matching error text.
+    #[error("auth required for {location}: {detail}")]
+    AuthRequired {
+        /// Human-readable identifier for the affected location
+        /// (typically the URI display form).
+        location: String,
+        /// Backend-supplied detail message.
+        detail: String,
+    },
+
     #[error("{0}")]
     Other(#[from] anyhow::Error),
 }
@@ -28,6 +41,14 @@ impl AtlasError {
         Self::Io {
             path: path.into(),
             source,
+        }
+    }
+
+    /// Construct an [`AtlasError::AuthRequired`].
+    pub fn auth_required(location: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self::AuthRequired {
+            location: location.into(),
+            detail: detail.into(),
         }
     }
 }

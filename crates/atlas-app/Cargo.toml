@@ -15,6 +15,7 @@ name = "atlas"
 path = "src/main.rs"
 
 [dependencies]
+atlas-core.workspace = true
 atlas-ui.workspace = true
 atlas-search.workspace = true
 atlas-fs.workspace = true

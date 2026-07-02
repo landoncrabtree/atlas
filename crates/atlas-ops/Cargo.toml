@@ -13,17 +13,25 @@ workspace = true
 [dependencies]
 atlas-core.workspace = true
 atlas-fs.workspace = true
+atlas-remote.workspace = true
 
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 futures.workspace = true
+tokio.workspace = true
 trash.workspace = true
 parking_lot.workspace = true
 crossbeam-channel.workspace = true
+once_cell.workspace = true
 serde.workspace = true
 walkdir.workspace = true
 dashmap.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+anyhow.workspace = true
+rand = "0.8"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+atlas-remote = { workspace = true }
+libc = "0.2"

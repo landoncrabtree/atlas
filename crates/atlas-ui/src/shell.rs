@@ -1985,7 +1985,8 @@ impl AppShell {
                 tracing::warn!(?source, "fs::Duplicate: source has no parent, skipping");
                 continue;
             };
-            self.ops.submit_copy(vec![source], parent);
+            self.ops
+                .submit_copy(vec![Location::local(source)], Location::local(parent));
         }
     }
 
@@ -2335,7 +2336,7 @@ impl AppShell {
             return;
         }
 
-        let dest = match self.pane_location(target_id) {
+        let dest = match self.pane_location_full(target_id) {
             Some(d) => d,
             None => {
                 tracing::warn!(?target_id, "drag_end: target pane has no location");
@@ -2343,20 +2344,22 @@ impl AppShell {
             }
         };
 
+        let sources: Vec<Location> = drag.paths.into_iter().map(Location::local).collect();
+
         if alt_held {
             tracing::info!(
-                count = drag.paths.len(),
-                dest = %dest.display(),
+                count = sources.len(),
+                dest = %dest.display_path(),
                 "drag-drop move (Alt held)"
             );
-            self.ops.submit_move(drag.paths, dest);
+            self.ops.submit_move(sources, dest);
         } else {
             tracing::info!(
-                count = drag.paths.len(),
-                dest = %dest.display(),
+                count = sources.len(),
+                dest = %dest.display_path(),
                 "drag-drop copy (default)"
             );
-            self.ops.submit_copy(drag.paths, dest);
+            self.ops.submit_copy(sources, dest);
         }
     }
 
@@ -2995,7 +2998,12 @@ impl AppShell {
                 let Some((id, _)) = shell.context_menu_target() else {
                     return;
                 };
-                shell.clipboard.copy(shell.selected_paths(id));
+                let locs: Vec<Location> = shell
+                    .selected_paths(id)
+                    .into_iter()
+                    .map(Location::local)
+                    .collect();
+                shell.clipboard.copy(locs);
             });
         }
         {
@@ -3004,7 +3012,12 @@ impl AppShell {
                 let Some((id, _)) = shell.context_menu_target() else {
                     return;
                 };
-                shell.clipboard.cut(shell.selected_paths(id));
+                let locs: Vec<Location> = shell
+                    .selected_paths(id)
+                    .into_iter()
+                    .map(Location::local)
+                    .collect();
+                shell.clipboard.cut(locs);
             });
         }
         {
@@ -3013,7 +3026,7 @@ impl AppShell {
                 let Some((id, _)) = shell.context_menu_target() else {
                     return;
                 };
-                let Some(dest) = shell.pane_location(id) else {
+                let Some(dest) = shell.pane_location_full(id) else {
                     return;
                 };
                 shell.clipboard.paste(dest);
@@ -3165,7 +3178,8 @@ impl AppShell {
                 tracing::info!(count = paths.len(), "fs::Delete (F8) → trash");
                 // F8 always sends to trash (non-destructive default).
                 // Shift+F8 for permanent delete is a post-MVP binding.
-                shell.ops.submit_delete(paths, true);
+                let locations: Vec<Location> = paths.into_iter().map(Location::local).collect();
+                shell.ops.submit_delete(locations, true);
             });
         }
         {
@@ -3191,15 +3205,22 @@ impl AppShell {
             let shell = Arc::clone(self);
             window.on_fs_mkdir(move || {
                 let focused = shell.focused_pane_id();
-                let Some(location) = shell.pane_location(focused) else {
+                let Some(location) = shell.pane_location_full(focused) else {
                     tracing::warn!(?focused, "fs::Mkdir (F7): no pane location");
                     return;
                 };
                 // Choose a unique "New Folder" name within the current location.
-                let name = unique_new_folder_name(&location);
-                let path = location.join(&name);
-                tracing::info!(path = %path.display(), "fs::Mkdir (F7)");
-                shell.ops.submit_mkdir(path);
+                // For remote panes we skip the collision check for MVP and
+                // rely on the backend to reject duplicates.
+                let target = match &location {
+                    Location::Local(local_path) => {
+                        let name = unique_new_folder_name(local_path);
+                        Location::local(local_path.join(&name))
+                    }
+                    Location::Remote(_, _) => location.join("New Folder"),
+                };
+                tracing::info!(path = %target.display_path(), "fs::Mkdir (F7)");
+                shell.ops.submit_mkdir(target);
             });
         }
 

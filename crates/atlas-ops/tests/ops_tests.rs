@@ -1,14 +1,19 @@
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use atlas_core::Location;
 use atlas_ops::{
     move_via_copy_delete_for_tests, ConflictDecision, ConflictPolicy, OpEvent, OpKind, OpStatus,
     OperationQueue, QueueOptions,
 };
 use tempfile::TempDir;
+
+fn loc(path: impl Into<PathBuf>) -> Location {
+    Location::local(path)
+}
 
 fn write_file(path: &Path, data: &[u8]) {
     let parent = path.parent().expect("parent");
@@ -97,8 +102,8 @@ fn copy_single_file() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Copy {
-        sources: vec![source.clone()],
-        dest_dir: dest_dir.clone(),
+        sources: vec![loc(source.clone())],
+        dest_dir: loc(dest_dir.clone()),
         policy: ConflictPolicy::Overwrite,
     });
 
@@ -122,8 +127,8 @@ fn copy_directory_tree() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Copy {
-        sources: vec![source_dir.clone()],
-        dest_dir: dest_dir.clone(),
+        sources: vec![loc(source_dir.clone())],
+        dest_dir: loc(dest_dir.clone()),
         policy: ConflictPolicy::Overwrite,
     });
 
@@ -142,8 +147,8 @@ fn move_same_fs() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Move {
-        sources: vec![source.clone()],
-        dest_dir: dest_dir.clone(),
+        sources: vec![loc(source.clone())],
+        dest_dir: loc(dest_dir.clone()),
         policy: ConflictPolicy::Overwrite,
     });
 
@@ -174,7 +179,7 @@ fn delete_to_trash() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Delete {
-        paths: vec![path.clone()],
+        paths: vec![loc(path.clone())],
         to_trash: true,
     });
 
@@ -191,7 +196,7 @@ fn delete_hard() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Delete {
-        paths: vec![path.clone()],
+        paths: vec![loc(path.clone())],
         to_trash: false,
     });
 
@@ -208,7 +213,7 @@ fn rename_valid() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Rename {
-        path: path.clone(),
+        path: loc(path.clone()),
         new_name: "new.txt".to_owned(),
     });
 
@@ -226,7 +231,7 @@ fn rename_rejects_separator() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Rename {
-        path,
+        path: loc(path),
         new_name: "bad/name.txt".to_owned(),
     });
 
@@ -245,7 +250,7 @@ fn mkdir_with_parents() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Mkdir {
-        path: path.clone(),
+        path: loc(path.clone()),
         parents: true,
     });
 
@@ -264,8 +269,8 @@ fn conflict_skip() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Copy {
-        sources: vec![source],
-        dest_dir: dest_dir.clone(),
+        sources: vec![loc(source)],
+        dest_dir: loc(dest_dir.clone()),
         policy: ConflictPolicy::Skip,
     });
 
@@ -284,8 +289,8 @@ fn conflict_overwrite() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Copy {
-        sources: vec![source],
-        dest_dir: dest_dir.clone(),
+        sources: vec![loc(source)],
+        dest_dir: loc(dest_dir.clone()),
         policy: ConflictPolicy::Overwrite,
     });
 
@@ -304,16 +309,16 @@ fn conflict_rename_suffix() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let first = queue.submit(OpKind::Copy {
-        sources: vec![source.clone()],
-        dest_dir: dest_dir.clone(),
+        sources: vec![loc(source.clone())],
+        dest_dir: loc(dest_dir.clone()),
         policy: ConflictPolicy::RenameWithSuffix,
     });
     let _events = drain_until_completed(&queue, &events, first);
     assert_eq!(read_file(&dest_dir.join("foo (copy).txt")), b"one");
 
     let second = queue.submit(OpKind::Copy {
-        sources: vec![source],
-        dest_dir: dest_dir.clone(),
+        sources: vec![loc(source)],
+        dest_dir: loc(dest_dir.clone()),
         policy: ConflictPolicy::RenameWithSuffix,
     });
     let _events = drain_until_completed(&queue, &events, second);
@@ -331,8 +336,8 @@ fn conflict_prompt() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Copy {
-        sources: vec![source],
-        dest_dir: dest_dir.clone(),
+        sources: vec![loc(source)],
+        dest_dir: loc(dest_dir.clone()),
         policy: ConflictPolicy::Prompt,
     });
 
@@ -383,8 +388,8 @@ fn cancel_mid_copy() {
 
     let (queue, events) = small_queue(Duration::ZERO);
     let id = queue.submit(OpKind::Copy {
-        sources: vec![source.clone()],
-        dest_dir: dest_dir.clone(),
+        sources: vec![loc(source.clone())],
+        dest_dir: loc(dest_dir.clone()),
         policy: ConflictPolicy::Overwrite,
     });
     queue.cancel(id);
@@ -416,8 +421,8 @@ fn pause_resume() {
 
     let (queue, events) = small_queue(Duration::ZERO);
     let id = queue.submit(OpKind::Copy {
-        sources: vec![source],
-        dest_dir: dest_dir.clone(),
+        sources: vec![loc(source)],
+        dest_dir: loc(dest_dir.clone()),
         policy: ConflictPolicy::Overwrite,
     });
 
@@ -453,8 +458,8 @@ fn progress_debounce() {
     let interval = Duration::from_millis(25);
     let (queue, events) = small_queue(interval);
     let id = queue.submit(OpKind::Copy {
-        sources: vec![source],
-        dest_dir,
+        sources: vec![loc(source)],
+        dest_dir: loc(dest_dir),
         policy: ConflictPolicy::Overwrite,
     });
 
@@ -498,7 +503,7 @@ fn undo_trash() {
 
     let (queue, events) = small_queue(Duration::from_millis(1));
     let id = queue.submit(OpKind::Delete {
-        paths: vec![path.clone()],
+        paths: vec![loc(path.clone())],
         to_trash: true,
     });
 
