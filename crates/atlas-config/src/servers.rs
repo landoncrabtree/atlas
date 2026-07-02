@@ -85,12 +85,18 @@ impl SavedServer {
 
     /// Dedup key: two servers matching this tuple are considered the same
     /// entry by [`add_or_replace`], regardless of `label` or `id`.
+    ///
+    /// The port is normalised via [`BackendKind::default_port`] when
+    /// absent so an entry stored as `port: None` and a fresh entry
+    /// assembled with `port: Some(default)` collapse into a single row
+    /// — otherwise the user would see two "same server" entries in the
+    /// palette after upgrading past Phase 2.12.
     #[must_use]
     fn dedup_key(&self) -> (BackendKind, String, Option<u16>, Option<String>) {
         (
             self.backend,
             self.address.clone(),
-            self.port,
+            self.port.or_else(|| self.backend.default_port()),
             self.username.clone(),
         )
     }
@@ -111,6 +117,25 @@ impl SavedServersFile {
     fn find_matching_mut(&mut self, needle: &SavedServer) -> Option<&mut SavedServer> {
         let key = needle.dedup_key();
         self.servers.iter_mut().find(|s| s.dedup_key() == key)
+    }
+
+    /// Canonicalise every entry's `port` field via
+    /// [`BackendKind::default_port`]. Called from [`load_from_path`]
+    /// so that older `servers.toml` files (persisted before URI
+    /// normalisation landed in Phase 2.12) present as if they had
+    /// been re-saved: `port: None` becomes `port: Some(22)` for
+    /// SFTP, `Some(21)` for FTP, `Some(443)` for WebDAV. S3 and
+    /// Local stay `None` (no canonical port).
+    ///
+    /// Idempotent — running twice is a no-op. Called on every load so
+    /// deserialised structs always match the shape produced by
+    /// `RemoteUri::with_default_port` in `atlas-ui::remote::connect`.
+    fn normalize_ports(&mut self) {
+        for server in &mut self.servers {
+            if server.port.is_none() {
+                server.port = server.backend.default_port();
+            }
+        }
     }
 }
 
@@ -135,8 +160,19 @@ pub fn load() -> Result<SavedServersFile> {
 /// Same as [`load`], but scoped to the given path.
 pub fn load_from_path(path: &std::path::Path) -> Result<SavedServersFile> {
     match std::fs::read_to_string(path) {
-        Ok(text) => Ok(toml::from_str(&text)
-            .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", path.display()))?),
+        Ok(text) => {
+            let mut file: SavedServersFile = toml::from_str(&text)
+                .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", path.display()))?;
+            // Canonicalise persisted `port: None` entries to the
+            // backend default so post-load structs match the shape
+            // produced by `atlas_core::RemoteUri::with_default_port`.
+            // Older files written before Phase 2.12 may carry
+            // `port: None` for SFTP entries — without this, dedup and
+            // downstream cache-key lookups would treat them as
+            // distinct from freshly-assembled `port: Some(22)` URIs.
+            file.normalize_ports();
+            Ok(file)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SavedServersFile::default()),
         Err(e) => Err(anyhow::anyhow!("failed to read {}: {e}", path.display()).into()),
     }
@@ -301,8 +337,15 @@ mod tests {
     fn save_and_load_from_path_round_trip() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("servers.toml");
+        // Use an explicit non-default port to keep the roundtrip
+        // assertion exact — otherwise `load_from_path` would
+        // canonicalise the persisted `port: None` up to the SFTP
+        // default (22), which is the desired schema-migration
+        // behaviour but noise for a plain roundtrip check.
+        let mut entry = sample("s1", BackendKind::Sftp, "h1", Some("u1"));
+        entry.port = Some(2222);
         let file = SavedServersFile {
-            servers: vec![sample("s1", BackendKind::Sftp, "h1", Some("u1"))],
+            servers: vec![entry],
         };
         save_to_path(&path, &file).expect("save");
         let back = load_from_path(&path).expect("load");
@@ -395,6 +438,112 @@ mod tests {
         let existing = file.find_matching_mut(&probe).expect("must match");
         existing.label = "updated".into();
         assert_eq!(file.servers[0].label, "updated");
+    }
+
+    #[test]
+    fn dedup_key_treats_missing_port_as_backend_default() {
+        // Regression: two entries that differ only by
+        // `port: None` vs `port: Some(default_for_backend)` must
+        // dedup as the same server. Before this fix, an entry
+        // freshly assembled by the connect controller (with
+        // `port: Some(22)` for SFTP) would not deduplicate against
+        // an older stored entry with `port: None`, so the palette
+        // showed a "ghost" duplicate.
+        let no_port = SavedServer {
+            id: "id-a".into(),
+            label: "A".into(),
+            backend: BackendKind::Sftp,
+            address: "host.dedup-test.example".into(),
+            port: None,
+            path: "/foo".into(),
+            username: Some("alice".into()),
+            credential_ref: None,
+            last_connected: None,
+        };
+        let default_port = SavedServer {
+            id: "id-b".into(),
+            label: "B".into(),
+            port: Some(22),
+            ..no_port.clone()
+        };
+        assert_eq!(no_port.dedup_key(), default_port.dedup_key());
+
+        // FTP + WebDAV get the same treatment.
+        let ftp_no_port = SavedServer {
+            id: "id-ftp".into(),
+            label: "FTP".into(),
+            backend: BackendKind::Ftp,
+            address: "ftp.dedup-test.example".into(),
+            port: None,
+            path: "/pub".into(),
+            username: None,
+            credential_ref: None,
+            last_connected: None,
+        };
+        let ftp_default = SavedServer {
+            port: Some(21),
+            ..ftp_no_port.clone()
+        };
+        assert_eq!(ftp_no_port.dedup_key(), ftp_default.dedup_key());
+
+        // Explicit non-default port stays distinct.
+        let alt = SavedServer {
+            port: Some(2222),
+            ..no_port.clone()
+        };
+        assert_ne!(no_port.dedup_key(), alt.dedup_key());
+    }
+
+    #[test]
+    fn load_normalises_missing_port_to_backend_default() {
+        // Regression: an `servers.toml` file written before Phase
+        // 2.12 landed URI normalisation may carry entries without a
+        // `port` field. After load, callers expect `port: Some(22)`
+        // for SFTP so cache-key comparisons collapse to a single
+        // canonical form. Verified end-to-end via
+        // [`load_from_path`], not just the private helper, so any
+        // future refactor of the load pipeline that forgets to run
+        // normalisation is caught by this test.
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("servers.toml");
+        // Synthetic legacy content — no port fields.
+        let toml_text = r#"
+[[servers]]
+id = "legacy-sftp"
+label = "legacy-sftp"
+backend = "sftp"
+address = "legacy.example.com"
+path = "/var/log"
+
+[[servers]]
+id = "legacy-ftp"
+label = "legacy-ftp"
+backend = "ftp"
+address = "ftp.example.com"
+path = "/pub"
+
+[[servers]]
+id = "legacy-s3"
+label = "legacy-s3"
+backend = "s3"
+address = "bucket"
+path = "/prefix"
+"#;
+        std::fs::write(&path, toml_text).expect("write");
+        let loaded = load_from_path(&path).expect("load");
+        assert_eq!(loaded.servers.len(), 3);
+        let by_id = |id: &str| {
+            loaded
+                .servers
+                .iter()
+                .find(|s| s.id == id)
+                .cloned()
+                .expect("must exist")
+        };
+        assert_eq!(by_id("legacy-sftp").port, Some(22));
+        assert_eq!(by_id("legacy-ftp").port, Some(21));
+        // S3 has no canonical port — must stay None.
+        assert_eq!(by_id("legacy-s3").port, None);
     }
 
     #[test]

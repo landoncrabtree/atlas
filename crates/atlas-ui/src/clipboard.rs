@@ -323,7 +323,10 @@ mod tests {
     fn parse_clipboard_line_handles_atlas_scheme_sftp() {
         let loc = parse_clipboard_line("sftp://alice@host/var/log").unwrap();
         assert!(matches!(loc, Location::Remote(..)));
-        assert_eq!(loc.display_path(), "sftp://alice@host/var/log");
+        // `Location::from_str` normalises a bare `sftp://user@host` to
+        // the backend default port so downstream cache keys stay
+        // consistent. See `atlas_core::RemoteUri::with_default_port`.
+        assert_eq!(loc.display_path(), "sftp://alice@host:22/var/log");
     }
 
     #[test]

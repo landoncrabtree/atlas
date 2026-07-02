@@ -667,6 +667,14 @@ impl ConnectController {
             return;
         };
         let credentials = credentials_from_saved(&server);
+        // Normalise the persisted port to the backend default when
+        // absent. Older `servers.toml` files (pre-Phase 2.12) may
+        // carry `port: None` for entries the user saved before URI
+        // normalisation moved to `assemble_location`; without this
+        // call the run-once path would produce a different pool /
+        // cred_key / known_hosts key than the connect-modal path, so
+        // credentials cached at connect time would miss on the very
+        // next re-open. See `atlas_core::RemoteUri::with_default_port`.
         let uri = atlas_core::RemoteUri {
             scheme: server.backend.scheme().to_string(),
             host: Some(server.address.clone()),
@@ -678,7 +686,8 @@ impl ConnectController {
                 server.path.clone()
             },
             credential_ref: server.credential_ref.clone(),
-        };
+        }
+        .with_default_port(server.backend);
         let location = Location::Remote(uri, server.backend);
 
         {
@@ -1177,6 +1186,13 @@ fn assemble_location(st: &State) -> Result<Location, ErrorKind> {
                 .map_err(|_| ErrorKind::Malformed)?,
         )
     };
+    let path = if st.path.is_empty() {
+        "/".to_owned()
+    } else if st.path.starts_with('/') {
+        st.path.clone()
+    } else {
+        format!("/{}", st.path)
+    };
     // Normalise the port to the backend default when the user omitted
     // it. All downstream layers (connection pool key, credentials
     // cache key, known-hosts store, servers.toml dedup, keychain
@@ -1185,19 +1201,13 @@ fn assemble_location(st: &State) -> Result<Location, ErrorKind> {
     // canonical fix for the reported bug where `sftp://user@host`
     // failed but `sftp://user@host:22` succeeded — cache and pool
     // lookups were keyed on `port: None` and could not reuse entries
-    // stored under `port: Some(22)`.
-    let port = explicit_port.or_else(|| kind.default_port());
-    let path = if st.path.is_empty() {
-        "/".to_owned()
-    } else if st.path.starts_with('/') {
-        st.path.clone()
-    } else {
-        format!("/{}", st.path)
-    };
+    // stored under `port: Some(22)`. See
+    // `atlas_core::RemoteUri::with_default_port` for the single-source
+    // helper every construction site now routes through.
     let uri = atlas_core::RemoteUri {
         scheme: kind.scheme().to_string(),
         host: Some(st.host.trim().to_owned()),
-        port,
+        port: explicit_port,
         username: if st.username.is_empty() {
             None
         } else {
@@ -1205,7 +1215,8 @@ fn assemble_location(st: &State) -> Result<Location, ErrorKind> {
         },
         path,
         credential_ref: None,
-    };
+    }
+    .with_default_port(kind);
     Ok(Location::Remote(uri, kind))
 }
 

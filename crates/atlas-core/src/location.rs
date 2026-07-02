@@ -607,7 +607,8 @@ impl FromStr for Location {
             username: username.map(str::to_owned),
             path: path.to_string(),
             credential_ref: None,
-        };
+        }
+        .with_default_port(kind);
 
         Ok(Self::Remote(uri, kind))
     }
@@ -786,7 +787,12 @@ mod tests {
         };
         assert!(uri.username.is_none());
         assert_eq!(uri.host.as_deref(), Some("host"));
-        assert!(uri.port.is_none());
+        // Bare host (no `:port`) canonicalises to the backend default
+        // port at parse time so every downstream cache key (pool key,
+        // cred_key, known_hosts, keychain account) treats
+        // `sftp://host` and `sftp://host:22` as the same entry. See
+        // `RemoteUri::with_default_port`.
+        assert_eq!(uri.port, Some(22));
         assert_eq!(uri.path, "/");
     }
 
@@ -823,7 +829,9 @@ mod tests {
         assert_eq!(kind, BackendKind::Ftp);
         assert_eq!(uri.username.as_deref(), Some("anon"));
         assert_eq!(uri.host.as_deref(), Some("ftp.example.com"));
-        assert_eq!(uri.port, None);
+        // Bare authority normalises to the FTP default port so
+        // downstream caches see the same key as `ftp://…:21/pub`.
+        assert_eq!(uri.port, Some(21));
         assert_eq!(uri.path, "/pub");
     }
 
@@ -853,7 +861,12 @@ mod tests {
 
     #[test]
     fn unicode_paths_survive_roundtrip() {
-        let raw = "sftp://user@host/naïve/résumé/ünicode";
+        // Include the explicit `:22` so the roundtrip through
+        // `to_string()` re-emits it exactly — port normalisation adds
+        // a bare `sftp://user@host` → `sftp://user@host:22`, which
+        // would fail an exact-match assertion. See
+        // `RemoteUri::with_default_port`.
+        let raw = "sftp://user@host:22/naïve/résumé/ünicode";
         let loc = Location::from_str(raw).unwrap();
         assert_eq!(loc.to_string(), raw);
     }
