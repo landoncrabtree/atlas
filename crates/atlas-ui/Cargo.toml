@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 atlas-core.workspace = true
 atlas-fs.workspace = true
+atlas-remote.workspace = true
 atlas-config.workspace = true
 atlas-keymap.workspace = true
 atlas-thumbs.workspace = true
@@ -36,6 +37,7 @@ toml.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 regex.workspace = true
+anyhow.workspace = true
 fs2 = "0.4"
 arboard = "3"
 open = "5"

@@ -35,6 +35,7 @@ use crate::{
     palette::{
         ActionsSource, BookmarksSource, GotoPathsSource, PaletteController, WalkerPathIndex,
     },
+    remote::ConnectController,
     rename::BulkRenameController,
     search::SearchController,
     theme::{ThemeMode, ThemeTokens},
@@ -786,6 +787,8 @@ pub struct AppShell {
     ops: Arc<OpsController>,
     /// Bulk rename modal controller.
     bulk_rename: Arc<BulkRenameController>,
+    /// Connect-to-Server modal controller.
+    connect: Arc<ConnectController>,
     /// OS-clipboard bridge for Copy / Cut / Paste of file paths.
     clipboard: Arc<crate::clipboard::ClipboardController>,
     /// Shared thumbnail cache used when building new pane controllers on split.
@@ -869,6 +872,8 @@ impl AppShell {
         ops.attach_window(window.as_weak());
         let bulk_rename = BulkRenameController::new(Arc::clone(&ops), Arc::clone(&actions));
         bulk_rename.attach_window(window.as_weak());
+        let connect = ConnectController::new();
+        connect.attach_window(window.as_weak());
         let clipboard = crate::clipboard::ClipboardController::new(Arc::clone(&ops));
 
         // Construct the shell cyclically so controllers can hold a weak
@@ -904,6 +909,7 @@ impl AppShell {
                 search,
                 ops,
                 bulk_rename,
+                connect: Arc::clone(&connect),
                 clipboard,
                 thumb_cache,
                 thumb_worker_count,
@@ -921,6 +927,12 @@ impl AppShell {
         });
 
         shell.wire_callbacks(window);
+
+        // Give the connect controller a weak handle back to the shell so
+        // it can mount a remote vm onto the target pane once the OpenDAL
+        // probe succeeds. Cyclic-safe: shell -> connect (strong),
+        // connect -> shell (weak).
+        shell.connect.set_shell(Arc::downgrade(&shell));
 
         // Route goto::Anything (and any other Path-kind palette result)
         // through fs::View so directories navigate the focused pane and
@@ -1088,19 +1100,95 @@ impl AppShell {
         self.workspace.read().focused
     }
 
-    /// Stub entry point for the "Connect to Server" modal.
+    /// Open the Cmd+K "Connect to Server" modal targeting `pane_id`.
     ///
-    /// The real modal (SFTP/S3/WebDAV/FTP host + credential entry) is
-    /// implemented in a follow-up phase (see the `connect-modal-ui` and
-    /// `connect-controller` todos in the phase 2 plan). For now this exists
-    /// so the `remote::Connect` keymap action has a landing pad and the
-    /// dispatcher can be wired end-to-end.
-    #[allow(clippy::unused_self)] // `pane_id` is intentionally unused until the modal lands.
+    /// The modal itself is a Slint component
+    /// (`assets/ui/components/connect-server.slint`); this method resets
+    /// the [`ConnectController`] state and pushes the initial visibility
+    /// / defaults to the Slint window via
+    /// [`slint::invoke_from_event_loop`]. All subsequent field edits and
+    /// the Connect / Save+Connect actions route through
+    /// [`ConnectController`] callbacks registered in
+    /// [`Self::wire_callbacks`].
     pub fn open_connect_modal(&self, pane_id: PaneId) {
-        tracing::info!(
-            pane = ?pane_id,
-            "remote::Connect: modal not yet implemented — phase 2.2"
-        );
+        tracing::info!(pane = ?pane_id, "remote::Connect: opening modal");
+        self.connect.open(pane_id);
+    }
+
+    /// Return the shared Connect controller (test-only accessor).
+    #[must_use]
+    pub fn connect_controller(&self) -> Arc<ConnectController> {
+        Arc::clone(&self.connect)
+    }
+
+    /// Mount a remote [`LocationViewModel`] onto the target pane.
+    ///
+    /// Called by [`ConnectController`] once the OpenDAL handshake
+    /// succeeds. Swaps the pane's `PaneModel::location`, injects the vm
+    /// into the shell's per-pane vm map, and re-subscribes the details /
+    /// grid / gallery view controllers. Also fires the same UI refresh
+    /// as local navigation (breadcrumb, address bar, ops panel).
+    ///
+    /// Unlike [`Self::on_location_changed_impl`] this does NOT touch
+    /// `ctrl.tree` / `ctrl.miller`: neither the tree view nor the miller
+    /// column view have remote-fs plumbing yet (they are file-tree
+    /// walkers over a native `PathBuf`). Remote-fs support for those is
+    /// scheduled for phase 2.5.
+    pub fn open_remote_location(
+        self: &Arc<Self>,
+        pane_id: PaneId,
+        location: Location,
+        vm: Arc<dyn LocationViewModel>,
+    ) {
+        tracing::info!(pane = ?pane_id, loc = %location.display_path(), "mounting remote location");
+        let vm_dyn = Arc::clone(&vm);
+        self.vms.write().insert(pane_id, Arc::clone(&vm_dyn));
+
+        {
+            let panes = self.panes_ctrl.read();
+            if let Some(ctrl) = panes.get(&pane_id) {
+                ctrl.details.set_location(Arc::clone(&vm_dyn));
+                ctrl.grid.set_location(Arc::clone(&vm_dyn));
+                ctrl.gallery.set_location(Arc::clone(&vm_dyn));
+                // Note: tree and miller are local-only for now. On
+                // remote mount they retain their previous local root
+                // silently; the pane's details/grid/gallery views are
+                // what the user actually sees for a remote pane in
+                // phase 2.3.
+            }
+        }
+
+        let display = location.display_path();
+        {
+            let mut workspace = self.workspace.write();
+            if let Some(pane_state) = workspace.pane_mut(pane_id) {
+                let tab = pane_state.active_mut();
+                tab.location = Some(location.clone());
+                tab.title = display
+                    .rsplit('/')
+                    .find(|s| !s.is_empty())
+                    .map_or_else(|| display.clone(), std::string::ToString::to_string);
+            }
+        }
+
+        self.project_workspace_to_slint();
+        self.refresh_status();
+        self.refresh_pane_status(pane_id);
+
+        // Same live-status watcher pattern as local navigation.
+        let shell_bg = Arc::clone(self);
+        let events = vm.subscribe();
+        std::thread::Builder::new()
+            .name(format!("atlas-status-{pane_id:?}"))
+            .spawn(move || {
+                while let Ok(_ev) = events.recv() {
+                    shell_bg.refresh_pane_status(pane_id);
+                    if pane_id == shell_bg.focused_pane_id() {
+                        shell_bg.refresh_status();
+                    }
+                }
+            })
+            .ok();
     }
 
     /// Set focus to the given pane.
@@ -3165,6 +3253,93 @@ impl AppShell {
             window.on_bulk_rename_cancel(move || {
                 bulk_rename.close();
             });
+        }
+
+        // ── Connect-to-Server modal callbacks ─────────────────────────────────
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_backend_changed(move |i| connect.set_backend(i));
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_auth_changed(move |i| connect.set_auth(i));
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_connection_string_changed(move |s| {
+                connect.set_connection_string(s.to_string());
+            });
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_host_changed(move |s| connect.set_host(s.to_string()));
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_port_changed(move |s| connect.set_port(s.to_string()));
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_path_changed(move |s| connect.set_path(s.to_string()));
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_username_changed(move |s| connect.set_username(s.to_string()));
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_password_changed(move |s| connect.set_password(s.to_string()));
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window
+                .on_connect_ssh_key_path_changed(move |s| connect.set_ssh_key_path(s.to_string()));
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_iam_access_key_changed(move |s| {
+                connect.set_iam_access_key(s.to_string());
+            });
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_iam_secret_key_changed(move |s| {
+                connect.set_iam_secret_key(s.to_string());
+            });
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_iam_session_token_changed(move |s| {
+                connect.set_iam_session_token(s.to_string());
+            });
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_s3_endpoint_changed(move |s| connect.set_s3_endpoint(s.to_string()));
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_label_changed(move |s| connect.set_label(s.to_string()));
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_toggle_save_to_keychain(move || connect.toggle_save_to_keychain());
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_browse_ssh_key(move || connect.browse_ssh_key());
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_cancel(move || connect.close());
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_dry_run(move || connect.connect());
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_save_and_connect(move || connect.save_and_connect());
         }
 
         // ── Navigation location callbacks ─────────────────────────────────────

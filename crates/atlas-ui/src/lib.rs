@@ -18,6 +18,7 @@ pub mod navigation;
 pub mod ops;
 pub mod palette;
 pub mod platform;
+pub mod remote;
 pub mod rename;
 pub mod search;
 pub mod shell;

@@ -428,6 +428,130 @@ impl FromStr for Location {
     }
 }
 
+impl Location {
+    /// Parse a freeform "Connect" input string into a [`Location`].
+    ///
+    /// This is the permissive parser used by the Connect-to-Server modal:
+    /// it accepts everything [`FromStr`] does *and* a shorthand form
+    /// without an explicit scheme, `[user@]host[:port][/path]`, which is
+    /// interpreted as SFTP (the most common remote backend for a bare
+    /// `user@host` shape).
+    ///
+    /// # Grammar
+    ///
+    /// - `sftp://user@host:22/var/log` → full URI, parsed via [`FromStr`].
+    /// - `s3://bucket/prefix` → full URI, parsed via [`FromStr`].
+    /// - `webdav+https://cloud/dav` → the `+https`/`+http` transport
+    ///   suffix is stripped; scheme becomes `webdav`.
+    /// - `user@host` → `sftp://user@host/`.
+    /// - `user@host:2222` → `sftp://user@host:2222/`.
+    /// - `user@host:2222/var/log` → `sftp://user@host:2222/var/log`.
+    /// - `host` → `sftp://host/`.
+    /// - `/local/path`, `~/foo`, `foo/bar` → [`Location::Local`].
+    /// - empty → empty [`Location::Local`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`FromStr`], plus:
+    /// - [`LocationParseError::EmptyAuthority`] when a scheme-less input
+    ///   like `@host` has an empty user.
+    ///
+    /// Freeform parsing NEVER produces credential material — the
+    /// `credential_ref` on the returned [`RemoteUri`] is always `None`.
+    pub fn parse_freeform(input: &str) -> Result<Self, LocationParseError> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Ok(Self::Local(PathBuf::new()));
+        }
+
+        // Handle the WebDAV / S3 "+transport" suffix (`webdav+https://…`,
+        // `webdav+http://…`) by rewriting the scheme part before handing
+        // off to the strict parser.
+        if let Some(sep_idx) = trimmed.find("://") {
+            let scheme_raw = &trimmed[..sep_idx];
+            let rest = &trimmed[sep_idx..];
+            let base_scheme = scheme_raw
+                .split('+')
+                .next()
+                .unwrap_or(scheme_raw)
+                .to_ascii_lowercase();
+            let normalised = format!("{base_scheme}{rest}");
+            return Self::from_str(&normalised);
+        }
+
+        // Absolute or explicit local path shapes.
+        if trimmed.starts_with('/')
+            || trimmed.starts_with('~')
+            || trimmed.starts_with('.')
+            || (trimmed.len() >= 2 && trimmed.as_bytes()[1] == b':')
+        {
+            return Ok(Self::Local(PathBuf::from(trimmed)));
+        }
+
+        // Bare relative path with slashes but no `user@` and no colon —
+        // treat as local (e.g. `foo/bar`).
+        if !trimmed.contains('@') && !trimmed.contains(':') && trimmed.contains('/') {
+            return Ok(Self::Local(PathBuf::from(trimmed)));
+        }
+
+        // Otherwise the shorthand is a remote SFTP address:
+        //   [user@]host[:port][/path]
+        let (authority, path) = match trimmed.find('/') {
+            Some(idx) => (&trimmed[..idx], &trimmed[idx..]),
+            None => (trimmed, ""),
+        };
+        if authority.is_empty() {
+            return Err(LocationParseError::EmptyAuthority);
+        }
+
+        let (username, hostport) = match authority.find('@') {
+            Some(idx) => {
+                let user = &authority[..idx];
+                if user.is_empty() {
+                    return Err(LocationParseError::EmptyAuthority);
+                }
+                (Some(user), &authority[idx + 1..])
+            }
+            None => (None, authority),
+        };
+        if hostport.is_empty() {
+            return Err(LocationParseError::EmptyAuthority);
+        }
+
+        let (host, port) = if let Some(idx) = hostport.rfind(':') {
+            let (h, p) = hostport.split_at(idx);
+            let p = &p[1..];
+            let port = p
+                .parse::<u16>()
+                .map_err(|_| LocationParseError::InvalidPort(p.to_string()))?;
+            (h.to_string(), Some(port))
+        } else {
+            (hostport.to_string(), None)
+        };
+
+        // `host` may still be empty when `hostport` was `":22"` — reject.
+        if host.is_empty() {
+            return Err(LocationParseError::EmptyAuthority);
+        }
+
+        let path_str = if path.is_empty() {
+            "/".to_string()
+        } else {
+            path.to_string()
+        };
+
+        let uri = RemoteUri {
+            scheme: BackendKind::Sftp.scheme().to_string(),
+            host: Some(host),
+            port,
+            username: username.map(str::to_owned),
+            path: path_str,
+            credential_ref: None,
+        };
+        Ok(Self::Remote(uri, BackendKind::Sftp))
+    }
+}
+
 impl Serialize for Location {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self)
@@ -673,5 +797,197 @@ mod tests {
         // fails — it recovers by treating the input as a bare local path.
         let loc: Location = "not://a valid uri".into();
         assert!(loc.is_local());
+    }
+
+    // ── parse_freeform tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn parse_freeform_full_sftp_uri() {
+        let loc = Location::parse_freeform("sftp://alice@example.com:2222/var/log").unwrap();
+        let Location::Remote(uri, kind) = loc else {
+            panic!()
+        };
+        assert_eq!(kind, BackendKind::Sftp);
+        assert_eq!(uri.username.as_deref(), Some("alice"));
+        assert_eq!(uri.host.as_deref(), Some("example.com"));
+        assert_eq!(uri.port, Some(2222));
+        assert_eq!(uri.path, "/var/log");
+    }
+
+    #[test]
+    fn parse_freeform_bare_user_host() {
+        let loc = Location::parse_freeform("landon@myhost.com").unwrap();
+        let Location::Remote(uri, kind) = loc else {
+            panic!()
+        };
+        assert_eq!(kind, BackendKind::Sftp);
+        assert_eq!(uri.username.as_deref(), Some("landon"));
+        assert_eq!(uri.host.as_deref(), Some("myhost.com"));
+        assert!(uri.port.is_none());
+        assert_eq!(uri.path, "/");
+    }
+
+    #[test]
+    fn parse_freeform_user_host_port() {
+        let loc = Location::parse_freeform("landon@myhost.com:2222").unwrap();
+        let Location::Remote(uri, _) = loc else {
+            panic!()
+        };
+        assert_eq!(uri.username.as_deref(), Some("landon"));
+        assert_eq!(uri.port, Some(2222));
+        assert_eq!(uri.path, "/");
+    }
+
+    #[test]
+    fn parse_freeform_user_host_port_path() {
+        let loc = Location::parse_freeform("landon@myhost.com:2222/var/log").unwrap();
+        let Location::Remote(uri, _) = loc else {
+            panic!()
+        };
+        assert_eq!(uri.username.as_deref(), Some("landon"));
+        assert_eq!(uri.host.as_deref(), Some("myhost.com"));
+        assert_eq!(uri.port, Some(2222));
+        assert_eq!(uri.path, "/var/log");
+    }
+
+    #[test]
+    fn parse_freeform_bare_host_only() {
+        let loc = Location::parse_freeform("myhost.com").unwrap();
+        let Location::Remote(uri, kind) = loc else {
+            panic!("expected Remote — bare host is treated as SFTP shorthand")
+        };
+        assert_eq!(kind, BackendKind::Sftp);
+        assert!(uri.username.is_none());
+        assert_eq!(uri.host.as_deref(), Some("myhost.com"));
+        assert_eq!(uri.path, "/");
+    }
+
+    #[test]
+    fn parse_freeform_s3_bucket_prefix() {
+        let loc = Location::parse_freeform("s3://my-bucket/prefix/key").unwrap();
+        let Location::Remote(uri, kind) = loc else {
+            panic!()
+        };
+        assert_eq!(kind, BackendKind::S3);
+        assert_eq!(uri.host.as_deref(), Some("my-bucket"));
+        assert_eq!(uri.path, "/prefix/key");
+    }
+
+    #[test]
+    fn parse_freeform_webdav_plus_https_normalises() {
+        let loc = Location::parse_freeform("webdav+https://cloud.example.com/dav").unwrap();
+        let Location::Remote(uri, kind) = loc else {
+            panic!()
+        };
+        assert_eq!(kind, BackendKind::WebDav);
+        assert_eq!(uri.scheme, "webdav");
+        assert_eq!(uri.host.as_deref(), Some("cloud.example.com"));
+        assert_eq!(uri.path, "/dav");
+    }
+
+    #[test]
+    fn parse_freeform_webdav_plus_http_normalises() {
+        let loc = Location::parse_freeform("webdav+http://internal.local/dav").unwrap();
+        let Location::Remote(uri, kind) = loc else {
+            panic!()
+        };
+        assert_eq!(kind, BackendKind::WebDav);
+        assert_eq!(uri.scheme, "webdav");
+    }
+
+    #[test]
+    fn parse_freeform_ftp_uri() {
+        let loc = Location::parse_freeform("ftp://anon@ftp.example.com/pub").unwrap();
+        let Location::Remote(uri, kind) = loc else {
+            panic!()
+        };
+        assert_eq!(kind, BackendKind::Ftp);
+        assert_eq!(uri.username.as_deref(), Some("anon"));
+        assert_eq!(uri.path, "/pub");
+    }
+
+    #[test]
+    fn parse_freeform_empty_returns_empty_local() {
+        let loc = Location::parse_freeform("").unwrap();
+        assert!(loc.is_local());
+        assert_eq!(loc.as_local(), Some(Path::new("")));
+    }
+
+    #[test]
+    fn parse_freeform_whitespace_only_returns_empty_local() {
+        let loc = Location::parse_freeform("   \t\n ").unwrap();
+        assert!(loc.is_local());
+    }
+
+    #[test]
+    fn parse_freeform_local_absolute_path() {
+        let loc = Location::parse_freeform("/Users/alice/Downloads").unwrap();
+        assert_eq!(loc.as_local(), Some(Path::new("/Users/alice/Downloads")));
+    }
+
+    #[test]
+    fn parse_freeform_local_tilde_path() {
+        let loc = Location::parse_freeform("~/Documents/notes").unwrap();
+        assert_eq!(loc.as_local(), Some(Path::new("~/Documents/notes")));
+    }
+
+    #[test]
+    fn parse_freeform_local_relative_path() {
+        let loc = Location::parse_freeform("./relative/path").unwrap();
+        assert_eq!(loc.as_local(), Some(Path::new("./relative/path")));
+    }
+
+    #[test]
+    fn parse_freeform_unknown_scheme_errors() {
+        let err = Location::parse_freeform("gopher://host/path").unwrap_err();
+        assert_eq!(err, LocationParseError::UnknownScheme("gopher".into()));
+    }
+
+    #[test]
+    fn parse_freeform_invalid_port_errors() {
+        let err = Location::parse_freeform("user@host:abc/path").unwrap_err();
+        assert_eq!(err, LocationParseError::InvalidPort("abc".into()));
+    }
+
+    #[test]
+    fn parse_freeform_at_prefix_errors() {
+        // Empty user before @ is a hard error.
+        let err = Location::parse_freeform("@host").unwrap_err();
+        assert_eq!(err, LocationParseError::EmptyAuthority);
+    }
+
+    #[test]
+    fn parse_freeform_port_only_errors() {
+        // ":22" alone has no host.
+        let err = Location::parse_freeform(":22").unwrap_err();
+        assert_eq!(err, LocationParseError::EmptyAuthority);
+    }
+
+    #[test]
+    fn parse_freeform_unicode_survives() {
+        // Non-ASCII in the path — sanity check we don't choke.
+        let loc = Location::parse_freeform("sftp://user@host/naïve/résumé").unwrap();
+        assert_eq!(loc.display_path(), "sftp://user@host/naïve/résumé");
+    }
+
+    #[test]
+    fn parse_freeform_never_carries_credential_ref() {
+        // The Connect modal never provides credential material through
+        // this parser: the returned RemoteUri always has credential_ref = None.
+        let loc = Location::parse_freeform("sftp://alice@host:22/x").unwrap();
+        let Location::Remote(uri, _) = loc else {
+            panic!()
+        };
+        assert!(uri.credential_ref.is_none());
+    }
+
+    #[test]
+    fn parse_freeform_normalises_scheme_case() {
+        let loc = Location::parse_freeform("SFTP://user@host/path").unwrap();
+        let Location::Remote(uri, kind) = loc else {
+            panic!()
+        };
+        assert_eq!(kind, BackendKind::Sftp);
+        assert_eq!(uri.scheme, "sftp");
     }
 }
