@@ -224,3 +224,99 @@ test --workspace ✓`.
 - ⏸️ Dynamic `Menu` items — Slint 1.17 `Menu` cannot rebuild
   children from a model at runtime; every item is declared with an
   `if <bool>: MenuItem { … }` guard. Waiting for Slint 2.x.
+
+---
+
+## Phase 2.10 — font-family plumbing + Nerd Font icons — LANDED
+
+Three-item polish sprint on top of Phase 2.9's icon module: fix the
+silently-broken `ui.font_family` wiring, bundle a symbols-only Nerd
+Font as a Slint-registered fallback, and rewrite `theming::icons`
+around a curated LSD-style Nerd Font glyph map. Test count net +13
+(baseline 707 → 720); same FSEvents flaky bucket documented in the
+`fix-flaky-test` skill.
+
+- **f8e85ef** — `fix(ui): make ui.font_family config actually reach
+  Slint`. The config field was wired end-to-end (`atlas-config` →
+  `apply_font_overrides` → `ThemeTokens.typography` → `AppShell::
+  apply_theme` → Window `default-font-family`), but we were passing
+  a comma-separated CSS-style fallback stack (`"<user>, SF Pro Text,
+  ..."`) into Slint. Slint 1.17's `FontRequest.family`
+  (`i-slint-core/graphics.rs` L91–94) is a **single family name** —
+  not a fallback list — so the compound string never matched and
+  every user's `font_family` was a silent no-op. Fix: replace the
+  theme's family with the user's choice unmodified; let Slint's
+  own fontique fallback cover unknown families and missing glyphs.
+  Delete the now-useless `prepend_font` helper; empty the
+  fallback-stack literals in `atlas-dark.toml`, `atlas-light.toml`,
+  `theme.slint`, `atlas.slint`; document the single-family
+  constraint in `skeleton.toml` so users don't retry the comma
+  trick. Live-verified with `font_family = "Courier New"` — the
+  whole UI renders in Courier New.
+
+- **a0b1a72** — `feat(fonts): bundle Symbols Nerd Font Mono +
+  register as Slint fallback`. Bundle
+  `assets/fonts/SymbolsNerdFontMono-Regular.ttf` (2.5 MB, MIT — see
+  `assets/fonts/NERD-FONTS-LICENSE`). Symbols-only means the font
+  ships **only** PUA icon glyphs (no letters, no digits, no
+  punctuation) so it can never compete with the user's text font.
+  Register it process-wide via a top-level Slint import
+  (`import "../fonts/SymbolsNerdFontMono-Regular.ttf";` in
+  `atlas.slint`) — the recommended compile-time path per the Slint
+  1.17 docs; no runtime feature flags, no `unstable-fontique-010`
+  needed. Expose `Theme.icon-font-family = "Symbols Nerd Font Mono"`
+  as the binding icon-rendering Text elements consume. Also add a
+  `.gitattributes` marking `*.ttf/otf/woff/woff2` as binary and a
+  `assets/fonts/README.md` documenting the font, license, and
+  refresh procedure.
+
+- **cc15249** — `feat(ui): LSD-style Nerd Font icons; drop
+  use_emoji option`. Rewrite `crates/atlas-ui/src/theming/icons.rs`
+  around a curated LSD-inspired glyph map (Apache-2.0 — see
+  `assets/fonts/LSD-LICENSE`). New `IconGlyph { glyph: char,
+  description: &'static str }` (single-scalar, not `&str`, because
+  every Nerd Font mapping is a single Unicode PUA scalar). Public
+  API is now just `icon_for(&Entry) -> IconGlyph` — the
+  `icon_for_with(entry, use_emoji: bool)` and `set_use_emoji`
+  entry points are gone. Resolution order: kind (dir / symlink /
+  broken / other) → executable-bit → **named-file lookup** (Cargo.
+  toml, package.json, Makefile, README, LICENSE, .gitignore,
+  Dockerfile, .env, shell dotfiles, editor dotfiles) → extension
+  (~130 across source, web, data/config, docs, images, video/
+  audio, archives, packages, notebooks, fonts, certs). Named-file
+  runs BEFORE extension so `Cargo.toml` gets the Rust manifest
+  glyph, not the generic TOML glyph. Every Slint view (`row.
+  slint`, `grid-cell.slint`, `miller-column.slint`, `gallery-strip.
+  slint`, `gallery-preview.slint`) pins `font-family: Theme.icon-
+  font-family` on the icon Text so Slint routes the glyph through
+  Symbols Nerd Font Mono. Delete `Icons { use_emoji: bool }` from
+  `atlas-config`; the config knob is gone. **Breaking change**:
+  users who had `use_emoji` in their `config.toml` will get a
+  clean `unknown field` TOML parse error (`deny_unknown_fields`)
+  — the config is auto-seeded, and the error is actionable.
+  40 unit tests (up from 26) covering named-file precedence,
+  extension coverage, uppercase normalisation, and a PUA-range
+  sanity check verifying every returned codepoint lives in the
+  Nerd Font PUA (a text-font fallback would render tofu —
+  motivating the icon-font-family bindings).
+
+### Baseline & regressions
+
+Baseline before Phase 2.10: 707 lib tests, 7 failed (all in the
+documented FSEvents flaky bucket from the `fix-flaky-test` skill).
+After Phase 2.10: 720 lib tests, 7 failed (same flaky bucket,
+different lottery). Net +13 tests, no regressions.
+`cargo build --workspace ✓ · cargo clippy --workspace --all-targets
+-- -D warnings ✓ · cargo fmt --all --check ✓ · cargo test
+--workspace ✓` (modulo the pre-existing flakies).
+
+### Deferred items after Phase 2.10
+
+- ⏸️ **`ui.icons.pack = "nerd" | "ascii"` toggle** (optional item 4
+  from the phase brief). With Symbols Nerd Font Mono bundled and
+  the LSD map rendering cleanly on every tested platform, the
+  ASCII escape hatch is unnecessary today. File an issue if a
+  user encounters a platform where the bundled font doesn't
+  render.
+- ⏸️ Per-filetype color tinting (still — needs Slint 2.x).
+- ⏸️ Dynamic `Menu` items (still — needs Slint 2.x).
