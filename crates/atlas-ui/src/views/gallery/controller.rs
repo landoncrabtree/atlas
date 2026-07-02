@@ -18,7 +18,7 @@ use crate::{
     actions::ActionSink,
     models::split::PaneId,
     shell::AppShell,
-    theming::icons::icon_for,
+    theming::icons::{current_icon_pack, icon_for_with},
     views::{
         details::{format_relative_time, format_size},
         gallery::{
@@ -350,7 +350,7 @@ impl GalleryController {
         if entry.kind.is_dir() || !can_thumbnail(&entry.path) {
             *self.preview.write() = None;
             *self.preview_path.write() = None;
-            *self.preview_fallback_glyph.write() = fallback.to_string();
+            *self.preview_fallback_glyph.write() = fallback;
             self.preview_loading.store(false, Ordering::Relaxed);
             self.push_preview_to_ui();
             return;
@@ -486,7 +486,7 @@ impl GalleryController {
                             *self.preview.write() = None;
                             *self.preview_fallback_glyph.write() = self
                                 .current_focused_entry()
-                                .map(|entry| fallback_glyph(&entry).to_string())
+                                .map(|entry| fallback_glyph(&entry))
                                 .unwrap_or_default();
                             self.preview_loading.store(false, Ordering::Relaxed);
                             push_preview = true;
@@ -567,6 +567,29 @@ impl GalleryController {
             shell.publish_gallery_metadata(self.pane_id, metadata);
         }
     }
+
+    /// Rebuild every strip row + the preview-fallback glyph from the
+    /// current entries snapshot and push both back to Slint. Called
+    /// from `AppShell::set_icon_pack` on live-reload (Phase 2.11).
+    /// Unlike `refresh_from_location`, this deliberately preserves
+    /// preview state (decoded image, strip thumbs) so the pack swap
+    /// doesn't wipe an already-loaded preview — only glyph strings
+    /// change.
+    pub fn refresh(self: &Arc<Self>) {
+        let entries_snap = self.entries.read().clone();
+        let row_items: Vec<EntryRowItem> = entries_snap.iter().map(entry_to_row_item).collect();
+        self.push_rows_to_ui(row_items);
+
+        // Recompute the preview-fallback glyph for the currently-
+        // focused entry (matches the ASCII/Nerd pack that just got
+        // installed).
+        if self.preview.read().is_none() {
+            if let Some(entry) = self.current_focused_entry() {
+                *self.preview_fallback_glyph.write() = fallback_glyph(&entry);
+                self.push_preview_to_ui();
+            }
+        }
+    }
 }
 
 impl Drop for GalleryController {
@@ -575,8 +598,8 @@ impl Drop for GalleryController {
     }
 }
 
-fn fallback_glyph(entry: &Entry) -> char {
-    icon_for(entry).glyph
+fn fallback_glyph(entry: &Entry) -> String {
+    icon_for_with(entry, current_icon_pack()).text()
 }
 
 fn metadata_placeholder(entry: &Entry) -> UiMetadataFields {

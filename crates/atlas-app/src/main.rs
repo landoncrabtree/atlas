@@ -249,6 +249,11 @@ fn main() -> Result<()> {
     shell.set_animations_enabled(config.ui.animations);
     // config: reads config.ui.active_pane_border_px
     shell.set_active_pane_border_px(config.ui.active_pane_border_px);
+    // config: reads config.ui.icons.pack — installs the initial icon
+    // pack (nerd default; ascii is the cross-platform escape hatch).
+    // Phase 2.11 — see `theming::icons::set_icon_pack` docstring and
+    // `assets/fonts/README.md` for the rationale + live-reload hook.
+    shell.set_icon_pack(config.ui.icons.pack);
     // config: reads config.remote.preview (cache_dir, max_bytes,
     // max_age_secs, max_open_bytes) so remote-file previews land in
     // the user-configured cache.
@@ -679,6 +684,7 @@ fn spawn_config_event_thread(
             let initial = config_arc.load();
             let mut last_theme = initial.ui.theme.clone();
             let mut last_start = initial.general.start_path.clone();
+            let mut last_icon_pack = initial.ui.icons.pack;
             drop(initial);
 
             for event in events {
@@ -743,6 +749,24 @@ fn spawn_config_event_thread(
                         shell.set_animations_enabled(cfg.ui.animations);
                         shell.set_active_pane_border_px(cfg.ui.active_pane_border_px);
                         shell.set_vim_mode(cfg.general.vim_mode);
+
+                        // ── Icon pack (Phase 2.11) ────────────────────────
+                        //
+                        // Reuses the existing config-reload path rather
+                        // than a separate icon-config watcher (convergence
+                        // per `.github/instructions/ui-composition`).
+                        // `set_icon_pack` is safe to call unconditionally
+                        // but we skip the pane-refresh when nothing
+                        // changed to avoid a needless row-batch rebuild
+                        // on every unrelated config edit.
+                        if cfg.ui.icons.pack != last_icon_pack {
+                            last_icon_pack = cfg.ui.icons.pack;
+                            shell.set_icon_pack(cfg.ui.icons.pack);
+                            tracing::info!(
+                                pack = ?cfg.ui.icons.pack,
+                                "config reload: icon pack updated"
+                            );
+                        }
 
                         // ── Search knobs ──────────────────────────────────
                         search_ctrl.set_max_results(cfg.search.fuzzy_max_results);

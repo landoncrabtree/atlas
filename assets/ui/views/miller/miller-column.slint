@@ -71,7 +71,7 @@ export component MillerColumnView inherits Rectangle {
 
                     Text {
                         text: entry.kind-icon;
-                        font-family: Theme.icon-font-family;
+                        font-family: Theme.icon-family-for-pack;
                         color: (i == root.focused-index) ? Theme.selection-fg
                              : entry.is-broken-symlink    ? Theme.error
                              : Theme.fg-muted;

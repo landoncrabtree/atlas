@@ -81,11 +81,64 @@ pub struct Ui {
     /// the user can tell which pane will receive keystrokes. `0.0` disables
     /// the border entirely. Clamped to `[0.0, 6.0]` at load time.
     pub active_pane_border_px: f32,
+    /// Filetype-icon rendering options (glyph pack selection + friends).
+    /// See [`Icons`] for the full sub-schema. The `pack` field is the
+    /// cross-platform escape hatch introduced in Phase 2.11: on hosts
+    /// whose renderer can't reach the bundled Symbols Nerd Font Mono
+    /// (rare — the font is embedded via a Slint `import` at compile
+    /// time — but possible on trimmed-down Linux distros without
+    /// FreeType or on future headless targets), setting
+    /// `pack = "ascii"` swaps every PUA glyph for a text-only fallback.
+    pub icons: Icons,
 }
 
-// (The former `[ui.icons] use_emoji = <bool>` knob was removed in Phase
-// 2.10 — filetype icons are now always rendered from the bundled
-// Symbols Nerd Font Mono. See `atlas_ui::theming::icons`.)
+/// Filetype-icon rendering options.
+///
+/// A separate struct rather than fields dangling off `Ui` so the TOML
+/// schema stays discoverable: `[ui.icons] pack = "nerd" | "ascii"`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Icons {
+    /// Glyph pack used to render filetype icons in every view.
+    /// See [`IconPack`] for values.
+    pub pack: IconPack,
+}
+
+/// Glyph pack for filetype icons.
+///
+/// The default [`IconPack::Nerd`] draws from the bundled Symbols Nerd
+/// Font Mono TTF (embedded at compile time via a top-level Slint
+/// `import` in `atlas.slint`; see `assets/fonts/README.md`).
+/// [`IconPack::Ascii`] is a text-only fallback covering the same set of
+/// filetype categories with bracketed 2–3-char labels (`[D]`, `[c]`,
+/// `[i]`, …). Rendered in the user's normal text font so it works even
+/// when the icon font is unavailable at runtime — an escape hatch for
+/// Windows / trimmed-down Linux distros where the embedded font cannot
+/// be registered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IconPack {
+    /// Nerd Font PUA glyphs from the bundled Symbols Nerd Font Mono.
+    #[default]
+    Nerd,
+    /// ASCII text-only fallback (`[D]`, `[c]`, `[i]`, …). No dependency
+    /// on the bundled icon font.
+    Ascii,
+}
+
+impl<'de> serde::Deserialize<'de> for IconPack {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        match s.to_lowercase().as_str() {
+            "nerd" => Ok(Self::Nerd),
+            "ascii" => Ok(Self::Ascii),
+            _ => Err(serde::de::Error::unknown_variant(&s, &["nerd", "ascii"])),
+        }
+    }
+}
 
 /// Layout density of the file list.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]

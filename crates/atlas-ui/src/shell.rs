@@ -5188,6 +5188,71 @@ impl AppShell {
         // internally. Linux is a no-op.
         crate::platform::titlebar_theme::apply_native_titlebar_theme(tokens.mode);
     }
+
+    /// Install `pack` as the process-wide icon pack and refresh every
+    /// live pane so their next Slint row batch renders under it.
+    ///
+    /// Called at startup from `crates/atlas-app/src/main.rs` immediately
+    /// after the config load, and again inside `spawn_config_event_thread`
+    /// whenever `ui.icons.pack` changes on disk. Extending the existing
+    /// theme hot-reload plumbing rather than adding a parallel watcher
+    /// keeps the single-config-source-of-truth contract (see
+    /// `.github/instructions/ui-composition.instructions.md`).
+    ///
+    /// Two things happen when the pack changes:
+    /// 1. The Slint-side `Theme.icon-pack-is-ascii` flag flips, which
+    ///    triggers the `icon-family-for-pack` reactive property to
+    ///    return either `icon-font-family` (nerd) or `font-family`
+    ///    (ascii). Every icon Text element re-picks its font.
+    /// 2. Every view controller rebuilds its rows so each row's
+    ///    `kind_icon` field contains the correct string per pack
+    ///    (`\u{e7a8}` under nerd vs. `[c]` under ascii). A pure font
+    ///    swap wouldn't suffice — the Nerd PUA codepoints do not have
+    ///    the same visual meaning when rendered in the user's text
+    ///    font.
+    pub fn set_icon_pack(self: &Arc<Self>, pack: atlas_config::IconPack) {
+        // Store into the process-wide atomic so the very next
+        // `icon_for_with(entry, current_icon_pack())` call inside a
+        // view controller's row builder picks up the new pack.
+        crate::theming::icons::set_icon_pack(pack);
+
+        // Flip the Slint-side bool so icon Text elements swap their
+        // font-family via `Theme.icon-family-for-pack`.
+        let weak = self.window.clone();
+        let is_ascii = matches!(pack, atlas_config::IconPack::Ascii);
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_theme_icon_pack_is_ascii(is_ascii);
+            }
+        });
+
+        // Refresh every live pane so its next row batch reflects the
+        // new glyph strings.
+        self.refresh_all_pane_views();
+    }
+
+    /// Rebuild every live pane's currently-visible view. Cheap when
+    /// only one view is active per pane (the norm) — dispatches to
+    /// the controller matching `pane_view_mode(id)` rather than
+    /// refreshing all four view controllers per pane.
+    ///
+    /// Used by `set_icon_pack` after a pack change. Could equally be
+    /// used by any future subsystem that needs to force a per-row
+    /// re-render without invalidating navigation state.
+    pub fn refresh_all_pane_views(self: &Arc<Self>) {
+        let ids: Vec<PaneId> = self.panes_ctrl.read().keys().copied().collect();
+        for id in ids {
+            let Some(ctrl) = self.pane_by_id(id) else {
+                continue;
+            };
+            match self.pane_view_mode(id) {
+                ViewMode::Details => ctrl.details.refresh(),
+                ViewMode::Grid => ctrl.grid.refresh(),
+                ViewMode::Miller => ctrl.miller.refresh(),
+                ViewMode::Gallery => ctrl.gallery.refresh(),
+            }
+        }
+    }
 }
 
 /// Return a "New Folder" name that does not yet exist in `parent_dir`.

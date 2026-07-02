@@ -91,6 +91,13 @@ export component AtlasWindow inherits Window {
     /// config.ui.animations.
     in-out property <bool> theme-animations: true;
 
+    /// When true, filetype icons render as ASCII text tokens (`[D]`, `[c]`,
+    /// `[i]`, …) in the user's normal text font instead of Nerd Font PUA
+    /// glyphs in `Theme.icon-font-family`. Wired from `config.ui.icons.pack`
+    /// via `AppShell::set_icon_pack`. Live-reloadable — see the
+    /// `spawn_config_event_thread` handler in crates/atlas-app/src/main.rs.
+    in-out property <bool> theme-icon-pack-is-ascii: false;
+
     // ── N-pane workspace ─────────────────────────────────────────────────────
 
     /// All live panes in DFS layout order; pushed by project_workspace_to_slint.
@@ -584,6 +591,7 @@ export component AtlasWindow inherits Window {
         Theme.row-h-compact = theme-row-h-compact;
         Theme.row-h-spacious = theme-row-h-spacious;
         Theme.animations = theme-animations;
+        Theme.icon-pack-is-ascii = theme-icon-pack-is-ascii;
     }
 
     changed dark => { Theme.dark = dark; }
@@ -632,6 +640,7 @@ export component AtlasWindow inherits Window {
     changed theme-row-h-compact => { Theme.row-h-compact = theme-row-h-compact; }
     changed theme-row-h-spacious => { Theme.row-h-spacious = theme-row-h-spacious; }
     changed theme-animations => { Theme.animations = theme-animations; }
+    changed theme-icon-pack-is-ascii => { Theme.icon-pack-is-ascii = theme-icon-pack-is-ascii; }
 
     // ── Context menu ─────────────────────────────────────────────────────
     //

@@ -32,7 +32,7 @@ use crate::{
     actions::{ActionSink, UiAction},
     models::split::PaneId,
     shell::{AppShell, MillerColumnCache},
-    theming::icons::icon_for,
+    theming::icons::{current_icon_pack, icon_for_with},
     views::{
         details::{format_relative_time, format_size},
         miller::column::Column,
@@ -626,6 +626,13 @@ impl MillerController {
         self.push_all_columns_to_ui();
     }
 
+    /// Rebuild every column row from the current miller state and push
+    /// the result to Slint. See the sibling `DetailsController::refresh`
+    /// docstring for the icon-pack-toggle rationale.
+    pub fn refresh(&self) {
+        self.push_all_columns_to_ui();
+    }
+
     // ── Test helpers ──────────────────────────────────────────────────────────
 
     /// Number of currently active columns (for tests).
@@ -718,7 +725,7 @@ fn entry_to_row_item(entry: &atlas_fs::Entry) -> EntryRowItem {
         EntryKind::Symlink { broken, .. } => (false, true, *broken),
         EntryKind::Other => (false, false, false),
     };
-    let kind_icon = icon_for(entry).glyph;
+    let kind_icon = icon_for_with(entry, current_icon_pack()).text();
 
     let size_text = if is_dir {
         String::new()
@@ -733,7 +740,7 @@ fn entry_to_row_item(entry: &atlas_fs::Entry) -> EntryRowItem {
 
     EntryRowItem {
         name: SharedString::from(entry.name.as_str()),
-        kind_icon: SharedString::from(kind_icon.to_string()),
+        kind_icon: SharedString::from(kind_icon),
         size_text: SharedString::from(size_text),
         modified_text: SharedString::from(modified_text),
         is_hidden: entry.metadata.is_hidden,

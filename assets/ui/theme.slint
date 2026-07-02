@@ -47,6 +47,22 @@ export global Theme {
     // fallback for icon glyphs.
     in-out property <string> icon-font-family: "Symbols Nerd Font Mono";
 
+    // ── Icon pack toggle (Phase 2.11) ─────────────────────────────────────────
+    //
+    // `icon-pack-is-ascii` is written from Rust (AppShell::set_icon_pack) at
+    // startup + on config hot-reload. It controls both which font the icon
+    // Text elements bind to (via `icon-family-for-pack` below) and — through
+    // the Rust-side row rebuild — which glyph string ends up in each row's
+    // `kind-icon` field. When `false` (default), icon cells render Nerd Font
+    // PUA glyphs in `icon-font-family`. When `true`, they render `[D]`/`[c]`/
+    // `[i]`/… fallback tokens in the user's normal text font.
+    //
+    // Views bind icon Text elements to `Theme.icon-family-for-pack` instead
+    // of `Theme.icon-font-family` so the same Text node handles both cases
+    // — no duplicate widget trees, no `if`-branch in every view row.
+    in-out property <bool> icon-pack-is-ascii: false;
+    out property <string> icon-family-for-pack: icon-pack-is-ascii ? font-family : icon-font-family;
+
     // ── Radii ─────────────────────────────────────────────────────────────────
     in-out property <length> radius-xs: 4px;
     in-out property <length> radius-sm: 6px;

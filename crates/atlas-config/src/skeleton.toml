@@ -69,10 +69,22 @@ animations = true
 # currently-focused pane. Use `0.0` to disable. Clamped to [0.0, 6.0].
 active_pane_border_px = 2.0
 
-# (Removed in Phase 2.10: the `[ui.icons] use_emoji` toggle. Atlas now
-# always renders filetype icons from the bundled Symbols Nerd Font Mono —
-# see assets/fonts/README.md. There's no ASCII fallback pack for now;
-# if you need one, file an issue.)
+# ── Filetype icons ────────────────────────────────────────────────────────────
+[ui.icons]
+# Glyph pack used for filetype icons in every view.
+#
+#   "nerd"  — Nerd Font PUA glyphs from the bundled Symbols Nerd Font Mono
+#             (default; embedded into the binary via a Slint compile-time
+#             import). Renders as rust crab, folder icon, python snake, etc.
+#   "ascii" — Text-only fallback (`[D]`, `[c]`, `[i]`, …). Renders in the
+#             user's text font. Use this on hosts where the bundled icon
+#             font can't be registered (rare — mostly a cross-platform
+#             escape hatch for headless / trimmed-down Linux distros or
+#             Windows setups without the FreeType prerequisites).
+#
+# Live-reloadable: saving this file with a different value updates every
+# open pane on the fly. See `assets/fonts/README.md` for details.
+pack = "nerd"
 
 [view]
 # Default view mode: "details", "grid", "gallery", "miller", or "tree".

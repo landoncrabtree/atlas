@@ -25,7 +25,7 @@ use crate::{
     actions::{ActionSink, UiAction},
     models::split::PaneId,
     shell::AppShell,
-    theming::icons::icon_for,
+    theming::icons::{current_icon_pack, icon_for_with},
     views::details::{format_relative_time, format_size},
     EntryRowItem,
 };
@@ -481,6 +481,13 @@ impl GridController {
             shell.publish_grid_focused_index(self.pane_id, focused_i32);
         }
     }
+
+    /// Rebuild every row from the current location snapshot and push
+    /// the result to Slint. See the sibling `DetailsController::refresh`
+    /// docstring for the icon-pack-toggle rationale.
+    pub fn refresh(&self) {
+        self.refresh_from_location();
+    }
 }
 
 impl Drop for GridController {
@@ -499,7 +506,7 @@ pub(crate) fn entry_to_row_item(entry: &Entry) -> EntryRowItem {
         EntryKind::Symlink { broken, .. } => (false, true, *broken),
         EntryKind::Other => (false, false, false),
     };
-    let kind_icon = icon_for(entry).glyph;
+    let kind_icon = icon_for_with(entry, current_icon_pack()).text();
 
     let size_text = if is_dir {
         String::new()
@@ -514,7 +521,7 @@ pub(crate) fn entry_to_row_item(entry: &Entry) -> EntryRowItem {
 
     EntryRowItem {
         name: SharedString::from(entry.name.as_str()),
-        kind_icon: SharedString::from(kind_icon.to_string()),
+        kind_icon: SharedString::from(kind_icon),
         size_text: SharedString::from(size_text),
         modified_text: SharedString::from(modified_text),
         is_hidden: entry.metadata.is_hidden,

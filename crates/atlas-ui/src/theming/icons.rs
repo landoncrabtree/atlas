@@ -6,9 +6,25 @@
 //! scalar drawn from the Symbols Nerd Font Mono bundle
 //! (`assets/fonts/SymbolsNerdFontMono-Regular.ttf`, registered in
 //! `assets/ui/atlas.slint`). Slint views must bind
-//! `font-family: Theme.icon-font-family` on the [`char`] label so the PUA
+//! `font-family: Theme.icon-family-for-pack` on the icon label so the PUA
 //! codepoints render as their intended Nerd Font glyphs instead of falling
 //! back to the user's text font (which would render tofu).
+//!
+//! # Icon pack toggle (`ui.icons.pack`)
+//!
+//! Since Phase 2.11 the module ships two parallel mappings:
+//!
+//! - [`IconPack::Nerd`] (default) — the LSD-derived Nerd Font PUA glyphs.
+//! - [`IconPack::Ascii`] — a text-only fallback (`[D]`, `[c]`, `[i]`, …).
+//!   Renders in the user's normal text font so the bundled icon TTF is
+//!   not required at runtime. Categories are coarser than the Nerd map
+//!   by design — the point is to convey kind at a glance, not filetype.
+//!
+//! Consumers pick the pack via [`icon_for_with`]; the shell mirrors the
+//! current pack into a process-wide [`AtomicU8`] via [`set_icon_pack`],
+//! and view controllers read it back via [`current_icon_pack`] on every
+//! row build. The atomic is set once at startup from
+//! [`atlas_config::Icons::pack`] and updated on live-reload.
 //
 // Icon map adapted from LSD (Apache-2.0) — see assets/fonts/LSD-LICENSE
 // for the upstream Apache license text and
@@ -32,7 +48,14 @@
 //!   *before* extension lookup so `Cargo.toml` gets the Rust icon
 //!   even though the extension is `.toml`.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use atlas_fs::{Entry, EntryKind};
+
+/// Re-export of [`atlas_config::IconPack`] so `theming::icons` can be
+/// the single import point for view controllers building row items —
+/// they don't need to depend on `atlas-config` directly.
+pub use atlas_config::IconPack;
 
 /// A single Nerd Font glyph paired with a short accessibility description.
 ///
@@ -52,6 +75,82 @@ pub struct IconGlyph {
 impl IconGlyph {
     const fn new(glyph: char, description: &'static str) -> Self {
         Self { glyph, description }
+    }
+}
+
+// ── Icon-pack toggle (Phase 2.11) ──────────────────────────────────────────
+//
+// The current pack lives in a process-wide [`AtomicU8`]: the shell sets
+// it once at startup from `atlas_config::Icons::pack` (and again on
+// every hot-reload) via [`set_icon_pack`]; view controllers read it back
+// through [`current_icon_pack`] on every row build. `Relaxed` ordering
+// is fine — the flag is advisory (a stale read in the ~microsecond
+// window between the config-event thread and the next UI tick only
+// means the very next row batch renders the previous pack; the
+// subsequent batch — which the shell always triggers after a pack
+// change — corrects it).
+
+const PACK_NERD: u8 = 0;
+const PACK_ASCII: u8 = 1;
+
+/// Process-wide icon pack toggle. Set once at startup from
+/// [`atlas_config::Icons::pack`]; updated on live-reload.
+static ICON_PACK: AtomicU8 = AtomicU8::new(PACK_NERD);
+
+/// Store the process-wide icon pack. Called by the shell on config
+/// wire-in and on live-reload.
+pub fn set_icon_pack(pack: IconPack) {
+    let v = match pack {
+        IconPack::Nerd => PACK_NERD,
+        IconPack::Ascii => PACK_ASCII,
+    };
+    ICON_PACK.store(v, Ordering::Relaxed);
+}
+
+/// Read the current process-wide icon pack.
+#[must_use]
+pub fn current_icon_pack() -> IconPack {
+    match ICON_PACK.load(Ordering::Relaxed) {
+        PACK_ASCII => IconPack::Ascii,
+        _ => IconPack::Nerd,
+    }
+}
+
+/// Rendered label for a filetype icon. Wraps either a single Nerd Font
+/// PUA scalar or a short ASCII fallback token; callers convert to
+/// [`String`]/`SharedString` via [`IconLabel::text`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconLabel {
+    /// Single Nerd Font PUA scalar. Rendered in `Theme.icon-font-family`.
+    Nerd(char),
+    /// Static ASCII/text fallback (≤ 3 chars). Rendered in
+    /// `Theme.font-family`. `[D]` folder, `[c]` code, `[i]` image, …
+    /// The single-source-of-truth mapping lives in [`icon_for_ascii`].
+    Ascii(&'static str),
+}
+
+impl IconLabel {
+    /// Convert to an owned `String` suitable for a Slint `SharedString`.
+    /// Nerd branch does one small heap allocation (one Unicode scalar
+    /// UTF-8 encoded); ASCII branch clones a `&'static str` — same
+    /// allocation cost as any other row-cell string.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match self {
+            Self::Nerd(c) => c.to_string(),
+            Self::Ascii(s) => (*s).to_string(),
+        }
+    }
+
+    /// Length in bytes of the rendered label. Used by tests to enforce
+    /// the ≤ 3 chars constraint on ASCII fallbacks so the Slint icon
+    /// layout doesn't stretch horizontally.
+    #[must_use]
+    pub fn text_len(&self) -> usize {
+        match self {
+            Self::Nerd(c) => c.len_utf8(),
+            Self::Ascii(s) => s.len(),
+        }
     }
 }
 
@@ -111,6 +210,192 @@ pub fn icon_for(entry: &Entry) -> IconGlyph {
             KIND_FILE
         }
     }
+}
+
+/// Return the rendered icon label for `entry` under `pack`.
+///
+/// Dispatches:
+///
+/// - [`IconPack::Nerd`] → wraps [`icon_for`] into an [`IconLabel::Nerd`].
+/// - [`IconPack::Ascii`] → routes through [`icon_for_ascii`] instead so
+///   the resolution is bounded to coarse categories (source, docs,
+///   image, video, audio, archive, config, lock, shell, web) rather
+///   than the fine-grained per-language Nerd map.
+///
+/// Cross-pack coverage parity is asserted by
+/// [`tests::every_nerd_glyph_has_an_ascii_counterpart`] so no entry
+/// kind ever renders as the fallback `[F]` when a more specific ASCII
+/// label exists.
+#[must_use]
+pub fn icon_for_with(entry: &Entry, pack: IconPack) -> IconLabel {
+    match pack {
+        IconPack::Nerd => IconLabel::Nerd(icon_for(entry).glyph),
+        IconPack::Ascii => IconLabel::Ascii(icon_for_ascii(entry)),
+    }
+}
+
+/// ASCII text-only fallback map. Returns a short bracketed label
+/// (`[D]`, `[c]`, `[i]`, …) rendered in the user's normal text font,
+/// so the bundled Nerd Font TTF is not required at runtime.
+///
+/// Categories are deliberately coarser than the Nerd map — source
+/// code (`.rs`, `.py`, `.js`, …) collapses to `[c]`, data (`.json`,
+/// `.yaml`, `.toml`, …) to `[d]`, etc. — because the ASCII pack's job
+/// is to convey kind at a glance, not filetype.
+///
+/// Every returned label is ≤ 3 bytes (ASCII only, no multi-byte
+/// scalars) so the existing Slint icon layout doesn't shift when the
+/// user swaps packs.
+#[must_use]
+pub fn icon_for_ascii(entry: &Entry) -> &'static str {
+    match &entry.kind {
+        EntryKind::Dir => "[D]",
+        EntryKind::Symlink { broken: true, .. } => "[?]",
+        EntryKind::Symlink { .. } => "->",
+        EntryKind::Other => "[?]",
+        EntryKind::File => {
+            if is_executable(entry) {
+                return "[*]";
+            }
+            if let Some(label) = ascii_for_name(&entry.name) {
+                return label;
+            }
+            if let Some(ext) = entry.extension() {
+                if let Some(label) = ascii_for_extension(&ext) {
+                    return label;
+                }
+            }
+            if is_hidden_dotfile(entry) {
+                return "[.]";
+            }
+            "[F]"
+        }
+    }
+}
+
+/// ASCII named-file lookup — matches every well-known name in
+/// [`icon_for_name`] so the two packs stay in coverage lockstep.
+/// Categories:
+///
+/// - Manifests / lockfiles (`Cargo.toml`, `Cargo.lock`, `package.json`,
+///   `yarn.lock`, `pnpm-lock.yaml`, `pipfile.lock`, `go.sum`) → `[L]`
+///   (lock/manifest — the two are treated as one class in ASCII).
+/// - Build files (`Makefile`, `justfile`, `Dockerfile`, `CMakeLists.txt`)
+///   → `[c]` for code/build.
+/// - Version control (`.gitignore`, `.gitattributes`) → `[c]` (config).
+/// - Docs (`README`, `LICENSE`, `CHANGELOG`, `AUTHORS`) → `[t]` (text).
+/// - Shell dotfiles (`.bashrc`, `.zshrc`, …) → `[$]`.
+/// - Env / editor dotfiles → `[c]`.
+fn ascii_for_name(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    Some(match lower.as_str() {
+        // Lockfiles + manifests
+        "cargo.toml" | "cargo.lock" | "package.json" | "package-lock.json" | "yarn.lock"
+        | "pnpm-lock.yaml" | "pyproject.toml" | "poetry.lock" | "pipfile" | "pipfile.lock"
+        | "requirements.txt" | "gemfile" | "gemfile.lock" | "go.mod" | "go.sum" => "[L]",
+        // Build systems
+        "makefile" | "gnumakefile" | "justfile" | ".justfile" | "cmakelists.txt" => "[c]",
+        // Docker
+        "dockerfile"
+        | "containerfile"
+        | ".dockerignore"
+        | "docker-compose.yml"
+        | "docker-compose.yaml"
+        | "compose.yml"
+        | "compose.yaml" => "[c]",
+        // Version control
+        ".gitignore" | ".gitattributes" | ".gitmodules" | ".gitkeep" | ".mailmap" => "[c]",
+        // Docs / project meta
+        "readme" | "readme.md" | "readme.txt" | "readme.rst" => "[t]",
+        "license" | "license.md" | "license.txt" | "licence" | "copying" => "[t]",
+        "changelog" | "changelog.md" | "changes" | "changes.md" => "[t]",
+        "authors" | "contributors" | "notice" => "[t]",
+        // Shell dotfiles
+        ".bashrc" | ".bash_profile" | ".bash_history" | ".bash_logout" | ".zshrc" | ".zshenv"
+        | ".zprofile" | ".zsh_history" | ".profile" | ".inputrc" => "[$]",
+        ".vimrc" | ".gvimrc" | ".vim" => "[c]",
+        // Env / editor dotfiles
+        ".env" | ".envrc" | ".editorconfig" => "[c]",
+        _ => return None,
+    })
+}
+
+/// ASCII extension lookup — every extension routed here also lives in
+/// [`icon_for_extension`] so
+/// [`tests::every_nerd_glyph_has_an_ascii_counterpart`] passes. The
+/// mapping is coarser: languages collapse to `[c]`, data formats to
+/// `[d]`, images to `[i]`, and so on.
+fn ascii_for_extension(ext: &str) -> Option<&'static str> {
+    Some(match ext {
+        // ── Source code (all languages collapse to `[c]`) ──────────
+        "rs" | "c" | "h" | "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "cs"
+        | "csx" | "csproj" | "go" | "zig" | "swift" | "kt" | "kts" | "java" | "jar" | "scala"
+        | "sc" | "clj" | "cljs" | "cljc" | "edn" | "hs" | "lhs" | "erl" | "hrl" | "ex" | "exs"
+        | "ml" | "mli" | "fs" | "fsi" | "fsx" | "fsscript" | "py" | "pyc" | "pyo" | "pyd"
+        | "pyw" | "pyi" | "pyx" | "pxd" | "rb" | "erb" | "rake" | "gemspec" | "php" | "phtml"
+        | "pl" | "pm" | "t" | "pod" | "lua" | "r" | "rmd" | "jl" | "dart" | "nim" | "nims"
+        | "cr" | "js" | "cjs" | "mjs" | "ts" | "cts" | "mts" | "jsx" | "tsx" | "vue" | "svelte" => {
+            "[c]"
+        }
+
+        // ── Web (styling / markup / wasm) ─────────────────────────
+        "html" | "htm" | "xhtml" | "css" | "scss" | "sass" | "less" | "styl" | "stylus"
+        | "wasm" => "[w]",
+
+        // ── Shell scripts ─────────────────────────────────────────
+        "sh" | "bash" | "zsh" | "fish" | "ksh" | "csh" | "tcsh" | "ash" | "awk" | "sed" | "bat"
+        | "cmd" | "ps1" | "psm1" | "psd1" | "exe" | "dll" | "msi" => "[$]",
+
+        // ── Data / structured ─────────────────────────────────────
+        "json" | "jsonc" | "json5" | "geojson" | "yaml" | "yml" | "toml" | "xml" | "plist"
+        | "xsd" | "xsl" | "xslt" | "csv" | "tsv" | "sql" | "psql" | "mysql" | "sqlite"
+        | "sqlite3" | "db" | "sqlitedb" => "[d]",
+
+        // ── Config files ──────────────────────────────────────────
+        "env" | "ini" | "cfg" | "conf" | "config" | "properties" | "log" => "[c]",
+
+        // ── Documents (text-ish) ──────────────────────────────────
+        "md" | "markdown" | "mdown" | "mkd" | "mkdown" | "rst" | "tex" | "sty" | "cls" | "bib"
+        | "txt" | "text" | "pdf" | "doc" | "docx" | "odt" | "rtf" | "epub" | "mobi" | "azw3"
+        | "fb2" => "[t]",
+
+        // ── Spreadsheet / presentation — treat as data ────────────
+        "xls" | "xlsx" | "ods" | "ppt" | "pptx" | "odp" => "[d]",
+
+        // ── Images ────────────────────────────────────────────────
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tif" | "tiff" | "avif"
+        | "heic" | "heif" | "jxl" | "apng" | "svg" | "psd" | "ai" | "xcf" => "[i]",
+
+        // ── Video ─────────────────────────────────────────────────
+        "mp4" | "mov" | "mkv" | "avi" | "webm" | "flv" | "wmv" | "m4v" | "mpg" | "mpeg" | "ogv"
+        | "3gp" | "srt" | "sub" | "vtt" | "ass" => "[v]",
+
+        // ── Audio ─────────────────────────────────────────────────
+        "mp3" | "wav" | "flac" | "ogg" | "oga" | "m4a" | "aac" | "wma" | "opus" | "aiff"
+        | "ape" | "alac" => "[a]",
+
+        // ── Archives ──────────────────────────────────────────────
+        "zip" | "tar" | "gz" | "tgz" | "bz2" | "tbz" | "tbz2" | "xz" | "txz" | "lz" | "lz4"
+        | "lzma" | "zst" | "zstd" | "7z" | "rar" | "iso" | "dmg" | "img" | "cab" | "ar" | "arj"
+        | "deb" | "rpm" | "apk" => "[z]",
+
+        // ── Notebooks / diffs — treat as code ─────────────────────
+        "ipynb" | "diff" | "patch" => "[c]",
+
+        // ── Fonts / certs — misc data ─────────────────────────────
+        "ttf" | "otf" | "woff" | "woff2" | "eot" | "pfa" | "pfb" | "pem" | "crt" | "cer"
+        | "der" | "key" | "pfx" | "p12" | "csr" => "[d]",
+
+        _ => return None,
+    })
+}
+
+/// Detect a dotfile whose entire name starts with `.` (Unix hidden
+/// convention). Used by the ASCII path so an unmatched dotfile such
+/// as `.foobarrc` still gets a distinctive marker rather than the
+/// generic `[F]` fallback.
+fn is_hidden_dotfile(entry: &Entry) -> bool {
+    entry.name.starts_with('.') && entry.name.len() > 1
 }
 
 /// Look up a glyph by the entry's exact file name (case-insensitive).
@@ -173,9 +458,9 @@ pub fn icon_for_name(name: &str) -> Option<IconGlyph> {
         // semantics (leading-dot files aren't parsed for one), so must
         // live in the named-file map. `.env.local`/`.env.production`
         // etc. still fall through to the extension map below.
-        ".env" | ".envrc" => IconGlyph::new('\u{f462}', "environment file"), // 
+        ".env" | ".envrc" => IconGlyph::new('\u{f462}', "environment file"), //
         // Editor dotfiles
-        ".editorconfig" => IconGlyph::new('\u{e615}', "editor config"), // 
+        ".editorconfig" => IconGlyph::new('\u{e615}', "editor config"), //
         _ => return None,
     })
 }
@@ -724,6 +1009,302 @@ mod tests {
                 "glyph {:?} (U+{:X}) not in Nerd Font PUA",
                 g,
                 g as u32
+            );
+        }
+    }
+
+    // ── ASCII fallback pack (Phase 2.11) ────────────────────────────────
+
+    #[test]
+    fn ascii_directory() {
+        assert_eq!(icon_for_ascii(&dir("src")), "[D]");
+    }
+
+    #[test]
+    fn ascii_symlink_healthy() {
+        assert_eq!(icon_for_ascii(&symlink("cur", false, None)), "->");
+    }
+
+    #[test]
+    fn ascii_symlink_broken() {
+        assert_eq!(icon_for_ascii(&symlink("dead", true, None)), "[?]");
+    }
+
+    #[test]
+    fn ascii_executable_bit_beats_extension() {
+        // executable() sets +x on all three unix perm bits; the ASCII
+        // path must observe the same executable-first ordering as the
+        // Nerd path.
+        assert_eq!(icon_for_ascii(&executable("run")), "[*]");
+        // Even a .rs file with +x renders as `[*]`, not `[c]`.
+        let mut rs = file("build.rs");
+        rs.metadata.permissions_mode = Some(0o755);
+        assert_eq!(icon_for_ascii(&rs), "[*]");
+    }
+
+    #[test]
+    fn ascii_other_kind_maps_to_question() {
+        assert_eq!(icon_for_ascii(&other("dev")), "[?]");
+    }
+
+    #[test]
+    fn ascii_source_code_collapses_to_c() {
+        for name in [
+            "main.rs",
+            "main.c",
+            "main.cpp",
+            "main.h",
+            "app.py",
+            "app.js",
+            "app.ts",
+            "server.go",
+            "lib.java",
+            "gem.rb",
+            "app.swift",
+            "app.kt",
+        ] {
+            assert_eq!(icon_for_ascii(&file(name)), "[c]", "name: {name}");
+        }
+    }
+
+    #[test]
+    fn ascii_data_formats_collapse_to_d() {
+        for name in [
+            "data.json",
+            "data.yaml",
+            "data.toml",
+            "data.xml",
+            "data.csv",
+            "data.sql",
+        ] {
+            assert_eq!(icon_for_ascii(&file(name)), "[d]", "name: {name}");
+        }
+    }
+
+    #[test]
+    fn ascii_docs_collapse_to_t() {
+        for name in ["notes.md", "story.txt", "resume.pdf", "guide.rst"] {
+            assert_eq!(icon_for_ascii(&file(name)), "[t]", "name: {name}");
+        }
+    }
+
+    #[test]
+    fn ascii_images_collapse_to_i() {
+        for name in ["photo.png", "photo.jpg", "photo.gif", "photo.webp"] {
+            assert_eq!(icon_for_ascii(&file(name)), "[i]", "name: {name}");
+        }
+    }
+
+    #[test]
+    fn ascii_video_collapses_to_v() {
+        for name in ["movie.mp4", "movie.mkv", "movie.webm", "movie.mov"] {
+            assert_eq!(icon_for_ascii(&file(name)), "[v]", "name: {name}");
+        }
+    }
+
+    #[test]
+    fn ascii_audio_collapses_to_a() {
+        for name in ["song.mp3", "song.flac", "song.wav", "song.ogg"] {
+            assert_eq!(icon_for_ascii(&file(name)), "[a]", "name: {name}");
+        }
+    }
+
+    #[test]
+    fn ascii_archives_collapse_to_z() {
+        for name in ["b.zip", "b.tar", "b.gz", "b.7z", "b.rar", "b.zst"] {
+            assert_eq!(icon_for_ascii(&file(name)), "[z]", "name: {name}");
+        }
+    }
+
+    #[test]
+    fn ascii_shell_scripts_collapse_to_dollar() {
+        for name in ["run.sh", "run.bash", "run.zsh", "run.ps1"] {
+            assert_eq!(icon_for_ascii(&file(name)), "[$]", "name: {name}");
+        }
+    }
+
+    #[test]
+    fn ascii_web_collapses_to_w() {
+        for name in ["page.html", "site.css", "site.scss", "site.less"] {
+            assert_eq!(icon_for_ascii(&file(name)), "[w]", "name: {name}");
+        }
+    }
+
+    #[test]
+    fn ascii_config_dotfiles_collapse_to_c() {
+        for name in [".gitignore", ".gitattributes", ".editorconfig", ".env"] {
+            assert_eq!(icon_for_ascii(&file(name)), "[c]", "name: {name}");
+        }
+    }
+
+    #[test]
+    fn ascii_lockfiles_collapse_to_bracket_l() {
+        for name in [
+            "Cargo.lock",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "poetry.lock",
+            "Pipfile.lock",
+            "package.json",
+            "Cargo.toml",
+        ] {
+            assert_eq!(icon_for_ascii(&file(name)), "[L]", "name: {name}");
+        }
+    }
+
+    #[test]
+    fn ascii_unknown_extension_falls_back() {
+        assert_eq!(icon_for_ascii(&file("mystery.xyz")), "[F]");
+    }
+
+    #[test]
+    fn ascii_unknown_dotfile_falls_back_to_dot() {
+        // .foobarrc isn't in the named table + has no extension →
+        // hidden-dotfile fallback.
+        assert_eq!(icon_for_ascii(&file(".foobarrc")), "[.]");
+    }
+
+    #[test]
+    fn ascii_readme_uses_docs_glyph() {
+        assert_eq!(icon_for_ascii(&file("README")), "[t]");
+        assert_eq!(icon_for_ascii(&file("LICENSE")), "[t]");
+        assert_eq!(icon_for_ascii(&file("CHANGELOG.md")), "[t]");
+    }
+
+    #[test]
+    fn ascii_dockerfile_maps_to_config() {
+        assert_eq!(icon_for_ascii(&file("Dockerfile")), "[c]");
+        assert_eq!(icon_for_ascii(&file("Makefile")), "[c]");
+    }
+
+    #[test]
+    fn every_ascii_label_fits_in_three_chars() {
+        // Slint layout constraint: existing icon cell is sized for a
+        // single grapheme cluster. Every ASCII label must fit in ≤ 3
+        // ASCII bytes so the row height stays constant.
+        for entry in [
+            dir("d"),
+            file("main.rs"),
+            file("main.c"),
+            file("data.json"),
+            file("photo.png"),
+            file("song.mp3"),
+            file("bundle.zip"),
+            file("README"),
+            file("Cargo.toml"),
+            file(".gitignore"),
+            file("mystery.xyz"),
+            file(".foobarrc"),
+            symlink("l", false, None),
+            symlink("l", true, None),
+            executable("run"),
+            other("dev"),
+        ] {
+            let label = icon_for_ascii(&entry);
+            assert!(
+                label.len() <= 3,
+                "ASCII label {:?} is {} chars > 3 for {}",
+                label,
+                label.len(),
+                entry.name,
+            );
+            assert!(
+                label.is_ascii(),
+                "ASCII label {label:?} is not pure ASCII for {}",
+                entry.name,
+            );
+        }
+    }
+
+    #[test]
+    fn icon_for_with_dispatches_on_pack() {
+        let rs = file("main.rs");
+        assert_eq!(
+            icon_for_with(&rs, IconPack::Nerd),
+            IconLabel::Nerd(icon_for(&rs).glyph)
+        );
+        assert_eq!(icon_for_with(&rs, IconPack::Ascii), IconLabel::Ascii("[c]"));
+    }
+
+    #[test]
+    fn icon_label_text_is_expected_string() {
+        // Slint consumes the `.text()` output as a SharedString — verify
+        // both variants round-trip the expected user-visible glyph.
+        assert_eq!(IconLabel::Nerd('\u{e7a8}').text(), "\u{e7a8}");
+        assert_eq!(IconLabel::Ascii("[D]").text(), "[D]");
+    }
+
+    #[test]
+    fn set_and_current_icon_pack_roundtrip() {
+        // Save the prior value so parallel tests aren't perturbed —
+        // this static is process-wide.
+        let prior = current_icon_pack();
+        set_icon_pack(IconPack::Ascii);
+        assert_eq!(current_icon_pack(), IconPack::Ascii);
+        set_icon_pack(IconPack::Nerd);
+        assert_eq!(current_icon_pack(), IconPack::Nerd);
+        set_icon_pack(prior);
+    }
+
+    #[test]
+    fn every_nerd_glyph_has_an_ascii_counterpart() {
+        // Coverage-parity: every entry that resolves to a specific
+        // Nerd glyph (i.e. anything except the generic `KIND_FILE`
+        // fallback) must also resolve to a specific ASCII label
+        // (anything except `[F]`). This is the constraint that lets
+        // users toggle packs without discovering random "unknown"
+        // markers where the Nerd pack had a specific icon.
+        let cases: &[Entry] = &[
+            dir("src"),
+            symlink("l1", false, None),
+            symlink("l2", true, None),
+            other("dev"),
+            executable("run"),
+            file("main.rs"),
+            file("main.c"),
+            file("main.cpp"),
+            file("main.h"),
+            file("main.go"),
+            file("main.py"),
+            file("main.js"),
+            file("main.ts"),
+            file("main.java"),
+            file("main.rb"),
+            file("main.swift"),
+            file("main.kt"),
+            file("data.json"),
+            file("data.yaml"),
+            file("data.toml"),
+            file("data.xml"),
+            file("data.csv"),
+            file("data.sql"),
+            file("notes.md"),
+            file("notes.txt"),
+            file("resume.pdf"),
+            file("guide.rst"),
+            file("photo.png"),
+            file("movie.mp4"),
+            file("song.mp3"),
+            file("bundle.zip"),
+            file("run.sh"),
+            file("page.html"),
+            file("site.css"),
+            file(".gitignore"),
+            file("Cargo.lock"),
+            file("Cargo.toml"),
+            file("README"),
+            file("LICENSE"),
+            file("Dockerfile"),
+            file("Makefile"),
+        ];
+        for entry in cases {
+            let ascii = icon_for_ascii(entry);
+            assert_ne!(
+                ascii, "[F]",
+                "ASCII pack fell back to `[F]` for {} — coverage gap. \
+                 The Nerd pack has a specific glyph but the ASCII \
+                 pack routed it to the generic fallback.",
+                entry.name
             );
         }
     }
