@@ -155,6 +155,12 @@ export component AtlasWindow inherits Window {
     in property <[int]> panes-status-file-count: [];
     in property <[string]> panes-status-total-size-text: [];
     in property <[string]> panes-status-free-space-text: [];
+    /// One entry per pane (DFS-indexed) describing the connection
+    /// health. Values: `"local"`, `"ok"`, `"reconnecting"`, `"failed"`.
+    /// Pushed by `AppShell::push_pane_connection_status_to_slint`.
+    in property <[string]> panes-connection-status: [];
+    /// Companion accessibility / hover-tooltip strings, per-pane.
+    in property <[string]> panes-connection-tooltip: [];
 
     // ── Status bar ───────────────────────────────────────────────────────────
 
@@ -893,6 +899,8 @@ export component AtlasWindow inherits Window {
                     status-file-count: panes-status-file-count[i];
                     status-total-size-text: panes-status-total-size-text[i];
                     status-free-space-text: panes-status-free-space-text[i];
+                    connection-status: panes-connection-status[i];
+                    connection-tooltip: panes-connection-tooltip[i];
 
                     // Unified callbacks — all route through pane.id.
                     address-submitted(p) => { root.address-submitted(pane.id, p); }

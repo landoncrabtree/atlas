@@ -19,22 +19,45 @@ import { MetadataFields } from "../views/gallery/gallery-metadata.slint";
 // doesn't jump when a new pane first opens.
 //
 // Layout: counts on the LEFT, flex spacer, "N free of M" on the RIGHT
-// hugging `padding-right`. Future plugin chips (git branch, k8s context,
-// devcontainer badge, …) will slot in between the spacer and the
-// free-space text once the plugin runtime lands (v0.4+); until then no
-// placeholder element is instantiated so the free-space chunk truly
-// reaches the pane's right edge.
+// hugging `padding-right`. For remote panes the connection-status
+// chip sits between the primary text and the spacer. Future plugin
+// chips (git branch, k8s context, devcontainer badge, …) will slot in
+// between the spacer and the free-space text once the plugin runtime
+// lands (v0.4+); until then no placeholder element is instantiated so
+// the free-space chunk truly reaches the pane's right edge.
 component PaneStatusBar {
     in property <int> folder-count: 0;
     in property <int> file-count: 0;
     in property <string> total-size-text: "";
     in property <string> free-space-text: "";
+    /// Connection status for remote panes. One of `"local"`, `"ok"`,
+    /// `"reconnecting"`, `"failed"`. Empty string == same as `"local"`
+    /// (no chip rendered).
+    in property <string> connection-status: "local";
+    /// Optional tooltip text — surfaced to the user on hover; also
+    /// used for the `accessible-label` so a screen reader gets the
+    /// full context.
+    in property <string> connection-tooltip: "";
 
     height: Theme.statusbar-h;
 
     pure function primary-text() -> string {
         folder-count + " folders, " + file-count + " files"
             + (total-size-text != "" ? " · " + total-size-text : "")
+    }
+
+    pure function chip-color() -> color {
+        connection-status == "ok"           ? #22c55e :
+        connection-status == "reconnecting" ? #eab308 :
+        connection-status == "failed"       ? Theme.error :
+        transparent
+    }
+
+    pure function chip-label() -> string {
+        connection-status == "ok"           ? "connected" :
+        connection-status == "reconnecting" ? "reconnecting…" :
+        connection-status == "failed"       ? "disconnected" :
+        ""
     }
 
     Rectangle {
@@ -58,6 +81,31 @@ component PaneStatusBar {
                 color: Theme.fg-muted;
                 font-size: 11px;
                 vertical-alignment: center;
+            }
+
+            // Remote connection chip. Rendered only for non-local
+            // panes; a green/yellow/red dot next to a caption. The
+            // `accessible-label` folds the tooltip text so a screen
+            // reader can announce the retry / failure detail even
+            // though there's no hover tooltip in Slint 1.17.
+            if connection-status != "local" && connection-status != "" : HorizontalLayout {
+                spacing: Theme.space-2;
+                Rectangle {
+                    width: 8px; height: 8px;
+                    y: (parent.height - self.height) / 2;
+                    background: chip-color();
+                    border-radius: 4px;
+                    accessible-role: text;
+                    accessible-label: connection-tooltip;
+                }
+                Text {
+                    text: chip-label();
+                    color: chip-color();
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    accessible-role: text;
+                    accessible-label: connection-tooltip;
+                }
             }
 
             Rectangle { horizontal-stretch: 1; }
@@ -140,6 +188,13 @@ export component Pane {
     /// Free/total space on the pane's volume, pre-formatted by Rust
     /// (e.g. `"590 GB free of 926 GB"`). Empty when unavailable.
     in property <string> status-free-space-text: "";
+    /// Connection status for a remote pane. Local panes use `"local"`;
+    /// remote panes flip between `"ok"` / `"reconnecting"` / `"failed"`
+    /// as the pool + retry layer emits events.
+    in property <string> connection-status: "local";
+    /// Human-readable tooltip / accessibility label for the chip
+    /// (e.g. `"sftp://user@host — retry 2/3, waiting 400ms"`).
+    in property <string> connection-tooltip: "";
 
     callback address-submitted(string);
     callback address-cancelled();
@@ -320,6 +375,8 @@ export component Pane {
                     file-count: root.status-file-count;
                     total-size-text: root.status-total-size-text;
                     free-space-text: root.status-free-space-text;
+                    connection-status: root.connection-status;
+                    connection-tooltip: root.connection-tooltip;
                 }
         }
 

@@ -32,8 +32,8 @@ use atlas_config::servers::{add_or_replace, SavedServer};
 use atlas_core::{BackendKind, Location, LocationParseError};
 use atlas_fs::{OpenOptions, ViewModelEvent};
 use atlas_remote::{
-    backend::{open as backend_open, BackendError, Credentials},
-    secrets,
+    backend::{BackendError, Credentials},
+    secrets, RemoteLocationViewModel,
 };
 use parking_lot::Mutex;
 
@@ -510,14 +510,34 @@ impl ConnectController {
         save_data: Option<SaveIntent>,
         cancel: Arc<AtomicBool>,
     ) {
-        // Step 1 — build the vm (fast; just constructs the OpenDAL operator).
-        let vm = match backend_open(&location, credentials.clone(), OpenOptions::default()) {
+        // Step 1 — build the vm (fast; just constructs the backend
+        // handshake handle). We call the concrete constructor here
+        // rather than `atlas_remote::backend::open` so we can attach
+        // retry-observer hooks before mounting.
+        let (remote_uri, backend_kind) = match &location {
+            Location::Remote(uri, kind) => (uri.clone(), *kind),
+            Location::Local(_) => {
+                self.report_error(
+                    ErrorKind::Malformed,
+                    "connect: local location cannot be mounted through the connect modal"
+                        .to_owned(),
+                );
+                return;
+            }
+        };
+        let concrete = match RemoteLocationViewModel::open_live(
+            remote_uri.clone(),
+            backend_kind,
+            credentials.clone(),
+            OpenOptions::default(),
+        ) {
             Ok(vm) => vm,
             Err(err) => {
                 self.report_error(err_from_backend(&err), format!("{err}"));
                 return;
             }
         };
+        let vm: Arc<dyn atlas_fs::LocationViewModel> = concrete.clone();
 
         // Step 2 — probe the connection by listening for the first
         // `Loaded` or `Error` event. Bounded timeout so a black-hole
@@ -600,7 +620,7 @@ impl ConnectController {
 
         let shell = self.shell.lock().upgrade();
         if let Some(shell) = shell {
-            shell.open_remote_location(pane_id, location, vm);
+            shell.open_remote_location(pane_id, location, vm, Some(concrete));
         } else {
             tracing::warn!("connect: shell weak-ref lost before mount");
         }

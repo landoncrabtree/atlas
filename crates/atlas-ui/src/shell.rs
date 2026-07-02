@@ -367,6 +367,14 @@ pub struct PaneRenderCache {
     /// e.g. `"590 GB free of 926 GB"`. Empty when unavailable
     /// (unmounted volume, no cwd yet).
     pub status_free_space_text: String,
+    /// Remote connection health. `"local"` for panes rooted in the
+    /// local filesystem; remote panes cycle through `"ok"`,
+    /// `"reconnecting"`, and `"failed"` as the retry layer emits
+    /// events.
+    pub connection_status: String,
+    /// Companion accessibility / hover-tooltip caption. For remote
+    /// panes: `"sftp://user@host — retry 2/3, waiting 400ms"` etc.
+    pub connection_tooltip: String,
 
     // ── Cross-push identity preservation ─────────────────────────────────
     //
@@ -583,6 +591,8 @@ struct OuterPaneModels {
     status_file_count: std::rc::Rc<VecModel<i32>>,
     status_total_size_text: std::rc::Rc<VecModel<SharedString>>,
     status_free_space_text: std::rc::Rc<VecModel<SharedString>>,
+    connection_status: std::rc::Rc<VecModel<SharedString>>,
+    connection_tooltip: std::rc::Rc<VecModel<SharedString>>,
 
     /// Whether every property has been bound to its underlying `Rc<VecModel>`
     /// yet. Guards [`Self::ensure_bound`] so we only issue `set_*` calls once.
@@ -621,6 +631,8 @@ impl Default for OuterPaneModels {
             status_file_count: std::rc::Rc::new(VecModel::default()),
             status_total_size_text: std::rc::Rc::new(VecModel::default()),
             status_free_space_text: std::rc::Rc::new(VecModel::default()),
+            connection_status: std::rc::Rc::new(VecModel::default()),
+            connection_tooltip: std::rc::Rc::new(VecModel::default()),
             bound: false,
         }
     }
@@ -669,6 +681,8 @@ impl OuterPaneModels {
         window.set_panes_status_file_count(ModelRc::from(self.status_file_count.clone()));
         window.set_panes_status_total_size_text(ModelRc::from(self.status_total_size_text.clone()));
         window.set_panes_status_free_space_text(ModelRc::from(self.status_free_space_text.clone()));
+        window.set_panes_connection_status(ModelRc::from(self.connection_status.clone()));
+        window.set_panes_connection_tooltip(ModelRc::from(self.connection_tooltip.clone()));
         self.bound = true;
     }
 }
@@ -1139,6 +1153,7 @@ impl AppShell {
         pane_id: PaneId,
         location: Location,
         vm: Arc<dyn LocationViewModel>,
+        remote: Option<Arc<atlas_remote::RemoteLocationViewModel>>,
     ) {
         tracing::info!(pane = ?pane_id, loc = %location.display_path(), "mounting remote location");
         let vm_dyn = Arc::clone(&vm);
@@ -1171,9 +1186,30 @@ impl AppShell {
             }
         }
 
+        // Every remote pane starts in the "ok" state (we just
+        // completed the handshake). Retries flip this to
+        // "reconnecting", terminal failure to "failed".
+        self.with_cache(pane_id, |c| {
+            c.connection_status = "ok".to_owned();
+            c.connection_tooltip = format!("Connected — {display}");
+        });
+
         self.project_workspace_to_slint();
         self.refresh_status();
         self.refresh_pane_status(pane_id);
+
+        // Attach the retry-observer hook so transient failures push
+        // "reconnecting" into the status chip. Terminal give-ups will
+        // flip to "failed" via the vm's Error event handled below.
+        if let Some(remote) = remote {
+            let hooks = remote.retry_hooks();
+            let shell_bg = Arc::clone(self);
+            hooks.add(std::sync::Arc::new(move |op, attempt, backoff| {
+                let ms = backoff.as_millis() as u64;
+                let tooltip = format!("Reconnecting — {op} retry {attempt}, waiting {ms} ms");
+                shell_bg.set_pane_connection_status(pane_id, "reconnecting", tooltip);
+            }));
+        }
 
         // Same live-status watcher pattern as local navigation.
         let shell_bg = Arc::clone(self);
@@ -1181,7 +1217,24 @@ impl AppShell {
         std::thread::Builder::new()
             .name(format!("atlas-status-{pane_id:?}"))
             .spawn(move || {
-                while let Ok(_ev) = events.recv() {
+                while let Ok(ev) = events.recv() {
+                    match &ev {
+                        atlas_fs::ViewModelEvent::Loaded
+                        | atlas_fs::ViewModelEvent::EntriesChanged => {
+                            shell_bg.set_pane_connection_status(
+                                pane_id,
+                                "ok",
+                                "Connected".to_owned(),
+                            );
+                        }
+                        atlas_fs::ViewModelEvent::Error(msg) => {
+                            shell_bg.set_pane_connection_status(
+                                pane_id,
+                                "failed",
+                                format!("Disconnected — {msg}"),
+                            );
+                        }
+                    }
                     shell_bg.refresh_pane_status(pane_id);
                     if pane_id == shell_bg.focused_pane_id() {
                         shell_bg.refresh_status();
@@ -1189,6 +1242,23 @@ impl AppShell {
                 }
             })
             .ok();
+    }
+
+    /// Flip the pane's connection status chip. Called by the retry
+    /// observer and the vm-event watcher.
+    pub fn set_pane_connection_status(
+        self: &Arc<Self>,
+        pane_id: PaneId,
+        status: &str,
+        tooltip: String,
+    ) {
+        self.with_cache(pane_id, |c| {
+            c.connection_status = status.to_owned();
+            c.connection_tooltip = tooltip;
+        });
+        // Only the status arrays change; the heavy pane-data arrays
+        // stay untouched so `ListView` scroll survives.
+        self.push_pane_status_to_slint();
     }
 
     /// Set focus to the given pane.
@@ -4142,6 +4212,22 @@ impl AppShell {
                     .map(|s| SharedString::from(s.status_free_space_text.as_str()))
                     .collect();
                 sync_vec_model(&outer.status_free_space_text, &s_free);
+
+                let conn: Vec<SharedString> = snapshots
+                    .iter()
+                    .map(|s| {
+                        let raw = s.connection_status.as_str();
+                        let normalised = if raw.is_empty() { "local" } else { raw };
+                        SharedString::from(normalised)
+                    })
+                    .collect();
+                sync_vec_model(&outer.connection_status, &conn);
+
+                let tips: Vec<SharedString> = snapshots
+                    .iter()
+                    .map(|s| SharedString::from(s.connection_tooltip.as_str()))
+                    .collect();
+                sync_vec_model(&outer.connection_tooltip, &tips);
             });
         });
     }
@@ -4316,6 +4402,22 @@ impl AppShell {
                     .map(|s| SharedString::from(s.status_free_space_text.as_str()))
                     .collect();
                 sync_vec_model(&outer.status_free_space_text, &free_text);
+
+                let conn: Vec<SharedString> = snapshots
+                    .iter()
+                    .map(|s| {
+                        let raw = s.connection_status.as_str();
+                        let normalised = if raw.is_empty() { "local" } else { raw };
+                        SharedString::from(normalised)
+                    })
+                    .collect();
+                sync_vec_model(&outer.connection_status, &conn);
+
+                let tips: Vec<SharedString> = snapshots
+                    .iter()
+                    .map(|s| SharedString::from(s.connection_tooltip.as_str()))
+                    .collect();
+                sync_vec_model(&outer.connection_tooltip, &tips);
             });
         });
     }
