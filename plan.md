@@ -59,9 +59,16 @@ its callback path is unchanged.
    resolver / breadcrumb / address-bar helpers in
    `atlas-ui::remote::resolve`, `AppShell::view_entry` and the
    navigation funnel `navigate_pane_to_location`.
+3. `test(remote): integration tests for preview cache download + cache-hit`
+   — three `#[test]`s in `crates/atlas-ui/tests/remote_preview.rs`
+   using the shared `MockSftpServer` harness: real-SFTP download →
+   `RecordingOpener` invocation, second-open uses cache
+   (`download_count` stays at 1), and directory resolver produces a
+   `Location::Remote(uri.join(name), Sftp)`.
 
 **Test count delta.** atlas-ui lib tests 247 → 262 (+15 new: 7
-resolve, 8 preview counting the pre-existing 5 + 3 net-new).
+resolve, 8 preview counting the pre-existing 5 + 3 net-new). Plus
+3 integration tests in `remote_preview.rs`. Total delta: +18.
 
 **Deferred / follow-ups.**
 

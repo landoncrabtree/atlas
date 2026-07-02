@@ -46,6 +46,16 @@ sha2 = "0.10"
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"
+anyhow = { workspace = true }
+libc = "0.2"
+rand = "0.8"
+atlas-core = { workspace = true }
+atlas-remote = { workspace = true }
+atlas-fs = { workspace = true }
+atlas-config = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Used by `platform::titlebar_theme` to tint the OS title bar via

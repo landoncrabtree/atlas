@@ -35,8 +35,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use atlas_config::RemotePreview;
 use atlas_core::{BackendKind, RemoteUri};
 use atlas_fs::{Entry, OpenOptions};
-use atlas_remote::vm::sftp::SftpOptions;
-use atlas_remote::{KnownHostsMode, RemoteLocationViewModel};
+use atlas_remote::RemoteLocationViewModel;
 use directories::ProjectDirs;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
@@ -320,27 +319,25 @@ async fn download_and_open(
     // the child name — this mirrors `atlas_ops::remote::open_remote`
     // and side-steps the "double-prepend URI path" edge case in the
     // backend's `abs()` helper.
+    //
+    // `open_live` uses the process-wide default `SftpOptions`. In
+    // production that is `KnownHostsMode::Prompt` with no resolver,
+    // which post-connect behaves identically to `Strict`: the pane's
+    // initial connect (via `ConnectController`) accepted the host key
+    // and persisted it to `known_hosts`, so subsequent handshakes
+    // find it and short-circuit to Trusted. In integration tests the
+    // mock harness installs an `AutoTrust` default that accepts the
+    // paramiko ephemeral host key.
     let mut vm_uri = uri.clone();
     let child_path = uri.path.clone();
     vm_uri.path = "/".into();
 
-    let vm = match kind {
-        BackendKind::Sftp => RemoteLocationViewModel::open_live_sftp_with_options(
-            vm_uri.clone(),
-            credentials.clone(),
-            OpenOptions::default(),
-            SftpOptions {
-                known_hosts_mode: KnownHostsMode::Strict,
-                resolver: None,
-            },
-        ),
-        _ => RemoteLocationViewModel::open_live(
-            vm_uri.clone(),
-            kind,
-            credentials.clone(),
-            OpenOptions::default(),
-        ),
-    }
+    let vm = RemoteLocationViewModel::open_live(
+        vm_uri.clone(),
+        kind,
+        credentials.clone(),
+        OpenOptions::default(),
+    )
     .map_err(|err| PreviewError::Remote(format!("open_live: {err}")))?;
 
     let bytes = vm
