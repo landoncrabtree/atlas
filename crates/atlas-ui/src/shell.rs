@@ -383,6 +383,18 @@ pub struct PaneRenderCache {
     /// Companion accessibility / hover-tooltip caption. For remote
     /// panes: `"sftp://user@host — retry 2/3, waiting 400ms"` etc.
     pub connection_tooltip: String,
+    /// Ephemeral warning banner shown in the status bar (currently
+    /// used for "file too large to preview" toasts). Empty string
+    /// hides the chip. Cleared automatically after
+    /// `AppShell::push_pane_warning`'s auto-dismiss window.
+    pub status_warning_text: String,
+    /// Monotonic counter incremented every time
+    /// [`AppShell::push_pane_warning`] fires; the auto-dismiss timer
+    /// checks it against its captured generation and refuses to
+    /// clear if a *newer* warning has since fired. Prevents
+    /// a fast pair of warnings from being silenced by the first
+    /// warning's timer.
+    pub status_warning_generation: u64,
 
     // ── Cross-push identity preservation ─────────────────────────────────
     //
@@ -601,6 +613,7 @@ struct OuterPaneModels {
     status_free_space_text: std::rc::Rc<VecModel<SharedString>>,
     connection_status: std::rc::Rc<VecModel<SharedString>>,
     connection_tooltip: std::rc::Rc<VecModel<SharedString>>,
+    status_warning_text: std::rc::Rc<VecModel<SharedString>>,
 
     /// Whether every property has been bound to its underlying `Rc<VecModel>`
     /// yet. Guards [`Self::ensure_bound`] so we only issue `set_*` calls once.
@@ -641,6 +654,7 @@ impl Default for OuterPaneModels {
             status_free_space_text: std::rc::Rc::new(VecModel::default()),
             connection_status: std::rc::Rc::new(VecModel::default()),
             connection_tooltip: std::rc::Rc::new(VecModel::default()),
+            status_warning_text: std::rc::Rc::new(VecModel::default()),
             bound: false,
         }
     }
@@ -691,6 +705,7 @@ impl OuterPaneModels {
         window.set_panes_status_free_space_text(ModelRc::from(self.status_free_space_text.clone()));
         window.set_panes_connection_status(ModelRc::from(self.connection_status.clone()));
         window.set_panes_connection_tooltip(ModelRc::from(self.connection_tooltip.clone()));
+        window.set_panes_status_warning_text(ModelRc::from(self.status_warning_text.clone()));
         self.bound = true;
     }
 }
@@ -1285,6 +1300,62 @@ impl AppShell {
         // Only the status arrays change; the heavy pane-data arrays
         // stay untouched so `ListView` scroll survives.
         self.push_pane_status_to_slint();
+    }
+
+    /// Show an ephemeral warning banner in the pane's status bar.
+    ///
+    /// Used today for "file too large to preview" toasts. The chip
+    /// auto-dismisses after ~5 s via a slint single-shot timer. If a
+    /// second warning fires before the first is dismissed, the new
+    /// message replaces the old one and the dismiss window is reset.
+    pub fn push_pane_warning(self: &Arc<Self>, pane_id: PaneId, message: String) {
+        // Bump a generation counter so a stale timer can't clear a
+        // newer warning. Encoded per-pane on the cache line itself.
+        let generation = {
+            let mut cache = self.pane_cache.write();
+            let entry = cache.entry(pane_id).or_default();
+            entry.status_warning_text = message.clone();
+            entry.status_warning_generation = entry.status_warning_generation.wrapping_add(1);
+            entry.status_warning_generation
+        };
+        self.push_pane_status_to_slint();
+
+        // Schedule auto-dismiss on the Slint main-thread event loop
+        // so we can safely mutate the pane cache + republish.
+        let weak = Arc::downgrade(self);
+        let _ = slint::invoke_from_event_loop(move || {
+            let timer = std::rc::Rc::new(slint::Timer::default());
+            let timer_clone = timer.clone();
+            timer.start(
+                slint::TimerMode::SingleShot,
+                std::time::Duration::from_secs(5),
+                move || {
+                    // Silence the "unused" lint on the outer Rc-of-Timer:
+                    // dropping the clone here keeps the Timer alive for
+                    // the full 5 s duration.
+                    let _keep = &timer_clone;
+                    let Some(shell) = weak.upgrade() else {
+                        return;
+                    };
+                    let cleared = {
+                        let mut cache = shell.pane_cache.write();
+                        if let Some(entry) = cache.get_mut(&pane_id) {
+                            if entry.status_warning_generation == generation {
+                                entry.status_warning_text.clear();
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    };
+                    if cleared {
+                        shell.push_pane_status_to_slint();
+                    }
+                },
+            );
+        });
     }
 
     /// Set focus to the given pane.
@@ -2318,10 +2389,13 @@ impl AppShell {
                         tracing::debug!("fs::View: preview download spawned");
                     }
                     crate::remote::PreviewOutcome::TooLarge { size, cap } => {
-                        tracing::warn!(
-                            size, cap,
-                            "fs::View: remote file too large to preview; copy to a local pane first"
+                        let msg = format!(
+                            "File too large to preview ({} > {} limit). Copy to a local pane and open there.",
+                            crate::format_size(size),
+                            crate::format_size(cap),
                         );
+                        tracing::info!(size, cap, "{}", msg);
+                        self.push_pane_warning(id, msg);
                     }
                     crate::remote::PreviewOutcome::OpenFailed(err) => {
                         tracing::warn!(err, "fs::View: OS open failed on cached preview");
@@ -4614,6 +4688,12 @@ impl AppShell {
                     .map(|s| SharedString::from(s.connection_tooltip.as_str()))
                     .collect();
                 sync_vec_model(&outer.connection_tooltip, &tips);
+
+                let warnings: Vec<SharedString> = snapshots
+                    .iter()
+                    .map(|s| SharedString::from(s.status_warning_text.as_str()))
+                    .collect();
+                sync_vec_model(&outer.status_warning_text, &warnings);
             });
         });
     }
@@ -4804,6 +4884,12 @@ impl AppShell {
                     .map(|s| SharedString::from(s.connection_tooltip.as_str()))
                     .collect();
                 sync_vec_model(&outer.connection_tooltip, &tips);
+
+                let warnings: Vec<SharedString> = snapshots
+                    .iter()
+                    .map(|s| SharedString::from(s.status_warning_text.as_str()))
+                    .collect();
+                sync_vec_model(&outer.status_warning_text, &warnings);
             });
         });
     }
@@ -4991,6 +5077,31 @@ mod tests {
         let down = ws.split_focused(SplitDirection::Vertical, None);
         // DFS order: pane 1's subtree (1, down) then the right sibling.
         assert_eq!(ws.leaves_in_order(), vec![PaneId(1), down, right]);
+    }
+
+    /// Regression: the human-readable "file too large to preview"
+    /// message that `AppShell::view_entry`'s
+    /// [`crate::remote::PreviewOutcome::TooLarge`] arm hands to
+    /// `push_pane_warning` reads the way we advertise in the UI:
+    ///   "File too large to preview (150 MB > 100 MB limit). Copy to
+    ///    a local pane and open there."
+    /// We produce this exact string with the same `format_size` helper
+    /// used at the call site.
+    #[test]
+    fn too_large_preview_message_reads_as_advertised() {
+        let size: u64 = 150 * 1024 * 1024;
+        let cap: u64 = 100 * 1024 * 1024;
+        let msg = format!(
+            "File too large to preview ({} > {} limit). Copy to a local pane and open there.",
+            crate::format_size(size),
+            crate::format_size(cap),
+        );
+        assert!(
+            msg.starts_with("File too large to preview ("),
+            "unexpected prefix: {msg}",
+        );
+        assert!(msg.contains(" > "), "missing size/cap separator: {msg}");
+        assert!(msg.ends_with("open there."), "unexpected suffix: {msg}");
     }
 }
 

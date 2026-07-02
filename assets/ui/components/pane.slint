@@ -38,6 +38,10 @@ component PaneStatusBar {
     /// used for the `accessible-label` so a screen reader gets the
     /// full context.
     in property <string> connection-tooltip: "";
+    /// Ephemeral warning banner. Rendered as an amber chip in the
+    /// status bar when non-empty. Auto-cleared by Rust after a short
+    /// dismissal window (see `AppShell::push_pane_warning`).
+    in property <string> warning-text: "";
 
     height: Theme.statusbar-h;
 
@@ -106,6 +110,18 @@ component PaneStatusBar {
                     accessible-role: text;
                     accessible-label: connection-tooltip;
                 }
+            }
+
+            // Ephemeral warning chip (e.g. "file too large to
+            // preview"). Same footprint as the connection chip; auto-
+            // cleared by Rust after a short window.
+            if warning-text != "" : Text {
+                text: "⚠ " + warning-text;
+                color: #eab308;
+                font-size: 11px;
+                vertical-alignment: center;
+                accessible-role: text;
+                accessible-label: warning-text;
             }
 
             Rectangle { horizontal-stretch: 1; }
@@ -199,6 +215,10 @@ export component Pane {
     /// Human-readable tooltip / accessibility label for the chip
     /// (e.g. `"sftp://user@host — retry 2/3, waiting 400ms"`).
     in property <string> connection-tooltip: "";
+    /// Ephemeral warning banner shown in the status bar (currently
+    /// used for "file too large to preview" toasts). Empty string
+    /// hides the chip. Auto-cleared by Rust after a short window.
+    in property <string> status-warning-text: "";
 
     callback address-submitted(string);
     callback address-cancelled();
@@ -383,6 +403,7 @@ export component Pane {
                     free-space-text: root.status-free-space-text;
                     connection-status: root.connection-status;
                     connection-tooltip: root.connection-tooltip;
+                    warning-text: root.status-warning-text;
                 }
         }
 

@@ -161,6 +161,12 @@ export component AtlasWindow inherits Window {
     in property <[string]> panes-connection-status: [];
     /// Companion accessibility / hover-tooltip strings, per-pane.
     in property <[string]> panes-connection-tooltip: [];
+    /// One entry per pane: ephemeral warning banner text shown in the
+    /// status bar (currently used for "file too large to preview"
+    /// toasts). Empty string hides the chip. Auto-cleared by Rust
+    /// after a short window. Pushed by
+    /// `AppShell::push_pane_warning`.
+    in property <[string]> panes-status-warning-text: [];
 
     // ── Status bar ───────────────────────────────────────────────────────────
 
@@ -937,6 +943,7 @@ export component AtlasWindow inherits Window {
                     status-free-space-text: panes-status-free-space-text[i];
                     connection-status: panes-connection-status[i];
                     connection-tooltip: panes-connection-tooltip[i];
+                    status-warning-text: panes-status-warning-text[i];
 
                     // Unified callbacks — all route through pane.id.
                     address-submitted(p) => { root.address-submitted(pane.id, p); }
