@@ -90,3 +90,44 @@ resolve, 8 preview counting the pre-existing 5 + 3 net-new). Plus
 * `remote.preview.max_open_bytes` toast on the status bar — for MVP
   we log a `tracing::warn`; a proper status-bar chip lives in the UX
   polish phase.
+
+## Phase 2.8 — remote follow-ups + write-back + capability-aware context menu — LANDED
+
+Seven-commit push closing every deferred item from the Phase 2.7 list
+above. Each commit builds, clippy-cleans, and test-cleans independently.
+Trailer `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`
+on all seven.
+
+| SHA | Subject |
+| --- | --- |
+| `fb70189` | `feat(nav): back/forward history on remote panes` |
+| `dc3df88` | `perf(remote): streaming preview download via stream_copy for large files` |
+| `80cee84` | `feat(remote): write-back for edited previews` |
+| `f8c468d` | `fix(remote): symlink-target stat + follow-through in resolver` |
+| `cfc80d4` | `feat(ops): status-bar chip when preview exceeds max_open_bytes` |
+| `91099ca` | `fix(remote): mount_remote_navigation respects process-wide KnownHostsMode default` |
+| `5e8f69b` | `feat(ui): context menu is remote/local-aware; wire capability model for plugins` |
+
+### Deferred → closed after Phase 2.8
+
+- ✅ Remote back/forward history — `fb70189`
+- ✅ Streaming preview download (>4 MiB reader path) — `dc3df88`
+- ✅ Write-back after edit — `80cee84`
+- ✅ Symlink-target stat + follow-through on remote — `f8c468d`
+- ✅ `remote.preview.max_open_bytes` status-bar chip — `cfc80d4`
+- ✅ `mount_remote_navigation` honours process-wide KnownHostsMode — `91099ca`
+- ✅ Remote/local-aware context menu with plugin seam — `5e8f69b`
+
+### Still deferred (out of Phase 2.8 scope by design)
+
+- Plugin `ContextCapabilityProvider` trait — v0.6+; `5e8f69b` leaves a
+  `TODO(plugins):` marker and a clean flag-surface extension recipe.
+- "Open With…" picker UI — v0.3 follow-up; MVP falls through to OS default.
+
+### Verification
+
+`cargo build --workspace ✓` · `cargo clippy --workspace --all-targets -- -D warnings ✓`
+· `cargo fmt --all --check ✓` · `cargo test --workspace` net-positive
+test count (+16 unit + 7 integration), same pre-existing FSEvents-timing
+flakies as Phase 2.6 (5 tests). See the session-state `plan.md` for the
+detailed item-by-item breakdown.
