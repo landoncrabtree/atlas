@@ -36,14 +36,8 @@
 //! * `AutoTrust` — accept every host key. Integration-test opt-in only;
 //!   selected via [`SftpBackend::with_options`] from
 //!   `crates/atlas-remote/tests/common/mock.rs`.
-//!
-//! The legacy `ATLAS_SFTP_KNOWN_HOSTS_STRATEGY=accept` env var also forces
-//! [`KnownHostsMode::AutoTrust`]-equivalent behaviour to keep the pre-2.6
-//! integration tests passing until they migrate to the Rust-level test
-//! seam. Slated for removal in the follow-up commit that rips this backdoor
-//! out (see the commit message trail).
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -61,18 +55,6 @@ use crate::known_hosts::{fingerprint, HostKeyStatus, KnownHosts};
 
 use super::common::{join_path, normalized_list_path, BackendClient, RemoteEntry};
 
-/// Legacy env var backdoor — kept alive one release cycle after
-/// Phase 2.6 lands so any integration script still relying on it
-/// keeps working. Slated for removal in the same series
-/// (`refactor(remote): remove ATLAS_SFTP_KNOWN_HOSTS_STRATEGY env-var
-/// backdoor`).
-fn legacy_env_accept_any() -> bool {
-    matches!(
-        std::env::var("ATLAS_SFTP_KNOWN_HOSTS_STRATEGY").as_deref(),
-        Ok("accept")
-    )
-}
-
 /// Per-connection options for the SFTP backend.
 ///
 /// Callers who need the default production behaviour (strict +
@@ -88,6 +70,42 @@ pub struct SftpOptions {
     /// `known_hosts_mode = Prompt` and the server is not already trusted;
     /// production callers attach one supplied by `ConnectController`.
     pub resolver: Option<HostKeyResolver>,
+}
+
+static DEFAULT_SFTP_OPTIONS: RwLock<Option<SftpOptions>> = RwLock::new(None);
+
+/// Install a process-wide default [`SftpOptions`] used by
+/// [`SftpBackend::new`] (and therefore by every code path that constructs
+/// SFTP clients via `RemoteLocationViewModel::open_live`).
+///
+/// Intended as a Rust-level test seam: integration tests install an
+/// [`KnownHostsMode::AutoTrust`] default so they don't require a real
+/// known_hosts entry for the throwaway paramiko mock. Production code
+/// never calls this — production `ConnectController` flows use
+/// [`SftpBackend::with_options`] directly and leave this global unset,
+/// preserving the strict + resolver-driven TOFU semantics for anything
+/// that opens SFTP without going through the modal.
+pub fn set_default_sftp_options(options: SftpOptions) {
+    if let Ok(mut guard) = DEFAULT_SFTP_OPTIONS.write() {
+        *guard = Some(options);
+    }
+}
+
+/// Clear the process-wide default installed by
+/// [`set_default_sftp_options`]. Intended for teardown in tests that
+/// briefly override the default and want to restore production semantics.
+pub fn clear_default_sftp_options() {
+    if let Ok(mut guard) = DEFAULT_SFTP_OPTIONS.write() {
+        *guard = None;
+    }
+}
+
+fn current_default_options() -> SftpOptions {
+    DEFAULT_SFTP_OPTIONS
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or_default()
 }
 
 /// Server-key handler for the russh client.
@@ -111,15 +129,6 @@ impl russh::client::Handler for HostKeyHandler {
         &mut self,
         server_public_key: &key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        // Legacy env var: unconditional accept. Slated for removal — see
-        // the module docstring.
-        if legacy_env_accept_any() {
-            tracing::debug!(
-                host = %self.host,
-                "sftp: legacy env-var backdoor accepted host key",
-            );
-            return Ok(true);
-        }
         if matches!(self.mode, KnownHostsMode::AutoTrust) {
             tracing::debug!(
                 host = %self.host,
@@ -247,7 +256,7 @@ impl SftpBackend {
     /// Validate the URI + credentials shape. Returns immediately;
     /// no network I/O happens here.
     pub(crate) fn new(uri: &RemoteUri, credentials: Credentials) -> Result<Self, BackendError> {
-        Self::with_options(uri, credentials, SftpOptions::default())
+        Self::with_options(uri, credentials, current_default_options())
     }
 
     /// Same as [`Self::new`] but accepts caller-supplied trust options.

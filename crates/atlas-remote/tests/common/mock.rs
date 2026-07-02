@@ -335,15 +335,18 @@ pub struct MockSftpServer {
 }
 
 impl MockSftpServer {
-    /// Ensure the process-global env var that tells the OpenDAL SFTP
-    /// backend to auto-accept the mock server's ephemeral host key is
-    /// set. Called from every `start_*` constructor.
+    /// Install the process-wide default [`SftpOptions`] used by
+    /// [`SftpBackend::new`] so integration tests that don't go through
+    /// [`open_live_sftp_with_options`] still auto-trust the throwaway
+    /// paramiko mock's ephemeral host key. Idempotent; safe to call
+    /// from every `start_*` constructor.
     fn install_sftp_test_env() {
-        // Only set if unset so callers who explicitly want a stricter
-        // policy (e.g. a negative test) can override.
-        if std::env::var_os("ATLAS_SFTP_KNOWN_HOSTS_STRATEGY").is_none() {
-            std::env::set_var("ATLAS_SFTP_KNOWN_HOSTS_STRATEGY", "accept");
-        }
+        use atlas_remote::vm::sftp::{set_default_sftp_options, SftpOptions};
+        use atlas_remote::KnownHostsMode;
+        set_default_sftp_options(SftpOptions {
+            known_hosts_mode: KnownHostsMode::AutoTrust,
+            resolver: None,
+        });
     }
 
     /// Start the SFTP mock in anonymous mode (accepts any credential
