@@ -170,7 +170,12 @@ impl RemoteLocationViewModel {
         }
 
         let worker = Arc::clone(&this);
-        let list_path = common::normalized_list_path(&uri.path);
+        // The backend's `root` (constructed in each `*::new`) already
+        // encodes the URI path, so the initial listing lives at "" —
+        // the backend's own root. Passing the URI path again here
+        // would double-prepend it (e.g. list "atlas/atlas/") and
+        // produce a spurious NotFound.
+        let list_path = String::new();
         handle.spawn(async move {
             worker.run_loader(list_path).await;
         });

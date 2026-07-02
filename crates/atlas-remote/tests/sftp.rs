@@ -234,6 +234,39 @@ async fn disconnect_cleanup_smoke() -> Result<()> {
     Ok(())
 }
 
+/// Regression test for the "URI-with-nested-path" case: connecting to
+/// `sftp://user@host/atlas` must list the CHILDREN of the `/atlas`
+/// directory, not attempt to list `/atlas/atlas` (which would surface
+/// a spurious NotFound). See `open_live::from_client` in
+/// `crates/atlas-remote/src/vm/mod.rs`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_nested_uri_path_lists_children() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+
+    // Seed <root>/atlas/{alpha.txt,beta.txt}.
+    let sub = server.root_dir().join("atlas");
+    std::fs::create_dir(&sub)?;
+    std::fs::write(sub.join("alpha.txt"), b"a")?;
+    std::fs::write(sub.join("beta.txt"), b"bb")?;
+
+    let mut uri = server.uri("atlas");
+    uri.path = "/atlas".into();
+    let vm = open(
+        &Location::Remote(uri, BackendKind::Sftp),
+        Credentials::SshKey(server.client_key(), None),
+        OpenOptions::default(),
+    )?;
+    wait_loaded(&vm, Duration::from_secs(15))?;
+
+    let entries = vm.entries();
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names.len(), 2, "expected 2 entries, got {names:?}");
+    assert!(names.contains(&"alpha.txt"));
+    assert!(names.contains(&"beta.txt"));
+    Ok(())
+}
+
 // Import unused ViewModelEvent from atlas_fs to give the compiler a
 // visible reference (used indirectly through subscribe() in the smoke
 // test above).
