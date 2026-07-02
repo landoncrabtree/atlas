@@ -3,7 +3,7 @@
 //! Exercises the streaming primitive that will back atlas-ops' remote↔
 //! remote transfers: 1 MiB pseudorandom payload flows local → sftp →
 //! s3 → local, and the final bytes must be byte-identical to the
-//! original. Any regression in `stream_copy`, the OpenDAL write API,
+//! original. Any regression in `stream_copy`, the backend write API,
 //! or backend endpoint wiring surfaces as a failure here.
 //!
 //! Run with `cargo test -p atlas-remote --test cross_backend_stream --
@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use atlas_core::{BackendKind, RemoteUri};
 use atlas_fs::OpenOptions;
 use atlas_remote::stream::stream_copy;
-use atlas_remote::{Credentials, OpenDalLocationViewModel};
+use atlas_remote::{Credentials, RemoteLocationViewModel};
 use futures::io::AsyncWriteExt;
 use rand::{RngCore, SeedableRng};
 use tempfile::TempDir;
@@ -29,8 +29,8 @@ const PAYLOAD_BYTES: usize = 1024 * 1024; // 1 MiB
 const CHUNK_BYTES: usize = 64 * 1024;
 const OVERALL_TIMEOUT: Duration = Duration::from_secs(60);
 
-fn open_sftp(server: &MockSftpServer) -> Result<std::sync::Arc<OpenDalLocationViewModel>> {
-    Ok(OpenDalLocationViewModel::open_live(
+fn open_sftp(server: &MockSftpServer) -> Result<std::sync::Arc<RemoteLocationViewModel>> {
+    Ok(RemoteLocationViewModel::open_live(
         server.uri("atlas"),
         BackendKind::Sftp,
         Credentials::SshKey(server.client_key(), None),
@@ -38,8 +38,8 @@ fn open_sftp(server: &MockSftpServer) -> Result<std::sync::Arc<OpenDalLocationVi
     )?)
 }
 
-fn open_s3(uri: RemoteUri) -> Result<std::sync::Arc<OpenDalLocationViewModel>> {
-    Ok(OpenDalLocationViewModel::open_live(
+fn open_s3(uri: RemoteUri) -> Result<std::sync::Arc<RemoteLocationViewModel>> {
+    Ok(RemoteLocationViewModel::open_live(
         uri,
         BackendKind::S3,
         Credentials::Iam {
@@ -52,27 +52,20 @@ fn open_s3(uri: RemoteUri) -> Result<std::sync::Arc<OpenDalLocationViewModel>> {
 }
 
 async fn copy_via_stream(
-    src_vm: &OpenDalLocationViewModel,
+    src_vm: &RemoteLocationViewModel,
     src_path: &str,
-    dst_vm: &OpenDalLocationViewModel,
+    dst_vm: &RemoteLocationViewModel,
     dst_path: &str,
     total: u64,
 ) -> Result<u64> {
-    let reader = src_vm
-        .operator()
-        .reader(src_path)
+    let mut async_reader = src_vm
+        .reader(src_path, Some(total))
         .await
         .with_context(|| format!("open reader {src_path}"))?;
-    let mut async_reader = reader
-        .into_futures_async_read(..total)
-        .await
-        .context("into_futures_async_read")?;
-    let writer = dst_vm
-        .operator()
+    let mut async_writer = dst_vm
         .writer(dst_path)
         .await
         .with_context(|| format!("open writer {dst_path}"))?;
-    let mut async_writer = writer.into_futures_async_write();
     let bytes = stream_copy(
         &mut async_reader,
         &mut async_writer,
@@ -83,20 +76,18 @@ async fn copy_via_stream(
     .await
     .context("stream_copy")?;
     // stream_copy already flushed + closed the writer; nothing else needed.
-    let _ = async_writer;
     Ok(bytes)
 }
 
 async fn copy_local_to_remote(
     local_path: &std::path::Path,
-    dst_vm: &OpenDalLocationViewModel,
+    dst_vm: &RemoteLocationViewModel,
     dst_path: &str,
     total: u64,
 ) -> Result<u64> {
     let bytes = tokio::fs::read(local_path).await?;
     let mut reader = futures::io::Cursor::new(bytes);
-    let writer = dst_vm.operator().writer(dst_path).await?;
-    let mut async_writer = writer.into_futures_async_write();
+    let mut async_writer = dst_vm.writer(dst_path).await?;
     let n = stream_copy(
         &mut reader,
         &mut async_writer,
@@ -105,18 +96,16 @@ async fn copy_local_to_remote(
         None,
     )
     .await?;
-    let _ = async_writer;
     Ok(n)
 }
 
 async fn copy_remote_to_local(
-    src_vm: &OpenDalLocationViewModel,
+    src_vm: &RemoteLocationViewModel,
     src_path: &str,
     local_path: &std::path::Path,
     total: u64,
 ) -> Result<u64> {
-    let reader = src_vm.operator().reader(src_path).await?;
-    let mut async_reader = reader.into_futures_async_read(..total).await?;
+    let mut async_reader = src_vm.reader(src_path, Some(total)).await?;
     let mut buf: Vec<u8> = Vec::with_capacity(total as usize);
     let mut cursor = futures::io::Cursor::new(&mut buf);
     let n = stream_copy(
@@ -127,8 +116,6 @@ async fn copy_remote_to_local(
         None,
     )
     .await?;
-    // stream_copy called close() on the writer, which flushes; but Cursor::close
-    // is a no-op so `buf` already has all the bytes.
     cursor.flush().await?;
     tokio::fs::write(local_path, &buf).await?;
     Ok(n)

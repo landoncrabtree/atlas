@@ -18,20 +18,36 @@ anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 futures.workspace = true
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "sync", "time", "fs"] }
+tokio-util = { version = "0.7", features = ["compat", "io"] }
+async-trait = "0.1"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 serde.workspace = true
 serde_json.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
 once_cell.workspace = true
 
-opendal = { version = "0.53", default-features = false, features = [
-    "services-memory",
-    "services-s3",
-    "services-sftp",
-    "services-ftp",
-    "services-webdav",
-] }
+# SFTP: pure-Rust SSH + SFTP client (no openssh/nix dependency).
+russh = "0.45"
+russh-sftp = "2"
+
+# FTP: pure-Rust, cross-platform.
+# We use the *sync* client (suppaftp's async support pins to async-std),
+# driven from tokio via `spawn_blocking`. This keeps the runtime story
+# simple and avoids pulling in a second reactor.
+suppaftp = { version = "6", default-features = false }
+
+# WebDAV: HTTP-based, trivially cross-platform.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+quick-xml = { version = "0.36", features = ["serialize"] }
+base64 = "0.22"
+urlencoding = "2"
+
+# S3 (via Apache Arrow's object_store, which also covers GCS/Azure later).
+object_store = { version = "0.11", features = ["aws"] }
+url = "2"
 
 keyring = { version = "3", default-features = false, features = [
     "apple-native",

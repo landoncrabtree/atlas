@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 use atlas_core::{BackendKind, Location, RemoteUri};
 use atlas_fs::{LocationViewModel, OpenOptions, ViewModelEvent};
-use atlas_remote::{backend::open, Credentials, OpenDalLocationViewModel};
+use atlas_remote::{backend::open, Credentials, RemoteErrorKind, RemoteLocationViewModel};
 
 use common::MockSftpServer;
 
@@ -29,8 +29,8 @@ fn wait_loaded(vm: &Arc<dyn LocationViewModel>, timeout: Duration) -> Result<()>
     Ok(())
 }
 
-fn open_vm(uri: RemoteUri, creds: Credentials) -> Result<Arc<OpenDalLocationViewModel>> {
-    Ok(OpenDalLocationViewModel::open_live(
+fn open_vm(uri: RemoteUri, creds: Credentials) -> Result<Arc<RemoteLocationViewModel>> {
+    Ok(RemoteLocationViewModel::open_live(
         uri,
         BackendKind::Sftp,
         creds,
@@ -75,11 +75,11 @@ async fn connect_with_pinned_key() -> Result<()> {
         .stat(".")
         .await
         .expect_err("wrong SSH key must fail SFTP auth");
-    // Auth failures surface as PermissionDenied or Unexpected from opendal.
+    // Auth failures surface as PermissionDenied or Unexpected.
     assert!(
         matches!(
             err.kind(),
-            opendal::ErrorKind::PermissionDenied | opendal::ErrorKind::Unexpected
+            RemoteErrorKind::PermissionDenied | RemoteErrorKind::Unexpected
         ),
         "unexpected error kind: {err:?}",
     );

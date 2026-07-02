@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 use atlas_core::{BackendKind, Location, RemoteUri};
 use atlas_fs::{LocationViewModel, OpenOptions};
-use atlas_remote::{backend::open, Credentials, OpenDalLocationViewModel};
+use atlas_remote::{backend::open, Credentials, RemoteErrorKind, RemoteLocationViewModel};
 
 use common::MockS3Server;
 
@@ -36,8 +36,8 @@ fn valid_creds() -> Credentials {
     }
 }
 
-fn open_vm(uri: RemoteUri, creds: Credentials) -> Result<Arc<OpenDalLocationViewModel>> {
-    Ok(OpenDalLocationViewModel::open_live(
+fn open_vm(uri: RemoteUri, creds: Credentials) -> Result<Arc<RemoteLocationViewModel>> {
+    Ok(RemoteLocationViewModel::open_live(
         uri,
         BackendKind::S3,
         creds,
@@ -94,7 +94,7 @@ async fn connect_with_iam() -> Result<()> {
         Err(e) => assert!(
             matches!(
                 e.kind(),
-                opendal::ErrorKind::PermissionDenied | opendal::ErrorKind::Unexpected
+                RemoteErrorKind::PermissionDenied | RemoteErrorKind::Unexpected
             ),
             "unexpected error kind: {e:?}",
         ),
@@ -206,7 +206,7 @@ async fn rename_moves_file() -> Result<()> {
         Err(e) => {
             assert_eq!(
                 e.kind(),
-                opendal::ErrorKind::Unsupported,
+                RemoteErrorKind::Unsupported,
                 "expected Ok or Unsupported from s3 rename, got: {e:?}",
             );
         }
@@ -224,7 +224,7 @@ async fn delete_removes_file() -> Result<()> {
     vm.write("victim.txt", b"..".to_vec()).await?;
     vm.delete("victim.txt").await?;
     let err = vm.stat("victim.txt").await.expect_err("should be gone");
-    assert_eq!(err.kind(), opendal::ErrorKind::NotFound, "err = {err:?}");
+    assert_eq!(err.kind(), RemoteErrorKind::NotFound, "err = {err:?}");
     Ok(())
 }
 

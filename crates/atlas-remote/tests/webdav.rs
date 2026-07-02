@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 use atlas_core::{BackendKind, Location, RemoteUri};
 use atlas_fs::{LocationViewModel, OpenOptions};
-use atlas_remote::{backend::open, Credentials, OpenDalLocationViewModel};
+use atlas_remote::{backend::open, Credentials, RemoteErrorKind, RemoteLocationViewModel};
 
 use common::MockWebDavServer;
 
@@ -28,8 +28,8 @@ fn wait_loaded(vm: &Arc<dyn LocationViewModel>, timeout: Duration) -> Result<()>
     Ok(())
 }
 
-fn open_vm(uri: RemoteUri, creds: Credentials) -> Result<Arc<OpenDalLocationViewModel>> {
-    Ok(OpenDalLocationViewModel::open_live(
+fn open_vm(uri: RemoteUri, creds: Credentials) -> Result<Arc<RemoteLocationViewModel>> {
+    Ok(RemoteLocationViewModel::open_live(
         uri,
         BackendKind::WebDav,
         creds,
@@ -73,7 +73,7 @@ async fn connect_with_password() -> Result<()> {
     assert!(
         matches!(
             err.kind(),
-            opendal::ErrorKind::PermissionDenied | opendal::ErrorKind::Unexpected
+            RemoteErrorKind::PermissionDenied | RemoteErrorKind::Unexpected
         ),
         "unexpected error kind: {err:?}",
     );
@@ -169,7 +169,7 @@ async fn rename_moves_file() -> Result<()> {
         Err(e) => {
             assert_eq!(
                 e.kind(),
-                opendal::ErrorKind::Unsupported,
+                RemoteErrorKind::Unsupported,
                 "expected Unsupported from webdav rename, got: {e:?}",
             );
         }

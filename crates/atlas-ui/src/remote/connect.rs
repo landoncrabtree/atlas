@@ -870,7 +870,7 @@ fn err_from_backend(err: &BackendError) -> ErrorKind {
     match err {
         BackendError::InvalidCredentials { .. } => ErrorKind::Auth,
         BackendError::UnsupportedBackend(_) => ErrorKind::Malformed,
-        BackendError::OpenDal(e) => classify_probe_error(&e.to_string()),
+        BackendError::Backend(msg) => classify_probe_error(msg),
     }
 }
 

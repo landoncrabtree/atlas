@@ -1,9 +1,10 @@
 //! [`Location`](atlas_core::Location) → [`LocationViewModel`] entry point.
 //!
 //! The [`open`] function is the single public dispatch that picks the right
-//! backend based on [`atlas_core::BackendKind`]. Local locations bypass OpenDAL
-//! and go straight to [`atlas_fs::InMemoryLocationViewModel`]; remote ones are
-//! served by [`crate::opendal_vm::OpenDalLocationViewModel`].
+//! backend based on [`atlas_core::BackendKind`]. Local locations bypass any
+//! network client and go straight to [`atlas_fs::InMemoryLocationViewModel`];
+//! remote ones are served by [`crate::vm::RemoteLocationViewModel`] over one
+//! of the four per-protocol clients under `crate::vm::{sftp,ftp,webdav,s3}`.
 //!
 //! Credentials for remote backends are supplied by the caller via [`Credentials`].
 //! Callers that stored credentials in the OS keychain can look them up first
@@ -17,7 +18,10 @@ use atlas_core::{BackendKind, Location, RemoteUri};
 use atlas_fs::{InMemoryLocationViewModel, LocationViewModel, OpenOptions};
 use thiserror::Error;
 
-use crate::opendal_vm::OpenDalLocationViewModel;
+use crate::vm::{
+    common::BackendClient, ftp::FtpBackend, s3::S3Backend, sftp::SftpBackend,
+    webdav::WebDavBackend, RemoteLocationViewModel,
+};
 
 /// Credentials used to open a remote backend.
 #[derive(Debug, Clone)]
@@ -53,9 +57,9 @@ pub enum BackendError {
         /// Human-readable detail.
         detail: String,
     },
-    /// OpenDAL rejected the configuration (missing bucket, bad host, …).
-    #[error("opendal error: {0}")]
-    OpenDal(#[from] opendal::Error),
+    /// Any other backend-side error (network, config, …).
+    #[error("backend error: {0}")]
+    Backend(String),
 }
 
 /// Open `location` with the appropriate backend and return an
@@ -68,8 +72,12 @@ pub enum BackendError {
 ///
 /// Returns [`BackendError::UnsupportedBackend`] when a build without the
 /// requested service feature is asked to open that scheme, and
-/// [`BackendError::OpenDal`] for any configuration or transport error surfaced
-/// by OpenDAL during operator construction.
+/// [`BackendError::InvalidCredentials`] when the supplied [`Credentials`]
+/// aren't accepted by the chosen backend (e.g. IAM against SFTP, SSH key
+/// against S3). Any error surfacing during the actual network handshake
+/// (auth rejection, unreachable host, DNS failure, …) is delivered
+/// asynchronously via the returned view model's subscribe channel as a
+/// [`atlas_fs::ViewModelEvent::Error`].
 pub fn open(
     location: &Location,
     credentials: Credentials,
@@ -87,15 +95,26 @@ fn open_remote(
     credentials: Credentials,
     opts: OpenOptions,
 ) -> Result<Arc<dyn LocationViewModel>, BackendError> {
-    if matches!(kind, BackendKind::Local) {
-        // A Location::Remote should never carry BackendKind::Local; treat it
-        // as a caller bug rather than silently opening the wrong thing.
-        return Err(BackendError::UnsupportedBackend(
-            "local kind on remote location".to_owned(),
-        ));
-    }
-    let vm = OpenDalLocationViewModel::open_live(uri.clone(), kind, credentials, opts)?;
-    Ok(vm)
+    let client: Arc<dyn BackendClient> = match kind {
+        BackendKind::Local => {
+            // A Location::Remote should never carry BackendKind::Local; treat it
+            // as a caller bug rather than silently opening the wrong thing.
+            return Err(BackendError::UnsupportedBackend(
+                "local kind on remote location".to_owned(),
+            ));
+        }
+        BackendKind::Sftp => Arc::new(SftpBackend::new(uri, credentials)?),
+        BackendKind::Ftp => Arc::new(FtpBackend::new(uri, credentials)?),
+        BackendKind::WebDav => Arc::new(WebDavBackend::new(uri, credentials)?),
+        BackendKind::S3 => Arc::new(S3Backend::new(uri, credentials)?),
+    };
+
+    Ok(RemoteLocationViewModel::from_client(
+        uri.clone(),
+        kind,
+        client,
+        opts,
+    ))
 }
 
 #[cfg(test)]

@@ -658,7 +658,7 @@ impl MockS3Server {
     }
 
     /// URI whose `host` is the S3 bucket, matching how
-    /// `build_s3` in `opendal_vm.rs` reads the URI.
+    /// `build_s3` in the S3 backend reads the URI.
     pub fn uri(&self) -> RemoteUri {
         RemoteUri {
             scheme: "s3".into(),
@@ -687,8 +687,8 @@ impl MockS3Server {
 
     /// Acquire an exclusive lock on the process-global S3 env vars,
     /// install them for this mock, and return the guard. Callers must
-    /// build the [`opendal::Operator`] (via
-    /// [`atlas_remote::OpenDalLocationViewModel::open_live`] etc.) while
+    /// build the S3 client (via
+    /// [`atlas_remote::RemoteLocationViewModel::open_live`] etc.) while
     /// holding the guard — once the operator exists it snapshots the
     /// endpoint and the guard can be dropped safely.
     ///
