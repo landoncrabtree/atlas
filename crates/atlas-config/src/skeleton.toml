@@ -30,13 +30,22 @@ dual_pane = true
 # Custom themes can be placed in your config directory.
 theme = "atlas-dark"
 
-# UI font family name. Must be installed on the system.
+# UI font family name. Must be a SINGLE family name (not a
+# comma-separated CSS-style stack — Slint's font system takes one
+# family at a time). Must be installed on the system, or Slint's
+# built-in fallback chain (fontique) picks a reasonable system font.
+# Leave blank to use Slint's per-platform default (SF Pro on macOS,
+# Segoe UI on Windows, system-ui on Linux). Bundled icon glyphs are
+# rendered separately via Symbols Nerd Font Mono (see
+# `assets/fonts/README.md`) — they do NOT depend on this setting.
 font_family = "Inter"
 
 # UI font size in points. Clamped to the range [8.0, 72.0] at load time.
 font_size = 14.0
 
 # Monospace font used in the preview pane and code views.
+# Same single-family rule as `font_family` above. Leave blank for the
+# platform default (SF Mono / Consolas / monospace).
 monospace_font_family = "JetBrains Mono"
 
 # Layout density of the file list: "compact", "comfortable", or "spacious".

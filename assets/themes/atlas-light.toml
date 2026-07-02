@@ -22,8 +22,13 @@ success = "#1a7a46"
 warning = "#9a6400"
 
 [typography]
-font_family = "SF Pro Text, Inter, system-ui, Apple Symbols, Segoe UI Symbol, sans-serif"
-monospace_family = "SF Mono, JetBrains Mono, Menlo, monospace"
+# Slint's FontRequest.family accepts a single family name, not a
+# CSS-style comma-separated fallback stack. Leave blank to fall back to
+# Slint's built-in per-platform default (SF Pro on macOS, Segoe UI on
+# Windows, system-ui on Linux). Users can override via `ui.font_family`
+# in their config.toml.
+font_family = ""
+monospace_family = ""
 font_size_pt = 13.0
 
 [chrome]

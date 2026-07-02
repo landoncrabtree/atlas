@@ -25,9 +25,17 @@ export global Theme {
     in-out property <color> warning: #f5c274;
 
     // ── Typography ────────────────────────────────────────────────────────────
-    in-out property <string> font-family: "SF Pro Text, Inter, system-ui, Apple Symbols, Segoe UI Symbol, sans-serif";
+    //
+    // Slint 1.17's FontRequest.family (i-slint-core/graphics.rs) is a
+    // single family name, not a CSS-style comma-separated stack. Leave
+    // this empty to fall back to Slint's built-in per-platform default
+    // (SF Pro on macOS, Segoe UI on Windows, system-ui on Linux). Set
+    // it from Rust via AppShell::apply_theme, which reads
+    // `config.ui.font_family` — see `apply_font_overrides` in
+    // crates/atlas-app/src/main.rs.
+    in-out property <string> font-family: "";
     in-out property <length> font-size: 13px;
-    in-out property <string> monospace: "SF Mono, JetBrains Mono, Menlo, monospace";
+    in-out property <string> monospace: "";
 
     // ── Radii ─────────────────────────────────────────────────────────────────
     in-out property <length> radius-xs: 4px;

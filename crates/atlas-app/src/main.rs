@@ -326,10 +326,6 @@ fn main() -> Result<()> {
     // Push config-driven UI settings into the Slint window.
     shell.set_vim_mode(config.general.vim_mode); // config: reads config.general.vim_mode
 
-    // TODO(config-sweep): ui.font_family / ui.font_size / ui.monospace_font_family —
-    //   requires pushing new properties into the Theme Slint global. Tracked in
-    //   gap-ui-fonts.
-
     // Open in dual-pane layout when the config asks for it (default: true).
     // The new pane inherits pane 0's location via AppShell::split_focused.
     if config.general.dual_pane {
@@ -1304,10 +1300,14 @@ fn spawn_theme_event_thread(
 
 /// Overlay user-configured typography onto the resolved theme tokens.
 ///
-/// The user's font choice is *prepended* to the theme's own font-family
-/// stack rather than replacing it, so glyphs the user's font can't render
-/// (emoji, arrows, tab-close ✕) still resolve via the built-in fallback
-/// chain instead of showing as tofu boxes.
+/// **Slint constraint** — `FontRequest.family` (see i-slint-core
+/// `graphics.rs`) is a single family name, not a CSS-style comma-separated
+/// fallback stack. We therefore *replace* the theme's family with the
+/// user's choice when set; Slint's built-in fontique fallback chain (see
+/// `sharedfontique::FALLBACK_FAMILIES`) covers missing glyphs and unknown
+/// families gracefully. Missing PUA icon glyphs are covered by fonts
+/// registered via `slint::register_font_from_memory` (Symbols Nerd Font
+/// Mono lands via that path in Phase 2.10).
 ///
 /// Empty strings and non-positive sizes are treated as "unset" and leave
 /// the theme's own defaults in place. Applied both at startup and whenever
@@ -1316,31 +1316,13 @@ fn spawn_theme_event_thread(
 /// config: reads config.ui.{font_family, monospace_font_family, font_size}
 fn apply_font_overrides(tokens: &mut ThemeTokens, ui: &atlas_config::Ui) {
     if !ui.font_family.trim().is_empty() {
-        tokens.typography.font_family =
-            prepend_font(&ui.font_family, &tokens.typography.font_family);
+        tokens.typography.font_family = ui.font_family.trim().to_owned();
     }
     if !ui.monospace_font_family.trim().is_empty() {
-        tokens.typography.monospace_family = prepend_font(
-            &ui.monospace_font_family,
-            &tokens.typography.monospace_family,
-        );
+        tokens.typography.monospace_family = ui.monospace_font_family.trim().to_owned();
     }
     if ui.font_size > 0.0 && ui.font_size.is_finite() {
         tokens.typography.font_size_pt = ui.font_size;
-    }
-}
-
-/// Prepend `user_font` to the comma-separated `fallback_chain`, de-duplicating
-/// case-insensitively so repeated overrides don't stack.
-fn prepend_font(user_font: &str, fallback_chain: &str) -> String {
-    let user = user_font.trim();
-    let already_present = fallback_chain
-        .split(',')
-        .any(|f| f.trim().eq_ignore_ascii_case(user));
-    if already_present {
-        fallback_chain.to_owned()
-    } else {
-        format!("{user}, {fallback_chain}")
     }
 }
 
