@@ -34,7 +34,28 @@ use parking_lot::{Mutex, RwLock};
 use tokio::runtime::Handle;
 
 use crate::error::{RemoteError, RemoteMetadata, RemoteResult};
+use crate::retry::{with_retry, RetryHooks, RetryPolicy};
 pub use common::{BackendClient, BoxedAsyncRead, BoxedAsyncWrite, RemoteEntry};
+
+/// Fingerprint the configured retry policy globally. Callers plumb
+/// their config in via [`set_default_retry_policy`]; each new view
+/// model reads this snapshot at construction time.
+static GLOBAL_RETRY_POLICY: once_cell::sync::Lazy<parking_lot::RwLock<RetryPolicy>> =
+    once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(RetryPolicy::default()));
+
+/// Return a copy of the process-wide default retry policy. Newly
+/// constructed view models pick this up automatically.
+#[must_use]
+pub fn default_retry_policy() -> RetryPolicy {
+    *GLOBAL_RETRY_POLICY.read()
+}
+
+/// Overwrite the process-wide default retry policy. Called by
+/// `AppShell` after loading the config so subsequent
+/// `RemoteLocationViewModel` instances inherit the user's tuning.
+pub fn set_default_retry_policy(policy: RetryPolicy) {
+    *GLOBAL_RETRY_POLICY.write() = policy;
+}
 
 /// Internal state protected by the outer `RwLock`.
 struct Inner {
@@ -80,6 +101,14 @@ pub struct RemoteLocationViewModel {
     state: RwLock<Inner>,
     subscribers: Mutex<Vec<Sender<ViewModelEvent>>>,
     runtime: Handle,
+    /// Retry policy for the seven network ops surfaced by the trait.
+    /// Cloned from the process-wide default at construction time;
+    /// tests can rewrite it via [`Self::set_retry_policy`].
+    retry_policy: RwLock<RetryPolicy>,
+    /// Observer sink shared with any consumer that wants retry
+    /// notifications (ops panel, per-pane status glyph). Cheap to
+    /// clone via [`Self::retry_hooks`].
+    retry_hooks: RetryHooks,
 }
 
 impl RemoteLocationViewModel {
@@ -182,6 +211,8 @@ impl RemoteLocationViewModel {
             state: RwLock::new(inner),
             subscribers: Mutex::new(Vec::new()),
             runtime: handle.clone(),
+            retry_policy: RwLock::new(default_retry_policy()),
+            retry_hooks: RetryHooks::new(),
         });
 
         if let Some(msg) = filter_err {
@@ -218,27 +249,52 @@ impl RemoteLocationViewModel {
     ///
     /// # Errors
     ///
-    /// Propagates any [`RemoteError`] surfaced by the backend.
+    /// Propagates any [`RemoteError`] surfaced by the backend after
+    /// the retry envelope has exhausted its budget.
     pub async fn read(&self, path: &str) -> RemoteResult<Vec<u8>> {
-        self.client.read(path).await
+        let policy = self.retry_policy();
+        let hooks = self.retry_hooks.clone();
+        with_retry("remote.read", &policy, Some(&hooks), || {
+            let client = Arc::clone(&self.client);
+            let path = path.to_owned();
+            async move { client.read(&path).await }
+        })
+        .await
     }
 
     /// Fetch a single entry's metadata (size, kind, modified time).
     ///
     /// # Errors
     ///
-    /// Propagates any [`RemoteError`] surfaced by the backend.
+    /// Propagates any [`RemoteError`] surfaced by the backend after
+    /// the retry envelope has exhausted its budget.
     pub async fn stat(&self, path: &str) -> RemoteResult<RemoteMetadata> {
-        self.client.stat(path).await
+        let policy = self.retry_policy();
+        let hooks = self.retry_hooks.clone();
+        with_retry("remote.stat", &policy, Some(&hooks), || {
+            let client = Arc::clone(&self.client);
+            let path = path.to_owned();
+            async move { client.stat(&path).await }
+        })
+        .await
     }
 
     /// Upload `bytes` to `path`, replacing any existing object.
     ///
     /// # Errors
     ///
-    /// Propagates any [`RemoteError`] surfaced by the backend.
+    /// Propagates any [`RemoteError`] surfaced by the backend after
+    /// the retry envelope has exhausted its budget.
     pub async fn write(&self, path: &str, bytes: Vec<u8>) -> RemoteResult<()> {
-        self.client.write(path, bytes).await
+        let policy = self.retry_policy();
+        let hooks = self.retry_hooks.clone();
+        with_retry("remote.write", &policy, Some(&hooks), || {
+            let client = Arc::clone(&self.client);
+            let path = path.to_owned();
+            let bytes = bytes.clone();
+            async move { client.write(&path, bytes).await }
+        })
+        .await
     }
 
     /// Create a directory at `path`. Backends without a first-class
@@ -246,9 +302,17 @@ impl RemoteLocationViewModel {
     ///
     /// # Errors
     ///
-    /// Propagates any [`RemoteError`] surfaced by the backend.
+    /// Propagates any [`RemoteError`] surfaced by the backend after
+    /// the retry envelope has exhausted its budget.
     pub async fn create_dir(&self, path: &str) -> RemoteResult<()> {
-        self.client.create_dir(path).await
+        let policy = self.retry_policy();
+        let hooks = self.retry_hooks.clone();
+        with_retry("remote.mkdir", &policy, Some(&hooks), || {
+            let client = Arc::clone(&self.client);
+            let path = path.to_owned();
+            async move { client.create_dir(&path).await }
+        })
+        .await
     }
 
     /// Rename `from` to `to`. Both paths are interpreted relative to
@@ -256,9 +320,18 @@ impl RemoteLocationViewModel {
     ///
     /// # Errors
     ///
-    /// Propagates any [`RemoteError`] surfaced by the backend.
+    /// Propagates any [`RemoteError`] surfaced by the backend after
+    /// the retry envelope has exhausted its budget.
     pub async fn rename(&self, from: &str, to: &str) -> RemoteResult<()> {
-        self.client.rename(from, to).await
+        let policy = self.retry_policy();
+        let hooks = self.retry_hooks.clone();
+        with_retry("remote.rename", &policy, Some(&hooks), || {
+            let client = Arc::clone(&self.client);
+            let from = from.to_owned();
+            let to = to.to_owned();
+            async move { client.rename(&from, &to).await }
+        })
+        .await
     }
 
     /// Delete `path`. Absent entries surface as
@@ -266,9 +339,17 @@ impl RemoteLocationViewModel {
     ///
     /// # Errors
     ///
-    /// Propagates any [`RemoteError`] surfaced by the backend.
+    /// Propagates any [`RemoteError`] surfaced by the backend after
+    /// the retry envelope has exhausted its budget.
     pub async fn delete(&self, path: &str) -> RemoteResult<()> {
-        self.client.delete(path).await
+        let policy = self.retry_policy();
+        let hooks = self.retry_hooks.clone();
+        with_retry("remote.delete", &policy, Some(&hooks), || {
+            let client = Arc::clone(&self.client);
+            let path = path.to_owned();
+            async move { client.delete(&path).await }
+        })
+        .await
     }
 
     /// Open a streaming reader for `path`, optionally bounded by
@@ -312,13 +393,40 @@ impl RemoteLocationViewModel {
         &self.client
     }
 
+    /// Read-only snapshot of the retry policy this view model uses.
+    #[must_use]
+    pub fn retry_policy(&self) -> RetryPolicy {
+        *self.retry_policy.read()
+    }
+
+    /// Overwrite the retry policy. Tests and dynamic reconfiguration
+    /// (config-file reload) use this.
+    pub fn set_retry_policy(&self, policy: RetryPolicy) {
+        *self.retry_policy.write() = policy;
+    }
+
+    /// Clone the retry-observer sink. Callers (ops panel, status bar)
+    /// attach their own observers via this handle.
+    #[must_use]
+    pub fn retry_hooks(&self) -> RetryHooks {
+        self.retry_hooks.clone()
+    }
+
     fn notify(&self, event: ViewModelEvent) {
         let mut subs = self.subscribers.lock();
         subs.retain(|tx| tx.send(event.clone()).is_ok());
     }
 
     async fn run_loader(self: Arc<Self>, list_path: String) {
-        let entries = match self.client.list(&list_path).await {
+        let policy = self.retry_policy();
+        let hooks = self.retry_hooks.clone();
+        let list_result = with_retry("remote.list", &policy, Some(&hooks), || {
+            let client = Arc::clone(&self.client);
+            let path = list_path.clone();
+            async move { client.list(&path).await }
+        })
+        .await;
+        let entries = match list_result {
             Ok(e) => e,
             Err(e) => {
                 tracing::warn!(path = %list_path, error = %e, "remote lister failed");

@@ -128,6 +128,10 @@ fn main() -> Result<()> {
     let config = atlas_config::load().unwrap_or_default();
     let theme_id = config.ui.theme.clone();
 
+    // Wire remote pool + retry policy from config so the process-wide
+    // singletons pick up the user's tuning before any pane opens.
+    apply_remote_config(&config.remote);
+
     // Load default keymap and layer any user overrides from ~/.config/atlas/keymap.toml.
     let keymap = load_keymap_with_user_overrides();
     tracing::info!(layers = ?keymap.layers(), "keymap loaded");
@@ -532,6 +536,35 @@ fn config_view_mode(m: atlas_config::ViewMode) -> atlas_ui::models::ViewMode {
         atlas_config::ViewMode::Miller => atlas_ui::models::ViewMode::Miller,
         atlas_config::ViewMode::Tree => atlas_ui::models::ViewMode::Tree,
     }
+}
+
+/// Push the user's remote-tuning knobs (pool + retry) into the
+/// process-wide singletons owned by `atlas_remote`.
+fn apply_remote_config(remote: &atlas_config::Remote) {
+    let pool = atlas_remote::pool::global();
+    pool.set_config(atlas_remote::PoolConfig {
+        idle_ttl: std::time::Duration::from_millis(u64::from(remote.pool.idle_ttl_ms)),
+        max_connections: remote.pool.max_connections.max(1) as usize,
+    });
+    // For now every scheme uses the same default; the per-scheme
+    // overrides on `remote.timeout_ms` / `remote.retries` are read by
+    // future per-VM policy customisation but the process-wide baseline
+    // is a single struct.
+    let policy = atlas_remote::RetryPolicy {
+        timeout: std::time::Duration::from_millis(u64::from(remote.default_timeout_ms)),
+        retries: remote.default_retries,
+        backoff_initial: std::time::Duration::from_millis(u64::from(remote.backoff_initial_ms)),
+        backoff_max: std::time::Duration::from_millis(u64::from(remote.backoff_max_ms)),
+        backoff_multiplier: remote.backoff_multiplier,
+    };
+    atlas_remote::set_default_retry_policy(policy);
+    tracing::info!(
+        idle_ttl_ms = remote.pool.idle_ttl_ms,
+        max_connections = remote.pool.max_connections,
+        default_timeout_ms = remote.default_timeout_ms,
+        default_retries = remote.default_retries,
+        "wired remote pool + retry policy from config"
+    );
 }
 
 /// Build the default keymap and layer any user overrides from

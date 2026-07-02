@@ -57,6 +57,8 @@ fn drain_until_completed(
                 | OpEvent::Cancelled { id: event_id }
                 | OpEvent::Progress { id: event_id, .. }
                 | OpEvent::Conflict { id: event_id, .. }
+                | OpEvent::Retrying { id: event_id, .. }
+                | OpEvent::RetryFailed { id: event_id, .. }
                 | OpEvent::Failed { id: event_id, .. } => *event_id == id,
             };
             if matches_id {

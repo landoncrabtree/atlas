@@ -44,6 +44,7 @@
 pub mod backend;
 pub mod error;
 pub mod pool;
+pub mod retry;
 pub mod secrets;
 pub mod stream;
 pub mod vm;
@@ -54,9 +55,10 @@ pub use error::{RemoteError, RemoteErrorKind, RemoteMetadata, RemoteMode};
 pub use pool::{
     ConnectionPool, PoolConfig, PoolKey, PoolStats, DEFAULT_IDLE_TTL, DEFAULT_MAX_CONNECTIONS,
 };
+pub use retry::{with_retry, RetryHooks, RetryObserver, RetryPolicy};
 pub use secrets::{
     delete as delete_secret, retrieve as retrieve_secret, store as store_secret, SecretError,
 };
 pub use stream::{stream_copy, StreamProgress, DEFAULT_CHUNK_BYTES};
-pub use vm::RemoteLocationViewModel;
+pub use vm::{default_retry_policy, set_default_retry_policy, RemoteLocationViewModel};
 pub use walk::{enumerate_recursive, WalkEntry};

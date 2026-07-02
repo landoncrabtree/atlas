@@ -394,6 +394,24 @@ impl OpsController {
                 self.push_to_ui();
                 self.push_modal_state();
             }
+            OpEvent::Retrying {
+                id,
+                attempt,
+                next_backoff_ms,
+            } => {
+                self.update_row(id, |row| {
+                    row.status = format!("Retrying (attempt {attempt} in {next_backoff_ms}ms)");
+                });
+                self.push_to_ui();
+                self.push_modal_state();
+            }
+            OpEvent::RetryFailed { id, attempts } => {
+                self.update_row(id, |row| {
+                    row.status = format!("Retry gave up after {attempts} attempts");
+                });
+                self.push_to_ui();
+                self.push_modal_state();
+            }
         }
     }
 

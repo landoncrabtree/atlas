@@ -55,6 +55,7 @@ keyring = { version = "3", default-features = false, features = [
     "windows-native",
     "sync-secret-service",
 ] }
+rand = "0.8"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

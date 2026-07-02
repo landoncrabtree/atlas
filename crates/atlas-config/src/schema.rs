@@ -27,6 +27,8 @@ pub struct Config {
     pub search: Search,
     /// Thumbnail generation and cache settings.
     pub thumbnails: Thumbnails,
+    /// Remote-backend resilience knobs (pool, retry, timeouts).
+    pub remote: Remote,
     /// Sidebar bookmarks.
     pub bookmarks: Vec<Bookmark>,
 }
@@ -325,7 +327,47 @@ pub struct Thumbnails {
     pub generate_for_size_up_to_mb: u32,
 }
 
-// ── Bookmark ───────────────────────────────────────────────────────────────
+// ── Remote ─────────────────────────────────────────────────────────────────
+
+/// Remote-backend resilience knobs. Applied by
+/// [`atlas_remote::pool::ConnectionPool`] and
+/// [`atlas_remote::retry::with_retry`] on wire-in.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Remote {
+    /// Connection-pool tunables.
+    pub pool: RemotePool,
+    /// Per-scheme timeout overrides (milliseconds). Any missing scheme
+    /// falls back to `default_timeout_ms`. Keys are `"sftp"`, `"s3"`,
+    /// `"webdav"`, `"ftp"`.
+    pub timeout_ms: HashMap<String, u32>,
+    /// Fallback timeout used when a scheme isn't listed in
+    /// [`timeout_ms`](Self::timeout_ms).
+    pub default_timeout_ms: u32,
+    /// Per-scheme retry counts. Missing schemes use
+    /// [`default_retries`](Self::default_retries).
+    pub retries: HashMap<String, u32>,
+    /// Fallback retry count.
+    pub default_retries: u32,
+    /// Initial backoff duration (milliseconds).
+    pub backoff_initial_ms: u32,
+    /// Cap on the backoff duration (milliseconds).
+    pub backoff_max_ms: u32,
+    /// Exponential growth factor applied between retries.
+    pub backoff_multiplier: f32,
+}
+
+/// Connection-pool tunables.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RemotePool {
+    /// Idle time-to-live before an unreferenced client is dropped
+    /// (milliseconds).
+    pub idle_ttl_ms: u32,
+    /// Hard cap on the number of pooled clients. LRU eviction kicks
+    /// in once this many are outstanding.
+    pub max_connections: u32,
+}
 
 /// A named sidebar bookmark.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -1,8 +1,8 @@
 //! Default values for every configuration struct.
 
 use super::schema::{
-    Density, DetailsView, General, Indexer, Navigation, Search, SortKey, SortOrder, Thumbnails, Ui,
-    View, ViewMode,
+    Density, DetailsView, General, Indexer, Navigation, Remote, RemotePool, Search, SortKey,
+    SortOrder, Thumbnails, Ui, View, ViewMode,
 };
 
 impl Default for General {
@@ -93,6 +93,30 @@ impl Default for Thumbnails {
             cache_max_size_mb: 500,
             generation_threads: None,
             generate_for_size_up_to_mb: 100,
+        }
+    }
+}
+
+impl Default for RemotePool {
+    fn default() -> Self {
+        Self {
+            idle_ttl_ms: 300_000,
+            max_connections: 8,
+        }
+    }
+}
+
+impl Default for Remote {
+    fn default() -> Self {
+        Self {
+            pool: RemotePool::default(),
+            timeout_ms: std::collections::HashMap::new(),
+            default_timeout_ms: 15_000,
+            retries: std::collections::HashMap::new(),
+            default_retries: 3,
+            backoff_initial_ms: 100,
+            backoff_max_ms: 5_000,
+            backoff_multiplier: 2.0,
         }
     }
 }

@@ -23,8 +23,8 @@ pub mod watcher;
 // ── Re-exports ──────────────────────────────────────────────────────────────
 
 pub use schema::{
-    Bookmark, Config, Density, DetailsView, General, Indexer, Navigation, Search, SortKey,
-    SortOrder, Thumbnails, Ui, View, ViewMode, MAX_VISIBLE_RESULTS_CAP,
+    Bookmark, Config, Density, DetailsView, General, Indexer, Navigation, Remote, RemotePool,
+    Search, SortKey, SortOrder, Thumbnails, Ui, View, ViewMode, MAX_VISIBLE_RESULTS_CAP,
 };
 
 pub use load::{load, load_from_file, load_from_str};

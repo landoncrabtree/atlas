@@ -184,6 +184,24 @@ pub enum OpEvent {
     },
     /// Operation completed successfully.
     Completed { id: OpId },
+    /// A retry is about to run for a transient failure. Emitted only
+    /// by remote flows that use `atlas_remote::retry::with_retry`.
+    Retrying {
+        /// Op that is retrying.
+        id: OpId,
+        /// 1-indexed retry attempt (attempt 1 == first retry).
+        attempt: u32,
+        /// Delay before the next attempt (milliseconds).
+        next_backoff_ms: u64,
+    },
+    /// A retry loop gave up. The op will surface a subsequent
+    /// [`OpEvent::Failed`] carrying the terminal error.
+    RetryFailed {
+        /// Op that gave up.
+        id: OpId,
+        /// Total number of attempts made before giving up.
+        attempts: u32,
+    },
     /// Operation failed.
     Failed {
         id: OpId,
