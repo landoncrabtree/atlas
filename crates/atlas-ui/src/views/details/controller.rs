@@ -580,7 +580,12 @@ fn entry_to_row_item(entry: &Entry) -> EntryRowItem {
     let (is_dir, is_symlink, is_broken_symlink, kind_icon) = match &entry.kind {
         EntryKind::Dir => (true, false, false, "▸"),
         EntryKind::File => (false, false, false, "·"),
-        EntryKind::Symlink { broken, .. } => (false, true, *broken, "↳"),
+        EntryKind::Symlink { broken, .. } => (
+            false,
+            true,
+            *broken,
+            if *broken { "⚠" } else { "↪" },
+        ),
         EntryKind::Other => (false, false, false, "◆"),
     };
 

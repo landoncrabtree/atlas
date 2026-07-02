@@ -578,7 +578,8 @@ fn fallback_glyph(kind: &EntryKind) -> &'static str {
     match kind {
         EntryKind::Dir => "▸",
         EntryKind::File => "·",
-        EntryKind::Symlink { .. } => "↳",
+        EntryKind::Symlink { broken: true, .. } => "⚠",
+        EntryKind::Symlink { .. } => "↪",
         EntryKind::Other => "⚙️",
     }
 }
