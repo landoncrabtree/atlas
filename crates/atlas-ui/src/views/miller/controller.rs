@@ -331,6 +331,44 @@ impl MillerController {
         entries.get(row).map(|e| e.path.clone())
     }
 
+    /// Return a clone of the [`Entry`] at `(column, row)` without modifying
+    /// focus state.  Companion to [`Self::entry_path_at`] used by the
+    /// context-menu shell handler so it can build a full `ContextTarget`
+    /// (needs `entry.kind`, not just the path) directly from the
+    /// right-clicked cell — matching the semantic contract in the
+    /// convergence rule: build ContextTarget from `(pane_location, entry)`.
+    #[must_use]
+    pub fn column_entry(&self, column: usize, row: usize) -> Option<Entry> {
+        let cols = self.columns.read();
+        let sub = cols.get(column)?;
+        let entries = sub.column.entries.read();
+        entries.get(row).cloned()
+    }
+
+    /// Update the per-column focused row for `column` **without** opening a
+    /// child column or truncating the stack — the visual highlight follows
+    /// the pointer but the user's exploration state stays put.
+    ///
+    /// Right-click uses this so the highlighted row matches the entry the
+    /// context menu will act on, matching Finder / Explorer behaviour where
+    /// a right-click selects but does not navigate.  Regular left-click still
+    /// goes through [`Self::select_row`] which navigates into directories.
+    pub fn focus_row_within_column(self: &Arc<Self>, column: usize, row: usize) {
+        {
+            let cols = self.columns.read();
+            let Some(sub) = cols.get(column) else {
+                return;
+            };
+            if row >= sub.column.entries.read().len() {
+                return;
+            }
+            sub.column.focused.store(row, Ordering::Relaxed);
+        }
+        self.focused_column.store(column, Ordering::Relaxed);
+        self.push_column_entries_to_ui(column);
+        self.push_ui_metadata();
+    }
+
     /// Move the focused row within the focused column by `delta` rows.
     ///
     /// Movement is clamped to the valid range; the focused column is not
@@ -978,5 +1016,127 @@ mod tests {
         // 2 cols × (100 + 10) = 220 content, 200 visible → -20.
         let got = compute_miller_viewport_x(2, 100.0, 10.0, 200.0);
         assert!((got - -20.0).abs() < f32::EPSILON, "got {got}");
+    }
+
+    // ── Right-click context menu targeting ────────────────────────────────────
+    //
+    // Locks the invariant behind item 5 (Phase 2.9): a right-click on a
+    // Miller cell must resolve to the entry's on-disk path *and* full
+    // `Entry` value without mutating focus.  These are the values the
+    // shell handler feeds to `AppShell::open_context_menu_for_entry` —
+    // if they drift, the capability-aware menu will act on the wrong
+    // entry or misclassify its kind.
+
+    #[test]
+    fn entry_path_at_resolves_row_without_mutating_focus() {
+        let dir = make_tree();
+        let ctrl = make_ctrl();
+        ctrl.set_root(dir.path().to_path_buf());
+        wait_until(|| ctrl.column_loaded(0));
+
+        let (dir_row, dir_name) = ctrl
+            .column_entries(0)
+            .iter()
+            .enumerate()
+            .find_map(|(i, e)| e.kind.is_dir().then(|| (i, e.name.to_string())))
+            .expect("at least one directory in fixture");
+        let focus_before = ctrl.focused_col();
+
+        let resolved = ctrl.entry_path_at(0, dir_row).expect("path");
+        assert!(
+            resolved.ends_with(&dir_name),
+            "resolved path {resolved:?} should end with {dir_name}"
+        );
+        assert_eq!(
+            ctrl.focused_col(),
+            focus_before,
+            "entry_path_at must not change focused column"
+        );
+    }
+
+    #[test]
+    fn entry_path_at_out_of_range_returns_none() {
+        let dir = make_tree();
+        let ctrl = make_ctrl();
+        ctrl.set_root(dir.path().to_path_buf());
+        wait_until(|| ctrl.column_loaded(0));
+        assert!(ctrl.entry_path_at(0, 9_999).is_none());
+        assert!(ctrl.entry_path_at(9, 0).is_none());
+    }
+
+    #[test]
+    fn column_entry_returns_entry_without_mutating_focus() {
+        let dir = make_tree();
+        let ctrl = make_ctrl();
+        ctrl.set_root(dir.path().to_path_buf());
+        wait_until(|| ctrl.column_loaded(0));
+
+        let (dir_row, dir_name) = ctrl
+            .column_entries(0)
+            .iter()
+            .enumerate()
+            .find_map(|(i, e)| e.kind.is_dir().then(|| (i, e.name.to_string())))
+            .expect("directory in fixture");
+        let focus_before = ctrl.focused_col();
+
+        let entry = ctrl.column_entry(0, dir_row).expect("entry");
+        assert_eq!(entry.name.as_str(), dir_name);
+        assert!(entry.kind.is_dir(), "kind must round-trip");
+        assert_eq!(
+            ctrl.focused_col(),
+            focus_before,
+            "column_entry must not change focused column"
+        );
+    }
+
+    #[test]
+    fn column_entry_out_of_range_returns_none() {
+        let dir = make_tree();
+        let ctrl = make_ctrl();
+        ctrl.set_root(dir.path().to_path_buf());
+        wait_until(|| ctrl.column_loaded(0));
+        assert!(ctrl.column_entry(0, 9_999).is_none());
+        assert!(ctrl.column_entry(9, 0).is_none());
+    }
+
+    #[test]
+    fn focus_row_within_column_updates_row_without_navigating() {
+        let dir = make_tree();
+        let ctrl = make_ctrl();
+        ctrl.set_root(dir.path().to_path_buf());
+        wait_until(|| ctrl.column_loaded(0));
+
+        let (dir_row, _) = ctrl
+            .column_entries(0)
+            .iter()
+            .enumerate()
+            .find_map(|(i, e)| e.kind.is_dir().then_some((i, ())))
+            .expect("directory in fixture");
+        let cols_before = ctrl.column_count();
+
+        ctrl.focus_row_within_column(0, dir_row);
+
+        // Unlike `select_row`, no child column is opened for a dir target.
+        assert_eq!(
+            ctrl.column_count(),
+            cols_before,
+            "focus_row_within_column must not push a child column"
+        );
+        // The row focus of column 0 is now `dir_row`.
+        let entries = ctrl.column_entries(0);
+        assert_eq!(entries.len(), ctrl.column_entries(0).len());
+        assert!(dir_row < entries.len());
+    }
+
+    #[test]
+    fn focus_row_within_column_out_of_range_is_no_op() {
+        let dir = make_tree();
+        let ctrl = make_ctrl();
+        ctrl.set_root(dir.path().to_path_buf());
+        wait_until(|| ctrl.column_loaded(0));
+        let cols_before = ctrl.column_count();
+        ctrl.focus_row_within_column(0, 9_999);
+        ctrl.focus_row_within_column(9, 0);
+        assert_eq!(ctrl.column_count(), cols_before);
     }
 }

@@ -1419,11 +1419,40 @@ impl AppShell {
     /// full [`ContextTarget`] and push the capability flags to Slint —
     /// the menu only shows items that apply to this specific target.
     pub fn open_context_menu(&self, pane: PaneId, path: Option<PathBuf>, x: f32, y: f32) {
+        let entry = self.focused_entry_full(pane);
+        self.open_context_menu_impl(pane, path, entry, x, y);
+    }
+
+    /// Same as [`Self::open_context_menu`] but sources the entry directly
+    /// from the caller instead of reading through the pane's cached
+    /// focused index.  Miller / Gallery use this — they own per-column /
+    /// per-cell entry state that the pane-level `details_focused_index`
+    /// doesn't mirror, so the capability resolver would otherwise see the
+    /// wrong entry_kind (e.g. classify a right-clicked symlink as the
+    /// first Applications directory in the pane's root).
+    pub fn open_context_menu_for_entry(
+        &self,
+        pane: PaneId,
+        entry: atlas_fs::Entry,
+        x: f32,
+        y: f32,
+    ) {
+        let path = Some(entry.path.clone());
+        self.open_context_menu_impl(pane, path, Some(entry), x, y);
+    }
+
+    fn open_context_menu_impl(
+        &self,
+        pane: PaneId,
+        path: Option<PathBuf>,
+        entry: Option<atlas_fs::Entry>,
+        x: f32,
+        y: f32,
+    ) {
         // Resolve the full ContextTarget from the pane view-model. This
         // gives us the Location (URI on remote panes, absolute PathBuf
         // on local), the entry_kind (so broken symlinks only offer
         // "Get Info"), and the backend for `can_copy_remote_uri`.
-        let entry = self.focused_entry_full(pane);
         let base = self.pane_location_full(pane);
         let target_record = match (base.as_ref(), entry.as_ref()) {
             (Some(base_loc), Some(e)) => {
@@ -3573,6 +3602,49 @@ impl AppShell {
                     shell.view_path(id, path);
                 }
                 shell.bump_refocus_tick();
+            });
+        }
+        {
+            // Right-click on a miller row → focus the row within its column
+            // (visual highlight only — no navigation into a directory the
+            // user hasn't chosen to enter) and open the shared
+            // capability-aware context menu at the pointer.  Same path as
+            // Details / Grid so context-menu handlers stay unified.
+            let shell = self.clone();
+            window.on_miller_row_context_menu(move |pane_id, col, row, x, y| {
+                let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
+                let entry = shell.pane_by_id(id).and_then(|c| {
+                    c.miller.focus_row_within_column(col as usize, row as usize);
+                    c.miller.column_entry(col as usize, row as usize)
+                });
+                if let Some(entry) = entry {
+                    shell.open_context_menu_for_entry(id, entry, x, y);
+                } else {
+                    // Empty column / out-of-range — fall back to the
+                    // pane-level opener so we at least get the "no entry"
+                    // capability set.
+                    shell.open_context_menu(id, None, x, y);
+                }
+            });
+        }
+        {
+            // Right-click on a gallery strip cell → same shared context
+            // menu.  Focus the cell first so the highlight matches the
+            // pointer, mirroring Finder / Explorer behaviour.
+            let shell = self.clone();
+            window.on_gallery_entry_context_menu(move |pane_id, index, x, y| {
+                let id = PaneId(pane_id as u32);
+                shell.set_focused_pane_id(id);
+                let entry = shell.pane_by_id(id).and_then(|c| {
+                    c.gallery.entry_clicked(index as usize);
+                    c.gallery.entry_at(index as usize)
+                });
+                if let Some(entry) = entry {
+                    shell.open_context_menu_for_entry(id, entry, x, y);
+                } else {
+                    shell.open_context_menu(id, None, x, y);
+                }
             });
         }
 

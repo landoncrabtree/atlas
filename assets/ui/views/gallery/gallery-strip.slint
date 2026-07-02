@@ -10,6 +10,11 @@ export component GalleryStrip {
     in property <length> gap: Theme.space-2;
 
     callback entry-clicked(int);
+    /// Right-click on a strip cell.  Arguments: entry-index,
+    /// window-absolute-x, window-absolute-y.  Mirrors
+    /// `details/row.slint::context-menu` so the same capability-aware
+    /// menu opens for gallery entries.
+    callback entry-context-menu(int, length, length);
     callback item-visible(int);
     /// Emitted from a strip cell when the 4-px drag threshold is exceeded.
     callback drag-start(int /*entry-index*/);
@@ -60,6 +65,17 @@ export component GalleryStrip {
                     pointer-event(pe) => {
                         if pe.kind == PointerEventKind.down {
                             self.drag-initiated = false;
+                        }
+                        if pe.kind == PointerEventKind.up && pe.button == PointerEventButton.right {
+                            // Translate cell-relative (mouse-x, mouse-y) up
+                            // to window coordinates so ContextMenuArea.show()
+                            // at the root paints the menu at the pointer.
+                            // Same pattern as `details/row.slint`.
+                            root.entry-context-menu(
+                                i,
+                                self.absolute-position.x + self.mouse-x,
+                                self.absolute-position.y + self.mouse-y,
+                            );
                         }
                     }
                     moved => {

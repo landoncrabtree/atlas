@@ -244,12 +244,20 @@ export component Pane {
     callback gallery-preview-visible(int);
     callback gallery-prev-image();
     callback gallery-next-image();
+    /// Right-click on a gallery strip cell.  Arguments: entry-index,
+    /// window-absolute-x, window-absolute-y.  Bubbled up so the shared
+    /// capability-aware context menu can act on the target entry.
+    callback gallery-entry-context-menu(int, length, length);
 
     /// Border thickness for the focused-pane ring. `0px` disables it.
     in property <length> focused-border-px: 2px;
 
     callback miller-row-clicked(int, int);
     callback miller-row-double-clicked(int, int);
+    /// Right-click on a miller row.  Arguments: column-index, row-index,
+    /// window-absolute-x, window-absolute-y.  Routes through the same
+    /// context-menu callback Details / Grid use.
+    callback miller-row-context-menu(int, int, length, length);
 
     /// True while the pane's address bar TextInput owns keyboard focus.
     /// The root FocusScope watches this via a `changed` handler on each
@@ -353,6 +361,7 @@ export component Pane {
                     metadata: root.gallery-metadata;
 
                     entry-clicked(i) => { root.gallery-entry-clicked(i); }
+                    entry-context-menu(i, x, y) => { root.gallery-entry-context-menu(i, x, y); }
                     strip-visible(i) => { root.gallery-strip-visible(i); }
                     preview-visible(i) => { root.gallery-preview-visible(i); }
                     prev-image => { root.gallery-prev-image(); }
@@ -366,6 +375,7 @@ export component Pane {
                     focused-col: root.miller-focused-col;
                     row-clicked(col, row) => { root.miller-row-clicked(col, row); }
                     row-double-clicked(col, row) => { root.miller-row-double-clicked(col, row); }
+                    row-context-menu(col, row, x, y) => { root.miller-row-context-menu(col, row, x, y); }
                     drag-start(col, row) => { root.drag-start(row); }
                 }
 

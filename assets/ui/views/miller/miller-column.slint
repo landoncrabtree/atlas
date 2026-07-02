@@ -10,6 +10,10 @@ export component MillerColumnView inherits Rectangle {
 
     callback row-clicked(int);
     callback row-double-clicked(int);
+    /// Right-click on a row — fires with (row-index, window-absolute-x,
+    /// window-absolute-y).  Mirrors `details/row.slint::context-menu` so the
+    /// same capability-aware menu opens for miller entries.
+    callback row-context-menu(int, length, length);
     /// Emitted from a row when the 4-px drag threshold is exceeded.
     callback drag-start(int /*entry-index*/);
 
@@ -103,6 +107,17 @@ export component MillerColumnView inherits Rectangle {
                     pointer-event(pe) => {
                         if pe.kind == PointerEventKind.down {
                             self.drag-initiated = false;
+                        }
+                        if pe.kind == PointerEventKind.up && pe.button == PointerEventButton.right {
+                            // Translate TouchArea-relative (mouse-x, mouse-y) up
+                            // to window coordinates so ContextMenuArea.show() at
+                            // the root paints the menu at the pointer.  Same
+                            // pattern as `details/row.slint`.
+                            root.row-context-menu(
+                                i,
+                                self.absolute-position.x + self.mouse-x,
+                                self.absolute-position.y + self.mouse-y,
+                            );
                         }
                     }
                     moved => {

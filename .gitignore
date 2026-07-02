@@ -30,3 +30,6 @@ tools/mock-servers/.python-version
 tools/mock-servers/uv.lock
 tools/mock-servers/__pycache__/
 **/__pycache__/
+
+# Session scratch (test logs, WIP slint experiments)
+logs/

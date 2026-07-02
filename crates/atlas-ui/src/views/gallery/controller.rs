@@ -160,6 +160,17 @@ impl GalleryController {
         self.set_focused(index);
     }
 
+    /// Return a clone of the [`Entry`] at `index` without mutating focus
+    /// state.  Companion to [`Self::entry_clicked`] used by the
+    /// context-menu shell handler so it can build a full `ContextTarget`
+    /// directly from the right-clicked cell (needs `entry.kind`, not just
+    /// the path).  Matches the semantic contract in the convergence rule:
+    /// build ContextTarget from `(pane_location, entry)`.
+    #[must_use]
+    pub fn entry_at(&self, index: usize) -> Option<atlas_fs::Entry> {
+        self.entries.read().get(index).cloned()
+    }
+
     /// Request the strip thumbnail for `index`.
     pub fn strip_visible(self: &Arc<Self>, index: usize) {
         let entries = self.entries.read();

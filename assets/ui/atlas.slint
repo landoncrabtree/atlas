@@ -441,6 +441,7 @@ export component AtlasWindow inherits Window {
     callback grid-columns-changed(int /*pane-id*/, int);
 
     callback gallery-entry-clicked(int /*pane-id*/, int);
+    callback gallery-entry-context-menu(int /*pane-id*/, int, length, length);
     callback gallery-strip-visible(int /*pane-id*/, int);
     callback gallery-preview-visible(int /*pane-id*/, int);
     callback gallery-prev-image(int /*pane-id*/);
@@ -448,6 +449,7 @@ export component AtlasWindow inherits Window {
 
     callback miller-row-clicked(int /*pane-id*/, int /*col*/, int /*row*/);
     callback miller-row-double-clicked(int /*pane-id*/, int /*col*/, int /*row*/);
+    callback miller-row-context-menu(int /*pane-id*/, int /*col*/, int /*row*/, length, length);
 
     /// Drag a split handle; `delta-fraction` is normalised to the split axis.
     /// MVP: fires on click with 0.0 (drag computation is a Phase 4.1 follow-up
@@ -1007,6 +1009,7 @@ export component AtlasWindow inherits Window {
                     grid-columns-changed(c) => { root.grid-columns-changed(pane.id, c); }
 
                     gallery-entry-clicked(idx) => { root.gallery-entry-clicked(pane.id, idx); }
+                    gallery-entry-context-menu(idx, x, y) => { root.gallery-entry-context-menu(pane.id, idx, x, y); }
                     gallery-strip-visible(idx) => { root.gallery-strip-visible(pane.id, idx); }
                     gallery-preview-visible(idx) => { root.gallery-preview-visible(pane.id, idx); }
                     gallery-prev-image => { root.gallery-prev-image(pane.id); }
@@ -1014,6 +1017,7 @@ export component AtlasWindow inherits Window {
 
                     miller-row-clicked(col, row) => { root.miller-row-clicked(pane.id, col, row); }
                     miller-row-double-clicked(col, row) => { root.miller-row-double-clicked(pane.id, col, row); }
+                    miller-row-context-menu(col, row, x, y) => { root.miller-row-context-menu(pane.id, col, row, x, y); }
 
                     // Bubble per-pane text-input focus (currently the
                     // address bar; future inline-rename inputs bubble via

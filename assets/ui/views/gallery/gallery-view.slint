@@ -16,6 +16,10 @@ export component GalleryView inherits FocusScope {
     in property <MetadataFields> metadata;
 
     callback entry-clicked(int);
+    /// Right-click on a strip cell.  Arguments: entry-index,
+    /// window-absolute-x, window-absolute-y.  Bubbled up so the shared
+    /// capability-aware context menu can act on the target entry.
+    callback entry-context-menu(int, length, length);
     callback strip-visible(int);
     callback preview-visible(int);
     callback prev-image();
@@ -73,6 +77,7 @@ export component GalleryView inherits FocusScope {
                 thumbnails: root.strip-thumbnails;
                 focused-index: root.focused-index;
                 entry-clicked(i) => { root.entry-clicked(i); }
+                entry-context-menu(i, x, y) => { root.entry-context-menu(i, x, y); }
                 item-visible(i) => { root.strip-visible(i); }
                 drag-start(i) => { root.drag-start(i); }
             }
