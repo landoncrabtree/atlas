@@ -1,0 +1,1071 @@
+// Connect-to-Server modal — remote-fs backend picker (SFTP / FTP / WebDAV / S3).
+// Mirrors the visual grammar of `bulk-rename.slint` and `command-palette.slint`:
+// dim scrim backdrop → centered elevated panel → theme tokens for every
+// colour, radius, and space. All field values live as `in-out` properties on
+// the root component so Rust owns the state and pushes changes back via the
+// per-field `*-changed` callbacks (see rename-modal for the same pattern).
+//
+// # Visibility gating
+//
+// Fields fade in and out based on the currently-selected backend and auth
+// method. The rules match the phase-2.3 spec:
+//
+// | Backend | Ports              | Auth methods                       |
+// |---------|--------------------|------------------------------------|
+// | SFTP    | 22 (default)       | Password, SSH Key, Anonymous       |
+// | FTP     | 21 (default)       | Password, Anonymous                |
+// | WebDAV  | 443 (default)      | Password, Anonymous                |
+// | S3      | endpoint URL       | IAM, Anonymous                     |
+//
+// The `auth-index` values are stable across backends (0=Password, 1=SSH Key,
+// 2=IAM, 3=Anonymous). Rust re-normalises `auth-index` on backend change so a
+// user swapping SFTP → S3 with "SSH Key" selected snaps to a valid choice.
+//
+// # Chord routing
+//
+// `input-focused` is exported as an `out` property so the outer atlas.slint
+// FocusScope can gate its keymap dispatcher on it. Same mechanism as the
+// address-bar TextInput chord bypass introduced in `269ab5a`.
+
+import { Theme } from "../theme.slint";
+
+export component ConnectServerModal inherits Rectangle {
+    // ── Externally-controlled state ────────────────────────────────────────
+
+    in property <bool> visible-modal: false;
+    in-out property <int> backend-index: 0;
+    in-out property <int> auth-index: 0;
+
+    in-out property <string> connection-string: "";
+    in-out property <string> host: "";
+    in-out property <string> port: "";
+    in-out property <string> path: "";
+    in-out property <string> username: "";
+    in-out property <string> password: "";
+    in-out property <string> ssh-key-path: "";
+    in-out property <string> iam-access-key: "";
+    in-out property <string> iam-secret-key: "";
+    in-out property <string> iam-session-token: "";
+    in-out property <string> s3-endpoint: "";
+    in-out property <string> label-text: "";
+
+    in property <bool> save-to-keychain: true;
+    in property <bool> connecting: false;
+    in property <string> status-text: "";
+    in property <bool> status-is-error: false;
+
+    // Reflects "any TextInput in this modal has focus". Bubbles up to the
+    // window's FocusScope so Cmd+A / Cmd+C / Cmd+V land in the input, not
+    // the pane's keymap dispatcher. Matches the address-bar mechanism from
+    // 269ab5a.
+    out property <bool> input-focused: connection-string-focus
+        || host-focus || port-focus || path-focus
+        || username-focus || password-focus
+        || ssh-key-focus || iam-access-focus
+        || iam-secret-focus || iam-session-focus
+        || s3-endpoint-focus || label-focus;
+
+    // ── Callbacks fired at the Rust bridge ─────────────────────────────────
+
+    callback backend-changed(int);
+    callback auth-changed(int);
+    callback connection-string-changed(string);
+    callback host-changed(string);
+    callback port-changed(string);
+    callback path-changed(string);
+    callback username-changed(string);
+    callback password-changed(string);
+    callback ssh-key-path-changed(string);
+    callback iam-access-key-changed(string);
+    callback iam-secret-key-changed(string);
+    callback iam-session-token-changed(string);
+    callback s3-endpoint-changed(string);
+    callback label-changed(string);
+    callback toggle-save-to-keychain();
+    callback browse-ssh-key();
+    callback cancel();
+    callback connect();
+    callback save-and-connect();
+
+    // ── Derived visibility flags ───────────────────────────────────────────
+    // Backend indices: 0=SFTP, 1=FTP, 2=WebDAV, 3=S3.
+    // Auth indices:    0=Password, 1=SSH Key, 2=IAM, 3=Anonymous.
+
+    property <bool> is-sftp: backend-index == 0;
+    property <bool> is-ftp: backend-index == 1;
+    property <bool> is-webdav: backend-index == 2;
+    property <bool> is-s3: backend-index == 3;
+
+    property <bool> auth-password: auth-index == 0;
+    property <bool> auth-ssh-key: auth-index == 1;
+    property <bool> auth-iam: auth-index == 2;
+    property <bool> auth-anon: auth-index == 3;
+
+    property <bool> show-port: !is-s3;
+    property <bool> show-username: !auth-anon && !auth-iam;
+    property <bool> show-password: auth-password;
+    property <bool> show-ssh-key: auth-ssh-key;
+    property <bool> show-iam: auth-iam;
+    property <bool> show-s3-endpoint: is-s3;
+
+    property <string> port-placeholder: is-sftp
+        ? "22"
+        : is-ftp ? "21"
+            : is-webdav ? "443"
+                : "";
+
+    property <string> connection-placeholder: is-sftp
+        ? "sftp://user@host:22/path  or  user@host:port/path"
+        : is-ftp ? "ftp://user@host/path"
+            : is-webdav ? "webdav://user@cloud.example.com/dav"
+                : "s3://bucket/prefix";
+
+    // ── Per-input focus mirrors (used by `input-focused` above) ───────────
+
+    property <bool> connection-string-focus: false;
+    property <bool> host-focus: false;
+    property <bool> port-focus: false;
+    property <bool> path-focus: false;
+    property <bool> username-focus: false;
+    property <bool> password-focus: false;
+    property <bool> ssh-key-focus: false;
+    property <bool> iam-access-focus: false;
+    property <bool> iam-secret-focus: false;
+    property <bool> iam-session-focus: false;
+    property <bool> s3-endpoint-focus: false;
+    property <bool> label-focus: false;
+
+    if visible-modal: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000066;
+
+        // Backdrop click dismisses; matches bulk-rename.
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => { root.cancel(); }
+        }
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(560px, parent.width - Theme.space-6 * 2);
+            height: min(680px, parent.height - Theme.space-6 * 2);
+            background: Theme.panel-bg-elevated;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: Theme.radius-lg;
+
+            // Swallow clicks on the panel body so they never propagate to the
+            // scrim's dismiss handler.
+            TouchArea {
+                width: 100%;
+                height: 100%;
+            }
+
+            VerticalLayout {
+                padding: Theme.space-4;
+                spacing: Theme.space-3;
+
+                // ── Title ────────────────────────────────────────────────────
+                Text {
+                    text: "Connect to Server";
+                    color: Theme.fg;
+                    font-size: 17px;
+                    font-weight: 600;
+                    horizontal-alignment: left;
+                }
+
+                Rectangle { height: 1px; background: Theme.border; }
+
+                // ── Backend picker (segmented control) ───────────────────────
+                VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    Text {
+                        text: "BACKEND";
+                        color: Theme.fg-muted;
+                        font-size: 10px;
+                        font-weight: 600;
+                        
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.space-1;
+
+                        for label[i] in ["SFTP", "FTP", "WebDAV", "S3"]: Rectangle {
+                            horizontal-stretch: 1;
+                            height: 30px;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: backend-index == i ? Theme.accent : Theme.border;
+                            background: backend-index == i ? Theme.accent : Theme.panel-bg;
+
+                            TouchArea {
+                                width: 100%; height: 100%;
+                                clicked => { root.backend-changed(i); }
+                            }
+
+                            Text {
+                                text: label;
+                                color: backend-index == i ? Theme.accent-fg : Theme.fg;
+                                font-size: 12px;
+                                font-weight: backend-index == i ? 600 : 400;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // ── Connection string ────────────────────────────────────────
+                VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    Text {
+                        text: "CONNECTION STRING";
+                        color: Theme.fg-muted;
+                        font-size: 10px;
+                        font-weight: 600;
+                        
+                    }
+
+                    Rectangle {
+                        height: 30px;
+                        border-width: 1px;
+                        border-color: cs-input.has-focus ? Theme.accent : Theme.border;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.panel-bg;
+
+                        HorizontalLayout {
+                            padding-left: Theme.space-3;
+                            padding-right: Theme.space-3;
+                            alignment: center;
+
+                            cs-input := TextInput {
+                                init => { self.focus(); }
+                                text <=> root.connection-string;
+                                color: Theme.fg;
+                                font-size: Theme.font-size;
+                                vertical-alignment: center;
+                                single-line: true;
+                                edited => { root.connection-string-changed(self.text); }
+                                accepted => {
+                                    if !root.connecting { root.connect(); }
+                                }
+                                key-pressed(event) => {
+                                    if event.text == Key.Escape {
+                                        root.cancel();
+                                        return accept;
+                                    }
+                                    reject;
+                                }
+                                changed has-focus => { connection-string-focus = self.has-focus; }
+                            }
+
+                            if root.connection-string == "": Text {
+                                text: connection-placeholder;
+                                color: Theme.fg-faint;
+                                font-size: Theme.font-size;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                }
+
+                // ── Host / Port / Path row ───────────────────────────────────
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+
+                    // Host
+                    VerticalLayout {
+                        horizontal-stretch: 3;
+                        spacing: Theme.space-1;
+
+                        Text {
+                            text: is-s3 ? "BUCKET" : "HOST";
+                            color: Theme.fg-muted;
+                            font-size: 10px;
+                            font-weight: 600;
+                            
+                        }
+
+                        Rectangle {
+                            height: 30px;
+                            border-width: 1px;
+                            border-color: host-input.has-focus ? Theme.accent : Theme.border;
+                            border-radius: Theme.radius-sm;
+                            background: Theme.panel-bg;
+
+                            HorizontalLayout {
+                                padding-left: Theme.space-3;
+                                padding-right: Theme.space-3;
+                                alignment: center;
+
+                                host-input := TextInput {
+                                    text <=> root.host;
+                                    color: Theme.fg;
+                                    font-size: Theme.font-size;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    edited => { root.host-changed(self.text); }
+                                    changed has-focus => { host-focus = self.has-focus; }
+                                    key-pressed(event) => {
+                                        if event.text == Key.Escape {
+                                            root.cancel();
+                                            return accept;
+                                        }
+                                        reject;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Port (hidden for S3)
+                    if show-port: VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: Theme.space-1;
+
+                        Text {
+                            text: "PORT";
+                            color: Theme.fg-muted;
+                            font-size: 10px;
+                            font-weight: 600;
+                            
+                        }
+
+                        Rectangle {
+                            height: 30px;
+                            border-width: 1px;
+                            border-color: port-input.has-focus ? Theme.accent : Theme.border;
+                            border-radius: Theme.radius-sm;
+                            background: Theme.panel-bg;
+
+                            HorizontalLayout {
+                                padding-left: Theme.space-3;
+                                padding-right: Theme.space-3;
+                                alignment: center;
+
+                                port-input := TextInput {
+                                    text <=> root.port;
+                                    color: Theme.fg;
+                                    font-size: Theme.font-size;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    edited => { root.port-changed(self.text); }
+                                    changed has-focus => { port-focus = self.has-focus; }
+                                    key-pressed(event) => {
+                                        if event.text == Key.Escape {
+                                            root.cancel();
+                                            return accept;
+                                        }
+                                        reject;
+                                    }
+                                }
+
+                                if root.port == "": Text {
+                                    text: port-placeholder;
+                                    color: Theme.fg-faint;
+                                    font-size: Theme.font-size;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Path (own row so it can be wide) ─────────────────────────
+                VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    Text {
+                        text: is-s3 ? "PREFIX" : "PATH";
+                        color: Theme.fg-muted;
+                        font-size: 10px;
+                        font-weight: 600;
+                        
+                    }
+
+                    Rectangle {
+                        height: 30px;
+                        border-width: 1px;
+                        border-color: path-input.has-focus ? Theme.accent : Theme.border;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.panel-bg;
+
+                        HorizontalLayout {
+                            padding-left: Theme.space-3;
+                            padding-right: Theme.space-3;
+                            alignment: center;
+
+                            path-input := TextInput {
+                                text <=> root.path;
+                                color: Theme.fg;
+                                font-size: Theme.font-size;
+                                vertical-alignment: center;
+                                single-line: true;
+                                edited => { root.path-changed(self.text); }
+                                changed has-focus => { path-focus = self.has-focus; }
+                                key-pressed(event) => {
+                                    if event.text == Key.Escape {
+                                        root.cancel();
+                                        return accept;
+                                    }
+                                    reject;
+                                }
+                            }
+
+                            if root.path == "": Text {
+                                text: is-s3 ? "prefix/optional" : "/";
+                                color: Theme.fg-faint;
+                                font-size: Theme.font-size;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                }
+
+                // ── S3 endpoint (non-standard S3 buckets — minio, LocalStack) ─
+                if show-s3-endpoint: VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    Text {
+                        text: "ENDPOINT URL (leave blank for AWS)";
+                        color: Theme.fg-muted;
+                        font-size: 10px;
+                        font-weight: 600;
+                        
+                    }
+
+                    Rectangle {
+                        height: 30px;
+                        border-width: 1px;
+                        border-color: s3ep-input.has-focus ? Theme.accent : Theme.border;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.panel-bg;
+
+                        HorizontalLayout {
+                            padding-left: Theme.space-3;
+                            padding-right: Theme.space-3;
+                            alignment: center;
+
+                            s3ep-input := TextInput {
+                                text <=> root.s3-endpoint;
+                                color: Theme.fg;
+                                font-size: Theme.font-size;
+                                vertical-alignment: center;
+                                single-line: true;
+                                edited => { root.s3-endpoint-changed(self.text); }
+                                changed has-focus => { s3-endpoint-focus = self.has-focus; }
+                                key-pressed(event) => {
+                                    if event.text == Key.Escape {
+                                        root.cancel();
+                                        return accept;
+                                    }
+                                    reject;
+                                }
+                            }
+
+                            if root.s3-endpoint == "": Text {
+                                text: "http://localhost:9000";
+                                color: Theme.fg-faint;
+                                font-size: Theme.font-size;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                }
+
+                // ── Auth method picker (filtered per backend) ────────────────
+                VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    Text {
+                        text: "AUTHENTICATION";
+                        color: Theme.fg-muted;
+                        font-size: 10px;
+                        font-weight: 600;
+                        
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.space-1;
+
+                        // Password chip — SFTP / FTP / WebDAV
+                        if is-sftp || is-ftp || is-webdav: Rectangle {
+                            horizontal-stretch: 1;
+                            height: 28px;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: auth-index == 0 ? Theme.accent : Theme.border;
+                            background: auth-index == 0 ? Theme.accent : Theme.panel-bg;
+
+                            TouchArea {
+                                width: 100%; height: 100%;
+                                clicked => { root.auth-changed(0); }
+                            }
+
+                            Text {
+                                text: "Password";
+                                color: auth-index == 0 ? Theme.accent-fg : Theme.fg;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // SSH Key chip — SFTP only
+                        if is-sftp: Rectangle {
+                            horizontal-stretch: 1;
+                            height: 28px;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: auth-index == 1 ? Theme.accent : Theme.border;
+                            background: auth-index == 1 ? Theme.accent : Theme.panel-bg;
+
+                            TouchArea {
+                                width: 100%; height: 100%;
+                                clicked => { root.auth-changed(1); }
+                            }
+
+                            Text {
+                                text: "SSH Key";
+                                color: auth-index == 1 ? Theme.accent-fg : Theme.fg;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // IAM chip — S3 only
+                        if is-s3: Rectangle {
+                            horizontal-stretch: 1;
+                            height: 28px;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: auth-index == 2 ? Theme.accent : Theme.border;
+                            background: auth-index == 2 ? Theme.accent : Theme.panel-bg;
+
+                            TouchArea {
+                                width: 100%; height: 100%;
+                                clicked => { root.auth-changed(2); }
+                            }
+
+                            Text {
+                                text: "IAM";
+                                color: auth-index == 2 ? Theme.accent-fg : Theme.fg;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Anonymous chip — every backend
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            height: 28px;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: auth-index == 3 ? Theme.accent : Theme.border;
+                            background: auth-index == 3 ? Theme.accent : Theme.panel-bg;
+
+                            TouchArea {
+                                width: 100%; height: 100%;
+                                clicked => { root.auth-changed(3); }
+                            }
+
+                            Text {
+                                text: "Anonymous";
+                                color: auth-index == 3 ? Theme.accent-fg : Theme.fg;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // ── Username (hidden for anon and IAM) ───────────────────────
+                if show-username: VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    Text {
+                        text: "USERNAME";
+                        color: Theme.fg-muted;
+                        font-size: 10px;
+                        font-weight: 600;
+                        
+                    }
+
+                    Rectangle {
+                        height: 30px;
+                        border-width: 1px;
+                        border-color: user-input.has-focus ? Theme.accent : Theme.border;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.panel-bg;
+
+                        HorizontalLayout {
+                            padding-left: Theme.space-3;
+                            padding-right: Theme.space-3;
+                            alignment: center;
+
+                            user-input := TextInput {
+                                text <=> root.username;
+                                color: Theme.fg;
+                                font-size: Theme.font-size;
+                                vertical-alignment: center;
+                                single-line: true;
+                                edited => { root.username-changed(self.text); }
+                                changed has-focus => { username-focus = self.has-focus; }
+                                key-pressed(event) => {
+                                    if event.text == Key.Escape {
+                                        root.cancel();
+                                        return accept;
+                                    }
+                                    reject;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Password (Password auth only) ────────────────────────────
+                if show-password: VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    Text {
+                        text: "PASSWORD";
+                        color: Theme.fg-muted;
+                        font-size: 10px;
+                        font-weight: 600;
+                        
+                    }
+
+                    Rectangle {
+                        height: 30px;
+                        border-width: 1px;
+                        border-color: pw-input.has-focus ? Theme.accent : Theme.border;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.panel-bg;
+
+                        HorizontalLayout {
+                            padding-left: Theme.space-3;
+                            padding-right: Theme.space-3;
+                            alignment: center;
+
+                            pw-input := TextInput {
+                                text <=> root.password;
+                                color: Theme.fg;
+                                font-size: Theme.font-size;
+                                vertical-alignment: center;
+                                single-line: true;
+                                input-type: InputType.password;
+                                edited => { root.password-changed(self.text); }
+                                changed has-focus => { password-focus = self.has-focus; }
+                                accepted => {
+                                    if !root.connecting {
+                                        if root.save-to-keychain {
+                                            root.save-and-connect();
+                                        } else {
+                                            root.connect();
+                                        }
+                                    }
+                                }
+                                key-pressed(event) => {
+                                    if event.text == Key.Escape {
+                                        root.cancel();
+                                        return accept;
+                                    }
+                                    reject;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── SSH key path + Browse (SSH Key auth only) ────────────────
+                if show-ssh-key: VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    Text {
+                        text: "SSH PRIVATE KEY PATH";
+                        color: Theme.fg-muted;
+                        font-size: 10px;
+                        font-weight: 600;
+                        
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            height: 30px;
+                            border-width: 1px;
+                            border-color: ssh-input.has-focus ? Theme.accent : Theme.border;
+                            border-radius: Theme.radius-sm;
+                            background: Theme.panel-bg;
+
+                            HorizontalLayout {
+                                padding-left: Theme.space-3;
+                                padding-right: Theme.space-3;
+                                alignment: center;
+
+                                ssh-input := TextInput {
+                                    text <=> root.ssh-key-path;
+                                    color: Theme.fg;
+                                    font-size: Theme.font-size;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    edited => { root.ssh-key-path-changed(self.text); }
+                                    changed has-focus => { ssh-key-focus = self.has-focus; }
+                                    key-pressed(event) => {
+                                        if event.text == Key.Escape {
+                                            root.cancel();
+                                            return accept;
+                                        }
+                                        reject;
+                                    }
+                                }
+
+                                if root.ssh-key-path == "": Text {
+                                    text: "~/.ssh/id_ed25519";
+                                    color: Theme.fg-faint;
+                                    font-size: Theme.font-size;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 78px;
+                            height: 30px;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            border-radius: Theme.radius-sm;
+                            background: Theme.panel-bg;
+
+                            TouchArea {
+                                width: 100%; height: 100%;
+                                clicked => { root.browse-ssh-key(); }
+                            }
+
+                            Text {
+                                text: "Browse…";
+                                color: Theme.fg;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // ── IAM credentials (S3 IAM auth only) ───────────────────────
+                if show-iam: VerticalLayout {
+                    spacing: Theme.space-2;
+
+                    VerticalLayout {
+                        spacing: Theme.space-1;
+                        Text {
+                            text: "ACCESS KEY ID";
+                            color: Theme.fg-muted;
+                            font-size: 10px;
+                            font-weight: 600;
+                            
+                        }
+                        Rectangle {
+                            height: 30px;
+                            border-width: 1px;
+                            border-color: iam-key.has-focus ? Theme.accent : Theme.border;
+                            border-radius: Theme.radius-sm;
+                            background: Theme.panel-bg;
+
+                            HorizontalLayout {
+                                padding-left: Theme.space-3;
+                                padding-right: Theme.space-3;
+                                alignment: center;
+
+                                iam-key := TextInput {
+                                    text <=> root.iam-access-key;
+                                    color: Theme.fg;
+                                    font-size: Theme.font-size;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    edited => { root.iam-access-key-changed(self.text); }
+                                    changed has-focus => { iam-access-focus = self.has-focus; }
+                                }
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: Theme.space-1;
+                        Text {
+                            text: "SECRET KEY";
+                            color: Theme.fg-muted;
+                            font-size: 10px;
+                            font-weight: 600;
+                            
+                        }
+                        Rectangle {
+                            height: 30px;
+                            border-width: 1px;
+                            border-color: iam-sec.has-focus ? Theme.accent : Theme.border;
+                            border-radius: Theme.radius-sm;
+                            background: Theme.panel-bg;
+
+                            HorizontalLayout {
+                                padding-left: Theme.space-3;
+                                padding-right: Theme.space-3;
+                                alignment: center;
+
+                                iam-sec := TextInput {
+                                    text <=> root.iam-secret-key;
+                                    color: Theme.fg;
+                                    font-size: Theme.font-size;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    input-type: InputType.password;
+                                    edited => { root.iam-secret-key-changed(self.text); }
+                                    changed has-focus => { iam-secret-focus = self.has-focus; }
+                                }
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: Theme.space-1;
+                        Text {
+                            text: "SESSION TOKEN (OPTIONAL)";
+                            color: Theme.fg-muted;
+                            font-size: 10px;
+                            font-weight: 600;
+                            
+                        }
+                        Rectangle {
+                            height: 30px;
+                            border-width: 1px;
+                            border-color: iam-tok.has-focus ? Theme.accent : Theme.border;
+                            border-radius: Theme.radius-sm;
+                            background: Theme.panel-bg;
+
+                            HorizontalLayout {
+                                padding-left: Theme.space-3;
+                                padding-right: Theme.space-3;
+                                alignment: center;
+
+                                iam-tok := TextInput {
+                                    text <=> root.iam-session-token;
+                                    color: Theme.fg;
+                                    font-size: Theme.font-size;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    edited => { root.iam-session-token-changed(self.text); }
+                                    changed has-focus => { iam-session-focus = self.has-focus; }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Save-to-keychain checkbox + Label ────────────────────────
+                HorizontalLayout {
+                    spacing: Theme.space-3;
+                    alignment: stretch;
+
+                    // Custom checkbox chip (defaults ON per phase-2 design).
+                    Rectangle {
+                        width: 20px;
+                        height: 20px;
+                        y: (parent.height - self.height) / 2;
+                        border-width: 1px;
+                        border-color: Theme.border-strong;
+                        border-radius: Theme.radius-xs;
+                        background: root.save-to-keychain ? Theme.accent : Theme.panel-bg;
+
+                        TouchArea {
+                            width: 100%; height: 100%;
+                            clicked => { root.toggle-save-to-keychain(); }
+                        }
+
+                        if root.save-to-keychain: Text {
+                            text: "✓";
+                            color: Theme.accent-fg;
+                            font-size: 13px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Text {
+                        y: (parent.height - self.height) / 2;
+                        text: "Save to keychain";
+                        color: Theme.fg;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 30px;
+                        border-width: 1px;
+                        border-color: label-input.has-focus ? Theme.accent : Theme.border;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.panel-bg;
+
+                        HorizontalLayout {
+                            padding-left: Theme.space-3;
+                            padding-right: Theme.space-3;
+                            alignment: center;
+
+                            label-input := TextInput {
+                                text <=> root.label-text;
+                                color: Theme.fg;
+                                font-size: Theme.font-size;
+                                vertical-alignment: center;
+                                single-line: true;
+                                edited => { root.label-changed(self.text); }
+                                changed has-focus => { label-focus = self.has-focus; }
+                                key-pressed(event) => {
+                                    if event.text == Key.Escape {
+                                        root.cancel();
+                                        return accept;
+                                    }
+                                    reject;
+                                }
+                            }
+
+                            if root.label-text == "": Text {
+                                text: "Label (e.g. prod, home NAS)";
+                                color: Theme.fg-faint;
+                                font-size: Theme.font-size;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                }
+
+                // ── Status area (multi-line error / info) ────────────────────
+                if root.status-text != "": Rectangle {
+                    height: 32px;
+                    background: root.status-is-error
+                        ? Theme.error.with-alpha(0.12)
+                        : Theme.accent-soft;
+                    border-radius: Theme.radius-sm;
+
+                    HorizontalLayout {
+                        padding-left: Theme.space-3;
+                        padding-right: Theme.space-3;
+                        alignment: center;
+
+                        Text {
+                            text: root.status-text;
+                            color: root.status-is-error ? Theme.error : Theme.fg;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                            horizontal-alignment: left;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+
+                // Vertical spring so buttons hug the bottom on tall modals.
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: transparent;
+                }
+
+                Rectangle { height: 1px; background: Theme.border; }
+
+                // ── Buttons ──────────────────────────────────────────────────
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    alignment: end;
+
+                    Rectangle {
+                        width: 78px;
+                        height: 30px;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        background: Theme.panel-bg;
+                        opacity: root.connecting ? 0.5 : 1.0;
+
+                        TouchArea {
+                            width: 100%; height: 100%;
+                            clicked => { root.cancel(); }
+                        }
+
+                        Text {
+                            text: "Cancel";
+                            color: Theme.fg;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 108px;
+                        height: 30px;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-strong;
+                        background: Theme.panel-bg;
+                        opacity: root.connecting ? 0.5 : 1.0;
+
+                        TouchArea {
+                            width: 100%; height: 100%;
+                            clicked => {
+                                if !root.connecting { root.connect(); }
+                            }
+                        }
+
+                        Text {
+                            text: root.connecting ? "Connecting…" : "Connect";
+                            color: Theme.fg;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 152px;
+                        height: 30px;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.accent;
+                        opacity: root.connecting ? 0.5 : 1.0;
+
+                        TouchArea {
+                            width: 100%; height: 100%;
+                            clicked => {
+                                if !root.connecting { root.save-and-connect(); }
+                            }
+                        }
+
+                        Text {
+                            text: "Save + Connect";
+                            color: Theme.accent-fg;
+                            font-size: 13px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

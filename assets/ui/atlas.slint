@@ -9,6 +9,7 @@ import { SearchPanel, SearchRow } from "components/search-panel.slint";
 import { OpsPanel, OpRow } from "components/ops-panel.slint";
 import { OperationProgress } from "components/operation-progress.slint";
 import { BulkRenameModal, RenamePreview } from "components/bulk-rename.slint";
+import { ConnectServerModal } from "components/connect-server.slint";
 import { TabEntry } from "components/tab-bar.slint";
 import { EntryRowItem, ColumnSpec } from "views/details/column.slint";
 import { MillerColData } from "views/miller/miller-state.slint";
@@ -220,6 +221,37 @@ export component AtlasWindow inherits Window {
     /// Non-empty when the regex pattern failed to compile.
     in property <string> bulk-rename-error-text: "";
 
+    // ── Connect-to-Server modal (Cmd+K) ────────────────────────────────────
+    //
+    // See `assets/ui/components/connect-server.slint` for the modal's own
+    // property/callback surface. Rust owns every field; the modal is a
+    // dumb view. `connect-modal-input-focused` bubbles up from the modal's
+    // internal `input-focused` property so the outer FocusScope's
+    // `keymap-bypass-active` covers Cmd+A / Cmd+C / Cmd+V while the modal
+    // is up. Same mechanism as the address-bar chord bypass from 269ab5a.
+    in property <bool> connect-modal-visible: false;
+    in-out property <int> connect-backend-index: 0;
+    in-out property <int> connect-auth-index: 0;
+    in-out property <string> connect-connection-string: "";
+    in-out property <string> connect-host: "";
+    in-out property <string> connect-port: "";
+    in-out property <string> connect-path: "";
+    in-out property <string> connect-username: "";
+    in-out property <string> connect-password: "";
+    in-out property <string> connect-ssh-key-path: "";
+    in-out property <string> connect-iam-access-key: "";
+    in-out property <string> connect-iam-secret-key: "";
+    in-out property <string> connect-iam-session-token: "";
+    in-out property <string> connect-s3-endpoint: "";
+    in-out property <string> connect-label: "";
+    in property <bool> connect-save-to-keychain: true;
+    in property <bool> connect-connecting: false;
+    in property <string> connect-status-text: "";
+    in property <bool> connect-status-is-error: false;
+    /// Mirrors ConnectServerModal.input-focused. Read by the root FocusScope
+    /// to enable keymap bypass while a TextInput in the modal has focus.
+    property <bool> connect-modal-input-focused: false;
+
     /// Whether the file-operations tray is shown.
     in property <bool> ops-panel-visible: false;
     /// Operation rows shown in the ops tray.
@@ -263,6 +295,27 @@ export component AtlasWindow inherits Window {
     /// Open the bulk-rename modal with the current pane's selection.
     /// Triggered by Cmd/Ctrl+Shift+F2.
     callback open-bulk-rename();
+
+    // ── Connect-to-Server modal callbacks ─────────────────────────────────
+    callback connect-backend-changed(int);
+    callback connect-auth-changed(int);
+    callback connect-connection-string-changed(string);
+    callback connect-host-changed(string);
+    callback connect-port-changed(string);
+    callback connect-path-changed(string);
+    callback connect-username-changed(string);
+    callback connect-password-changed(string);
+    callback connect-ssh-key-path-changed(string);
+    callback connect-iam-access-key-changed(string);
+    callback connect-iam-secret-key-changed(string);
+    callback connect-iam-session-token-changed(string);
+    callback connect-s3-endpoint-changed(string);
+    callback connect-label-changed(string);
+    callback connect-toggle-save-to-keychain();
+    callback connect-browse-ssh-key();
+    callback connect-cancel();
+    callback connect-dry-run();
+    callback connect-save-and-connect();
 
     /// Confirm the pending quit. Rust hides the window immediately.
     callback confirm-quit-accept();
@@ -625,7 +678,7 @@ export component AtlasWindow inherits Window {
         // as soon as the last modal closes (Slint's `changed` handler only
         // works on properties in the current element, so we mirror the
         // root properties into a local one first).
-        property <bool> any-modal-visible: root.palette-visible || root.search-panel-visible || root.bulk-rename-visible || root.op-modal-visible;
+        property <bool> any-modal-visible: root.palette-visible || root.search-panel-visible || root.bulk-rename-visible || root.op-modal-visible || root.connect-modal-visible;
         changed any-modal-visible => {
             if !any-modal-visible { self.focus(); }
         }
@@ -647,7 +700,7 @@ export component AtlasWindow inherits Window {
         // Composite gate passed to the Rust dispatcher: `true` restricts
         // context to `[Global]` so Pane bindings return false and the
         // key falls through to whatever TextInput currently owns focus.
-        property <bool> keymap-bypass-active: any-modal-visible || text-focus-pane-id != -1;
+        property <bool> keymap-bypass-active: any-modal-visible || text-focus-pane-id != -1 || root.connect-modal-input-focused;
 
         // Ticks up whenever Rust wants the root FocusScope to re-grab focus
         // (e.g. after the AddressBar's TextInput cancels or submits). We rely
@@ -679,6 +732,7 @@ export component AtlasWindow inherits Window {
                 if palette-visible      { root.palette-dismiss();      return accept; }
                 if search-panel-visible { root.search-close();         return accept; }
                 if bulk-rename-visible  { root.bulk-rename-cancel();   return accept; }
+                if connect-modal-visible{ root.connect-cancel();       return accept; }
                 if op-modal-visible     { root.op-modal-background();  return accept; }
             }
 
@@ -693,7 +747,7 @@ export component AtlasWindow inherits Window {
             // outside the keymap because Tab in a TextInput has native
             // meaning (focus-nav / autocomplete).
             if event.text == Key.Tab && panes.length > 1 && !palette-visible
-                && !search-panel-visible && !bulk-rename-visible {
+                && !search-panel-visible && !bulk-rename-visible && !connect-modal-visible {
                 root.cycle-pane-focus();
                 return accept;
             }
@@ -749,7 +803,7 @@ export component AtlasWindow inherits Window {
         // in the AddressBar TextInput consumes 'j'/'k'/'h'/'l' before the
         // dispatcher ever sees them.
         key-pressed(event) => {
-            if palette-visible || search-panel-visible || bulk-rename-visible || op-modal-visible {
+            if palette-visible || search-panel-visible || bulk-rename-visible || op-modal-visible || connect-modal-visible {
                 return reject;
             }
             // Gate vim letters on the vim-mode flag so users who don't want
@@ -1051,6 +1105,59 @@ export component AtlasWindow inherits Window {
             toggle-case => { root.bulk-rename-toggle-case(); }
             confirm => { root.bulk-rename-confirm(); }
             cancel => { root.bulk-rename-cancel(); }
+        }
+
+        // ── Connect-to-Server modal (Cmd+K) ────────────────────────────────
+        connect-modal := ConnectServerModal {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            visible-modal: root.connect-modal-visible;
+            backend-index <=> root.connect-backend-index;
+            auth-index <=> root.connect-auth-index;
+            connection-string <=> root.connect-connection-string;
+            host <=> root.connect-host;
+            port <=> root.connect-port;
+            path <=> root.connect-path;
+            username <=> root.connect-username;
+            password <=> root.connect-password;
+            ssh-key-path <=> root.connect-ssh-key-path;
+            iam-access-key <=> root.connect-iam-access-key;
+            iam-secret-key <=> root.connect-iam-secret-key;
+            iam-session-token <=> root.connect-iam-session-token;
+            s3-endpoint <=> root.connect-s3-endpoint;
+            label-text <=> root.connect-label;
+            save-to-keychain: root.connect-save-to-keychain;
+            connecting: root.connect-connecting;
+            status-text: root.connect-status-text;
+            status-is-error: root.connect-status-is-error;
+
+            backend-changed(i) => { root.connect-backend-changed(i); }
+            auth-changed(i) => { root.connect-auth-changed(i); }
+            connection-string-changed(s) => { root.connect-connection-string-changed(s); }
+            host-changed(s) => { root.connect-host-changed(s); }
+            port-changed(s) => { root.connect-port-changed(s); }
+            path-changed(s) => { root.connect-path-changed(s); }
+            username-changed(s) => { root.connect-username-changed(s); }
+            password-changed(s) => { root.connect-password-changed(s); }
+            ssh-key-path-changed(s) => { root.connect-ssh-key-path-changed(s); }
+            iam-access-key-changed(s) => { root.connect-iam-access-key-changed(s); }
+            iam-secret-key-changed(s) => { root.connect-iam-secret-key-changed(s); }
+            iam-session-token-changed(s) => { root.connect-iam-session-token-changed(s); }
+            s3-endpoint-changed(s) => { root.connect-s3-endpoint-changed(s); }
+            label-changed(s) => { root.connect-label-changed(s); }
+            toggle-save-to-keychain => { root.connect-toggle-save-to-keychain(); }
+            browse-ssh-key => { root.connect-browse-ssh-key(); }
+            cancel => { root.connect-cancel(); }
+            connect => { root.connect-dry-run(); }
+            save-and-connect => { root.connect-save-and-connect(); }
+
+            // Bubble the child's `input-focused` up so the outer FocusScope's
+            // `keymap-bypass-active` gates Cmd+A/C/V past pane bindings.
+            changed input-focused => {
+                root.connect-modal-input-focused = self.input-focused;
+            }
         }
 
         // Quit-confirmation modal — shown when the user tries to close the
