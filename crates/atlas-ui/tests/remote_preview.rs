@@ -90,6 +90,8 @@ fn make_cache(dir: &std::path::Path, opener: Arc<RecordingOpener>) -> PreviewCac
             max_bytes: 10_000_000,
             max_age_secs: 86_400,
             max_open_bytes: 10_000_000,
+            stream_threshold_bytes: 4_194_304,
+            stream_chunk_bytes: 262_144,
         },
         opener,
     )
@@ -244,4 +246,79 @@ fn remote_directory_activate_resolves_to_remote_location() {
             panic!("resolver leaked to Location::Local({p:?}) — this is exactly the reported bug")
         }
     }
+}
+
+/// A file larger than the configured `stream_threshold_bytes` must be
+/// materialised chunk-by-chunk via `atlas_remote::stream::stream_copy`
+/// rather than one buffered `read()`. The observable outcome is the
+/// same — cache line populated, opener invoked — but the code path
+/// exercised is different.
+///
+/// The test forces streaming by setting a very small threshold (1 KiB)
+/// and staging a ~64 KiB payload. Under the old buffered path this
+/// still worked; the added guarantee is memory-bounded transfer.
+#[test]
+fn large_file_preview_streams_via_stream_copy() -> Result<()> {
+    skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    // 64 KiB payload — an obvious multiple of the 4 KiB chunk we set
+    // below, so `stream_copy` loops several times.
+    let payload_len = 64 * 1024_usize;
+    let payload: Vec<u8> = (0..payload_len)
+        .map(|i| (i as u8).wrapping_mul(37))
+        .collect();
+    std::fs::write(server.root_dir().join("bigfile.bin"), &payload)?;
+
+    let tmp = TempDir::new()?;
+    let opener = Arc::new(RecordingOpener::default());
+    // Force streaming by pushing `stream_threshold_bytes` down to 1 KiB.
+    let cfg = RemotePreview {
+        cache_dir: Some(tmp.path().to_path_buf()),
+        max_bytes: 10_000_000,
+        max_age_secs: 86_400,
+        max_open_bytes: 10_000_000,
+        stream_threshold_bytes: 1_024,
+        stream_chunk_bytes: 4_096,
+    };
+    let cache = PreviewCache::with_opener(cfg, opener.clone());
+
+    let entry = Entry {
+        name: "bigfile.bin".into(),
+        path: PathBuf::from("bigfile.bin"),
+        kind: EntryKind::File,
+        metadata: Metadata {
+            size: payload_len as u64,
+            ..Metadata::default()
+        },
+    };
+    let mut file_uri = server.uri("anon");
+    file_uri.path = "/bigfile.bin".into();
+
+    let outcome = cache.open_remote_file(file_uri, BackendKind::Sftp, entry);
+    match outcome {
+        PreviewOutcome::Downloading => {}
+        other => panic!("expected Downloading on first activate, got {other:?}"),
+    }
+
+    let start = std::time::Instant::now();
+    while opener.calls.load(Ordering::SeqCst) == 0 {
+        if start.elapsed() > Duration::from_secs(15) {
+            panic!("streaming download never called opener within 15s");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let cached_path = opener
+        .last_path
+        .lock()
+        .clone()
+        .expect("opener must have been called with a cache path");
+    let on_disk = std::fs::read(&cached_path)?;
+    assert_eq!(
+        on_disk.len(),
+        payload.len(),
+        "streamed cache line must contain the full payload"
+    );
+    assert_eq!(on_disk, payload, "streamed cache line bytes must match");
+    Ok(())
 }

@@ -129,6 +129,8 @@ impl Default for RemotePreview {
             max_bytes: 200_000_000,
             max_age_secs: 86_400,
             max_open_bytes: 100_000_000,
+            stream_threshold_bytes: 4_194_304,
+            stream_chunk_bytes: 262_144,
         }
     }
 }

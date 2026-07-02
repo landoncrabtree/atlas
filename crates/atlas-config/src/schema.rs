@@ -384,6 +384,18 @@ pub struct RemotePreview {
     /// limit the shell logs a hint and instructs the user to copy the
     /// file into a local pane first. Default: 100 MB.
     pub max_open_bytes: u64,
+    /// Byte threshold above which the download path switches from a
+    /// single buffered `read()` to a chunked streaming pump powered
+    /// by [`atlas_remote::stream::stream_copy`]. Below the threshold
+    /// the buffered fast path is used (fewer syscalls, warmer L1);
+    /// above it we bound memory to `stream_chunk_bytes` per chunk.
+    /// Default: 4 MiB (4_194_304).
+    pub stream_threshold_bytes: u64,
+    /// Chunk size, in bytes, used by the streaming download path when
+    /// the file size crosses [`Self::stream_threshold_bytes`]. Also
+    /// used as the upper bound on memory held per download. Default:
+    /// 256 KiB (262_144).
+    pub stream_chunk_bytes: u64,
 }
 
 /// Connection-pool tunables.

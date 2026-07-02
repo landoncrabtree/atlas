@@ -806,6 +806,7 @@ dependencies = [
  "crossbeam-channel",
  "directories",
  "fs2",
+ "futures",
  "image",
  "libc",
  "notify",

@@ -340,16 +340,53 @@ async fn download_and_open(
     )
     .map_err(|err| PreviewError::Remote(format!("open_live: {err}")))?;
 
-    let bytes = vm
-        .read(&child_path)
-        .await
-        .map_err(|err| PreviewError::Remote(format!("read: {err}")))?;
-
     // Materialise the cache line atomically. `.part` write, then
     // rename — a partial download never masquerades as a cache hit.
     std::fs::create_dir_all(&cache_line)?;
     let staging = cache_line.join(format!(".{}.part", &entry.name));
-    std::fs::write(&staging, &bytes)?;
+
+    let (threshold, chunk_bytes) = {
+        let cfg = inner.config.lock();
+        (cfg.stream_threshold_bytes, cfg.stream_chunk_bytes)
+    };
+
+    if entry.metadata.size < threshold {
+        // Small file — one buffered `read()` is the fast path.
+        let bytes = vm
+            .read(&child_path)
+            .await
+            .map_err(|err| PreviewError::Remote(format!("read: {err}")))?;
+        std::fs::write(&staging, &bytes)?;
+    } else {
+        // Large file — stream chunks straight to the `.part` file so
+        // memory stays bounded at `stream_chunk_bytes`.
+        //
+        // TODO(ops-panel): thread the ops controller through
+        // PreviewCache so the progress channel below (currently
+        // dropped) becomes a "Downloading readme.txt · 42/1024 KiB"
+        // row in the ops panel. `stream_copy` already emits
+        // per-chunk `StreamProgress`; the missing piece is a
+        // `Sender<StreamProgress>` sink wired to the ops event bus.
+        let mut reader = vm
+            .reader(&child_path, Some(entry.metadata.size))
+            .await
+            .map_err(|err| PreviewError::Remote(format!("reader: {err}")))?;
+        let staging_owned = staging.clone();
+        let file = tokio::task::spawn_blocking(move || std::fs::File::create(&staging_owned))
+            .await
+            .map_err(|err| PreviewError::Remote(format!("spawn: {err}")))??;
+        let mut writer = futures::io::AllowStdIo::new(file);
+        let chunk = usize::try_from(chunk_bytes).unwrap_or(usize::MAX).max(1);
+        atlas_remote::stream::stream_copy(
+            &mut reader,
+            &mut writer,
+            Some(chunk),
+            Some(entry.metadata.size),
+            None,
+        )
+        .await
+        .map_err(|err| PreviewError::Io(io::Error::other(format!("stream_copy: {err}"))))?;
+    }
     std::fs::rename(&staging, &cached_file)?;
 
     // Record a successful download for tests + evict older entries.
@@ -546,6 +583,8 @@ mod tests {
             max_bytes: 10_000_000,
             max_age_secs: 86_400,
             max_open_bytes: 10_000_000,
+            stream_threshold_bytes: 4_194_304,
+            stream_chunk_bytes: 262_144,
         };
         let opener = Arc::new(RecordingOpener::default());
         let cache = PreviewCache::with_opener(cfg, opener.clone());
@@ -577,6 +616,8 @@ mod tests {
             max_bytes: 10_000_000,
             max_age_secs: 86_400,
             max_open_bytes: 10,
+            stream_threshold_bytes: 4_194_304,
+            stream_chunk_bytes: 262_144,
         };
         let opener = Arc::new(RecordingOpener::default());
         let cache = PreviewCache::with_opener(cfg, opener.clone());
@@ -628,6 +669,8 @@ mod tests {
             max_bytes: 10_000_000,
             max_age_secs: 86_400,
             max_open_bytes: 10_000_000,
+            stream_threshold_bytes: 4_194_304,
+            stream_chunk_bytes: 262_144,
         };
         let opener = Arc::new(RecordingOpener::default());
         let cache = PreviewCache::with_opener(cfg, opener.clone());
