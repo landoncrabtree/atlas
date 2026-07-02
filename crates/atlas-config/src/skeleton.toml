@@ -69,13 +69,10 @@ animations = true
 # currently-focused pane. Use `0.0` to disable. Clamped to [0.0, 6.0].
 active_pane_border_px = 2.0
 
-# ── Icon glyphs ───────────────────────────────────────────────────────────────
-# Controls how filetype icons render across Details / Grid / Miller / Gallery.
-[ui.icons]
-# When `true` (default), use Unicode emoji glyphs (📁, 🦀, 📝, …).
-# When `false`, fall back to bracketed ASCII (`[D]`, `[F]`, `[L]`, `[X]`,
-# `[!]`, `[?]`) for terminals, low-graphics setups, or accessibility.
-use_emoji = true
+# (Removed in Phase 2.10: the `[ui.icons] use_emoji` toggle. Atlas now
+# always renders filetype icons from the bundled Symbols Nerd Font Mono —
+# see assets/fonts/README.md. There's no ASCII fallback pack for now;
+# if you need one, file an issue.)
 
 [view]
 # Default view mode: "details", "grid", "gallery", "miller", or "tree".

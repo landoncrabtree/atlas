@@ -350,7 +350,7 @@ impl GalleryController {
         if entry.kind.is_dir() || !can_thumbnail(&entry.path) {
             *self.preview.write() = None;
             *self.preview_path.write() = None;
-            *self.preview_fallback_glyph.write() = fallback.to_owned();
+            *self.preview_fallback_glyph.write() = fallback.to_string();
             self.preview_loading.store(false, Ordering::Relaxed);
             self.push_preview_to_ui();
             return;
@@ -486,7 +486,7 @@ impl GalleryController {
                             *self.preview.write() = None;
                             *self.preview_fallback_glyph.write() = self
                                 .current_focused_entry()
-                                .map(|entry| fallback_glyph(&entry).to_owned())
+                                .map(|entry| fallback_glyph(&entry).to_string())
                                 .unwrap_or_default();
                             self.preview_loading.store(false, Ordering::Relaxed);
                             push_preview = true;
@@ -575,7 +575,7 @@ impl Drop for GalleryController {
     }
 }
 
-fn fallback_glyph(entry: &Entry) -> &'static str {
+fn fallback_glyph(entry: &Entry) -> char {
     icon_for(entry).glyph
 }
 

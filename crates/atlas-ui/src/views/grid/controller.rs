@@ -514,7 +514,7 @@ pub(crate) fn entry_to_row_item(entry: &Entry) -> EntryRowItem {
 
     EntryRowItem {
         name: SharedString::from(entry.name.as_str()),
-        kind_icon: SharedString::from(kind_icon),
+        kind_icon: SharedString::from(kind_icon.to_string()),
         size_text: SharedString::from(size_text),
         modified_text: SharedString::from(modified_text),
         is_hidden: entry.metadata.is_hidden,

@@ -16,7 +16,7 @@ pub mod tokens;
 pub mod watcher;
 
 pub use color::Color;
-pub use icons::{icon_for, icon_for_with, set_use_emoji, IconGlyph};
+pub use icons::{icon_for, IconGlyph};
 pub use loader::{ThemeDescriptor, ThemeLoader, ThemeSource};
 pub use tokens::{Chrome, Colors, ThemeMode, ThemeTokens, Typography};
 pub use watcher::{ThemeError, ThemeEvent, ThemeWatcher};

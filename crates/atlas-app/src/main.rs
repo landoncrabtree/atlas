@@ -249,10 +249,6 @@ fn main() -> Result<()> {
     shell.set_animations_enabled(config.ui.animations);
     // config: reads config.ui.active_pane_border_px
     shell.set_active_pane_border_px(config.ui.active_pane_border_px);
-    // config: reads config.ui.icons.use_emoji so filetype icons across
-    // every view (Details/Grid/Miller/Gallery) render either as Unicode
-    // emoji glyphs (📁, 🦀, 📝, …) or bracketed ASCII fallbacks.
-    atlas_ui::theming::icons::set_use_emoji(config.ui.icons.use_emoji);
     // config: reads config.remote.preview (cache_dir, max_bytes,
     // max_age_secs, max_open_bytes) so remote-file previews land in
     // the user-configured cache.
@@ -747,10 +743,6 @@ fn spawn_config_event_thread(
                         shell.set_animations_enabled(cfg.ui.animations);
                         shell.set_active_pane_border_px(cfg.ui.active_pane_border_px);
                         shell.set_vim_mode(cfg.general.vim_mode);
-                        // ── Icon glyphs (emoji vs ASCII) ──────────────────
-                        // Live-reload aware; existing panes re-render on
-                        // next entry refresh which re-runs entry_to_row_item.
-                        atlas_ui::theming::icons::set_use_emoji(cfg.ui.icons.use_emoji);
 
                         // ── Search knobs ──────────────────────────────────
                         search_ctrl.set_max_results(cfg.search.fuzzy_max_results);

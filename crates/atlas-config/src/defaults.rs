@@ -1,8 +1,8 @@
 //! Default values for every configuration struct.
 
 use super::schema::{
-    Density, DetailsView, General, Icons, Indexer, Navigation, Remote, RemotePool, RemotePreview,
-    Search, SortKey, SortOrder, Thumbnails, Ui, View, ViewMode,
+    Density, DetailsView, General, Indexer, Navigation, Remote, RemotePool, RemotePreview, Search,
+    SortKey, SortOrder, Thumbnails, Ui, View, ViewMode,
 };
 
 impl Default for General {
@@ -30,14 +30,7 @@ impl Default for Ui {
             show_shortcuts: true,
             animations: true,
             active_pane_border_px: 2.0,
-            icons: Icons::default(),
         }
-    }
-}
-
-impl Default for Icons {
-    fn default() -> Self {
-        Self { use_emoji: true }
     }
 }
 

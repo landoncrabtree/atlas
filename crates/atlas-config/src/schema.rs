@@ -81,23 +81,11 @@ pub struct Ui {
     /// the user can tell which pane will receive keystrokes. `0.0` disables
     /// the border entirely. Clamped to `[0.0, 6.0]` at load time.
     pub active_pane_border_px: f32,
-    /// Icon glyph rendering settings (emoji vs ASCII).
-    pub icons: Icons,
 }
 
-/// Icon glyph rendering settings.
-///
-/// Controls how filetype icons are rendered across every view (Details,
-/// Grid, Miller, Gallery). Consumed by
-/// [`atlas_ui::theming::icons::icon_for`].
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Icons {
-    /// When `true` (default), use Unicode emoji glyphs (📁, 🦀, 📝, …).
-    /// When `false`, fall back to bracketed ASCII (`[D]`, `[F]`, `[L]`,
-    /// `[X]`, `[!]`, `[?]`) for terminals and low-graphics setups.
-    pub use_emoji: bool,
-}
+// (The former `[ui.icons] use_emoji = <bool>` knob was removed in Phase
+// 2.10 — filetype icons are now always rendered from the bundled
+// Symbols Nerd Font Mono. See `atlas_ui::theming::icons`.)
 
 /// Layout density of the file list.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
