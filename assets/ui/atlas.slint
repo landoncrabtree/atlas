@@ -9,7 +9,7 @@ import { SearchPanel, SearchRow } from "components/search-panel.slint";
 import { OpsPanel, OpRow } from "components/ops-panel.slint";
 import { OperationProgress } from "components/operation-progress.slint";
 import { BulkRenameModal, RenamePreview } from "components/bulk-rename.slint";
-import { ConnectServerModal } from "components/connect-server.slint";
+import { ConnectServerModal, SavedServerRow } from "components/connect-server.slint";
 import { TabEntry } from "components/tab-bar.slint";
 import { EntryRowItem, ColumnSpec } from "views/details/column.slint";
 import { MillerColData } from "views/miller/miller-state.slint";
@@ -254,6 +254,11 @@ export component AtlasWindow inherits Window {
     in property <bool> connect-connecting: false;
     in property <string> connect-status-text: "";
     in property <bool> connect-status-is-error: false;
+    /// The saved-servers list rendered inside the modal. Pushed by
+    /// `ConnectController::push_saved_servers_to_ui` on modal open and
+    /// after any add / delete / connect. Empty ⇒ modal renders the
+    /// "No saved servers yet" empty state.
+    in property <[SavedServerRow]> connect-saved-servers: [];
     /// Mirrors ConnectServerModal.input-focused. Read by the root FocusScope
     /// to enable keymap bypass while a TextInput in the modal has focus.
     property <bool> connect-modal-input-focused: false;
@@ -322,6 +327,14 @@ export component AtlasWindow inherits Window {
     callback connect-cancel();
     callback connect-dry-run();
     callback connect-save-and-connect();
+    /// Saved-server row clicked → populate modal fields with that server.
+    callback connect-saved-server-selected(string /* id */);
+    /// First-stage delete arm — flips `delete-pending` on the row.
+    callback connect-saved-server-delete-requested(string /* id */);
+    /// Confirmed delete — Rust removes servers.toml + keychain entry.
+    callback connect-saved-server-delete-confirmed(string /* id */);
+    /// Cancel any pending delete arm.
+    callback connect-saved-server-delete-cancelled();
 
     /// Confirm the pending quit. Rust hides the window immediately.
     callback confirm-quit-accept();
@@ -1140,6 +1153,7 @@ export component AtlasWindow inherits Window {
             connecting: root.connect-connecting;
             status-text: root.connect-status-text;
             status-is-error: root.connect-status-is-error;
+            saved-servers: root.connect-saved-servers;
 
             backend-changed(i) => { root.connect-backend-changed(i); }
             auth-changed(i) => { root.connect-auth-changed(i); }
@@ -1160,6 +1174,10 @@ export component AtlasWindow inherits Window {
             cancel => { root.connect-cancel(); }
             connect => { root.connect-dry-run(); }
             save-and-connect => { root.connect-save-and-connect(); }
+            saved-server-selected(id) => { root.connect-saved-server-selected(id); }
+            saved-server-delete-requested(id) => { root.connect-saved-server-delete-requested(id); }
+            saved-server-delete-confirmed(id) => { root.connect-saved-server-delete-confirmed(id); }
+            saved-server-delete-cancelled => { root.connect-saved-server-delete-cancelled(); }
 
             // Bubble the child's `input-focused` up so the outer FocusScope's
             // `keymap-bypass-active` gates Cmd+A/C/V past pane bindings.

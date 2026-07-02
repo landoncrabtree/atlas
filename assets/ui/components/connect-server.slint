@@ -28,6 +28,25 @@
 // address-bar TextInput chord bypass introduced in `269ab5a`.
 
 import { Theme } from "../theme.slint";
+import { ScrollView } from "std-widgets.slint";
+
+// A single row in the saved-servers list rendered beneath the modal's
+// connection form. Populated by Rust (`ConnectController`) from
+// `atlas_config::servers::list()`, sorted last-connected desc.
+export struct SavedServerRow {
+    /// Stable server id (matches `atlas_config::servers::SavedServer::id`).
+    id: string,
+    /// User-facing label ("prod", "home NAS", …), or `user@host` fallback.
+    label: string,
+    /// Display-ready subtitle — full URI (e.g. `sftp://landon@host:22/var`).
+    address: string,
+    /// Backend glyph used as the row's left icon (📁 🔐 ☁️ 🌐 📡).
+    glyph: string,
+    /// Preformatted relative-time string ("just now", "3 days ago", "never").
+    last-connected-relative: string,
+    /// True while this row is showing the inline "Delete?" confirm chip.
+    delete-pending: bool,
+}
 
 export component ConnectServerModal inherits Rectangle {
     // ── Externally-controlled state ────────────────────────────────────────
@@ -53,6 +72,15 @@ export component ConnectServerModal inherits Rectangle {
     in property <bool> connecting: false;
     in property <string> status-text: "";
     in property <bool> status-is-error: false;
+
+    // ── Saved-servers viewer ──────────────────────────────────────────────
+    // The list is fully controlled by Rust: the `saved-servers` array is
+    // rebuilt on modal open, on successful connect (to bump the recency
+    // sort), and after a delete confirms. Rows fire either
+    // `saved-server-selected` (populate the fields) or the pair
+    // `saved-server-delete-requested` / `saved-server-delete-confirmed`
+    // depending on which button the user hits.
+    in property <[SavedServerRow]> saved-servers: [];
 
     // Reflects "any TextInput in this modal has focus". Bubbles up to the
     // window's FocusScope so Cmd+A / Cmd+C / Cmd+V land in the input, not
@@ -86,6 +114,19 @@ export component ConnectServerModal inherits Rectangle {
     callback cancel();
     callback connect();
     callback save-and-connect();
+
+    // ── Saved-servers callbacks ───────────────────────────────────────────
+    /// A row was single-clicked. Rust populates the connection form.
+    callback saved-server-selected(string /* id */);
+    /// The row's Delete button was clicked once. Rust flips
+    /// `delete-pending` on that row so the confirm chip renders.
+    callback saved-server-delete-requested(string /* id */);
+    /// The inline "Confirm delete?" chip was clicked. Rust removes the
+    /// entry from servers.toml + purges the keychain secret.
+    callback saved-server-delete-confirmed(string /* id */);
+    /// The delete-pending state was aborted (Cancel clicked or another
+    /// row selected). Rust clears `delete-pending` on all rows.
+    callback saved-server-delete-cancelled();
 
     // ── Derived visibility flags ───────────────────────────────────────────
     // Backend indices: 0=SFTP, 1=FTP, 2=WebDAV, 3=S3.
@@ -150,8 +191,8 @@ export component ConnectServerModal inherits Rectangle {
         Rectangle {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            width: min(560px, parent.width - Theme.space-6 * 2);
-            height: min(680px, parent.height - Theme.space-6 * 2);
+            width: min(620px, parent.width - Theme.space-6 * 2);
+            height: min(820px, parent.height - Theme.space-6 * 2);
             background: Theme.panel-bg-elevated;
             border-width: 1px;
             border-color: Theme.border;
@@ -988,6 +1029,205 @@ export component ConnectServerModal inherits Rectangle {
                             vertical-alignment: center;
                             horizontal-alignment: left;
                             horizontal-stretch: 1;
+                        }
+                    }
+                }
+
+                // ── Saved servers list ───────────────────────────────────────
+                //
+                // Displayed under the connection form. Each row shows the
+                // backend glyph, the label + full URI, a relative-time
+                // hint, and Edit / Delete affordances. Clicking anywhere
+                // outside those controls populates the form. Delete uses a
+                // two-step confirm — the first click flips `delete-pending`
+                // on that row (chip morphs into "Delete?" / "Cancel"), a
+                // subsequent click on "Delete?" removes the entry and its
+                // keychain secret. Capped at ~6 visible rows via
+                // `saved-servers-viewport`.
+                Rectangle { height: 1px; background: Theme.border; }
+
+                VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+                        alignment: space-between;
+
+                        Text {
+                            text: "SAVED SERVERS";
+                            color: Theme.fg-muted;
+                            font-size: 10px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: root.saved-servers.length > 0
+                                ? root.saved-servers.length + " total"
+                                : "";
+                            color: Theme.fg-faint;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    if root.saved-servers.length == 0 : Rectangle {
+                        height: 48px;
+                        background: Theme.panel-bg;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: Theme.radius-sm;
+
+                        Text {
+                            text: "No saved servers yet. Fill in a connection above and click Save + Connect.";
+                            color: Theme.fg-faint;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                            width: parent.width - Theme.space-4 * 2;
+                            x: Theme.space-4;
+                        }
+                    }
+
+                    // Cap the viewport at ~6 rows (row-h 44px × 6 + spacing).
+                    if root.saved-servers.length > 0 : saved-servers-viewport := Rectangle {
+                        height: min(6 * 44px + Theme.space-1 * 5, root.saved-servers.length * 44px + max(root.saved-servers.length - 1, 0) * Theme.space-1);
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.panel-bg;
+                        clip: true;
+
+                        saved-list := ScrollView {
+                            x: 0px; y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            viewport-width: parent.width;
+
+                            VerticalLayout {
+                                width: parent.width;
+                                spacing: Theme.space-1;
+                                padding: Theme.space-1;
+
+                                for entry[i] in root.saved-servers : Rectangle {
+                                    height: 40px;
+                                    background: row-ta.has-hover ? Theme.hover-bg : transparent;
+                                    border-radius: Theme.radius-xs;
+                                    border-width: entry.delete-pending ? 1px : 0px;
+                                    border-color: Theme.error;
+
+                                    row-ta := TouchArea {
+                                        width: 100%; height: 100%;
+                                        clicked => {
+                                            root.saved-server-selected(entry.id);
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: Theme.space-2;
+                                        padding-right: Theme.space-2;
+                                        spacing: Theme.space-3;
+                                        alignment: center;
+
+                                        // Backend glyph
+                                        Text {
+                                            text: entry.glyph;
+                                            font-size: 18px;
+                                            vertical-alignment: center;
+                                            width: 22px;
+                                            horizontal-alignment: center;
+                                        }
+
+                                        // Label + address
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            spacing: 0px;
+                                            alignment: center;
+
+                                            Text {
+                                                text: entry.label;
+                                                color: Theme.fg;
+                                                font-size: 12px;
+                                                font-weight: 500;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                text: entry.address;
+                                                color: Theme.fg-muted;
+                                                font-size: 10px;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        // Last-connected relative
+                                        Text {
+                                            text: entry.last-connected-relative;
+                                            color: Theme.fg-faint;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                            width: 76px;
+                                            horizontal-alignment: right;
+                                        }
+
+                                        // Delete button (morphs into "Delete?" chip once armed)
+                                        Rectangle {
+                                            width: entry.delete-pending ? 96px : 64px;
+                                            height: 26px;
+                                            border-radius: Theme.radius-xs;
+                                            border-width: 1px;
+                                            border-color: entry.delete-pending
+                                                ? Theme.error
+                                                : Theme.border;
+                                            background: entry.delete-pending
+                                                ? Theme.error.with-alpha(0.12)
+                                                : Theme.panel-bg;
+
+                                            delete-ta := TouchArea {
+                                                width: 100%; height: 100%;
+                                                clicked => {
+                                                    if entry.delete-pending {
+                                                        root.saved-server-delete-confirmed(entry.id);
+                                                    } else {
+                                                        root.saved-server-delete-requested(entry.id);
+                                                    }
+                                                }
+                                            }
+
+                                            Text {
+                                                text: entry.delete-pending ? "Confirm?" : "Delete";
+                                                color: entry.delete-pending ? Theme.error : Theme.fg-muted;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        // Cancel-delete (only when armed)
+                                        if entry.delete-pending : Rectangle {
+                                            width: 64px;
+                                            height: 26px;
+                                            border-radius: Theme.radius-xs;
+                                            border-width: 1px;
+                                            border-color: Theme.border;
+                                            background: Theme.panel-bg;
+
+                                            cancel-ta := TouchArea {
+                                                width: 100%; height: 100%;
+                                                clicked => { root.saved-server-delete-cancelled(); }
+                                            }
+
+                                            Text {
+                                                text: "Cancel";
+                                                color: Theme.fg-muted;
+                                                font-size: 11px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

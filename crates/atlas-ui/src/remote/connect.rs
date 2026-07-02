@@ -28,7 +28,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use atlas_config::servers::{add_or_replace, SavedServer};
+use atlas_config::servers::{add_or_replace, delete, list, SavedServer};
 use atlas_core::{BackendKind, Location, LocationParseError};
 use atlas_fs::{OpenOptions, ViewModelEvent};
 use atlas_remote::{
@@ -153,6 +153,31 @@ struct State {
     /// Cancellation flag for the currently-active worker thread. Setting
     /// this to `true` causes the worker to bail out before mounting.
     cancel_flag: Option<Arc<AtomicBool>>,
+    /// The saved-servers list currently rendered inside the modal. This
+    /// is a materialised snapshot of `atlas_config::servers::list()`;
+    /// callers must call [`ConnectController::refresh_saved_servers`]
+    /// after any add / delete to keep it in sync.
+    saved_servers: Vec<SavedServerRow>,
+}
+
+/// A single saved-server row rendered in the modal's list. Kept
+/// separate from the on-disk [`SavedServer`] because the UI needs a
+/// preformatted relative-time string, a per-row "delete armed" flag,
+/// and a rendered backend glyph.
+#[derive(Debug, Clone)]
+pub(crate) struct SavedServerRow {
+    /// Stable id (matches [`SavedServer::id`]).
+    pub id: String,
+    /// User-facing label.
+    pub label: String,
+    /// Full URI string, e.g. `sftp://landon@host:22/var/log`.
+    pub address: String,
+    /// Backend glyph — one of the five monochrome unicode markers.
+    pub glyph: String,
+    /// Preformatted relative time ("just now", "5m ago", "never").
+    pub last_connected_relative: String,
+    /// True while this row is showing the inline "Confirm?" chip.
+    pub delete_pending: bool,
 }
 
 /// Bridge between the Connect-to-Server Slint modal and
@@ -201,6 +226,7 @@ impl ConnectController {
     /// Open the modal, targeting `pane_id`. Resets every field to the
     /// default state and auto-focuses the connection-string input.
     pub fn open(&self, pane_id: PaneId) {
+        let saved = load_saved_server_rows();
         {
             let mut st = self.state.lock();
             *st = State {
@@ -209,6 +235,7 @@ impl ConnectController {
                 target_pane: Some(pane_id),
                 backend: Some(BackendChoice::Sftp),
                 auth: Some(AuthChoice::Password),
+                saved_servers: saved,
                 ..State::default()
             };
         }
@@ -424,6 +451,181 @@ impl ConnectController {
         tracing::info!("connect: browse SSH key requested (no-op stub — phase 2.5)");
     }
 
+    // ── Saved-servers list ──────────────────────────────────────────────────
+
+    /// Rebuild the saved-servers list from `servers.toml` and push to
+    /// the UI. Call after add/delete/successful-connect.
+    pub fn refresh_saved_servers(&self) {
+        let rows = load_saved_server_rows();
+        {
+            let mut st = self.state.lock();
+            st.saved_servers = rows;
+        }
+        self.push_to_ui();
+    }
+
+    /// User single-clicked a saved-server row — populate the connection
+    /// fields so they can review + Connect. The password field is left
+    /// empty; the user re-enters it (or the on-disk credential_ref will
+    /// be re-fetched by [`run_connect_saved`] for the palette flow).
+    pub fn select_saved_server(&self, id: &str) {
+        let (server, credential_ref) = {
+            let st = self.state.lock();
+            if !st.saved_servers.iter().any(|r| r.id == id) {
+                return;
+            }
+            drop(st);
+            match list()
+                .ok()
+                .and_then(|all| all.into_iter().find(|s| s.id == id))
+            {
+                Some(s) => {
+                    let cred = s.credential_ref.clone();
+                    (Some(s), cred)
+                }
+                None => (None, None),
+            }
+        };
+        let Some(server) = server else { return };
+
+        // Best-effort fetch of the stored secret so a single-click on a
+        // password-backed server auto-fills the password field. If the
+        // keychain lookup fails (user denied access, secret missing) we
+        // leave the field blank so the user can retype.
+        let password = credential_ref
+            .as_deref()
+            .and_then(|handle| secrets::retrieve(handle).ok())
+            .unwrap_or_default();
+
+        {
+            let mut st = self.state.lock();
+            st.suppress_field_echo = true;
+
+            let backend = match server.backend {
+                BackendKind::Sftp | BackendKind::Local => BackendChoice::Sftp,
+                BackendKind::Ftp => BackendChoice::Ftp,
+                BackendKind::WebDav => BackendChoice::WebDav,
+                BackendKind::S3 => BackendChoice::S3,
+            };
+            st.backend = Some(backend);
+            st.auth = Some(AuthChoice::Password);
+            st.host = server.address.clone();
+            st.port = server.port.map(|p| p.to_string()).unwrap_or_default();
+            st.path = server.path.clone();
+            st.username = server.username.clone().unwrap_or_default();
+            st.password = password;
+            st.label = server.label.clone();
+            st.status_text.clear();
+            st.status_is_error = false;
+            for row in &mut st.saved_servers {
+                row.delete_pending = false;
+            }
+            resync_connection_string(&mut st);
+            st.suppress_field_echo = false;
+        }
+        self.push_to_ui();
+    }
+
+    /// First-stage delete: flip `delete_pending` on the target row so
+    /// the modal renders the inline "Confirm?" chip.
+    pub fn request_delete_saved_server(&self, id: &str) {
+        {
+            let mut st = self.state.lock();
+            for row in &mut st.saved_servers {
+                row.delete_pending = row.id == id;
+            }
+        }
+        self.push_to_ui();
+    }
+
+    /// Confirmed delete: remove the entry from `servers.toml` AND purge
+    /// its keychain secret. Refreshes the list on success or failure.
+    pub fn confirm_delete_saved_server(&self, id: &str) {
+        match delete(id) {
+            Ok(Some(removed)) => {
+                if let Some(handle) = removed.credential_ref.as_deref() {
+                    if let Err(err) = secrets::delete(handle) {
+                        tracing::warn!(handle, error = %err, "connect: keychain purge failed");
+                    }
+                }
+                tracing::info!(id, "connect: saved server deleted");
+            }
+            Ok(None) => {
+                tracing::debug!(id, "connect: delete of unknown saved-server id");
+            }
+            Err(err) => {
+                tracing::warn!(id, error = %err, "connect: delete saved server failed");
+            }
+        }
+        self.refresh_saved_servers();
+    }
+
+    /// Cancel any pending delete-arm (user clicked Cancel next to the
+    /// Confirm chip, or clicked a different row).
+    pub fn cancel_delete_saved_server(&self) {
+        {
+            let mut st = self.state.lock();
+            for row in &mut st.saved_servers {
+                row.delete_pending = false;
+            }
+        }
+        self.push_to_ui();
+    }
+
+    /// Palette dispatch: connect to the saved server with `id` and mount
+    /// on `pane_id` — without opening the modal. Runs the connect worker
+    /// in the background just like [`connect`], but skips the form.
+    pub fn run_connect_saved(self: &Arc<Self>, id: &str, pane_id: PaneId) {
+        let Some(server) = list()
+            .ok()
+            .and_then(|all| all.into_iter().find(|s| s.id == id))
+        else {
+            tracing::warn!(id, "connect: run_connect_saved for unknown id");
+            return;
+        };
+        let credentials = credentials_from_saved(&server);
+        let uri = atlas_core::RemoteUri {
+            scheme: server.backend.scheme().to_string(),
+            host: Some(server.address.clone()),
+            port: server.port,
+            username: server.username.clone(),
+            path: if server.path.is_empty() {
+                "/".to_owned()
+            } else {
+                server.path.clone()
+            },
+            credential_ref: server.credential_ref.clone(),
+        };
+        let location = Location::Remote(uri, server.backend);
+
+        {
+            let mut st = self.state.lock();
+            if st.connecting {
+                return;
+            }
+            st.target_pane = Some(pane_id);
+            st.connecting = true;
+            st.visible = false;
+            let cancel = Arc::new(AtomicBool::new(false));
+            st.cancel_flag = Some(Arc::clone(&cancel));
+        }
+
+        let cancel = self
+            .state
+            .lock()
+            .cancel_flag
+            .clone()
+            .expect("cancel flag just set");
+        let this = Arc::clone(self);
+
+        std::thread::Builder::new()
+            .name("atlas-connect-worker-saved".to_owned())
+            .spawn(move || {
+                this.run_connect(pane_id, location, credentials, None, cancel);
+            })
+            .expect("failed to spawn atlas-connect-worker-saved");
+    }
+
     // ── Connect / Save+Connect ───────────────────────────────────────────────
 
     /// Dry-run connect (no persistence). Spawns the worker thread.
@@ -620,10 +822,15 @@ impl ConnectController {
 
         let shell = self.shell.lock().upgrade();
         if let Some(shell) = shell {
-            shell.open_remote_location(pane_id, location, vm, Some(concrete));
+            shell.open_remote_location(pane_id, location.clone(), vm, Some(concrete));
         } else {
             tracing::warn!("connect: shell weak-ref lost before mount");
         }
+
+        // Bump `last_connected` for the matching saved server if any.
+        // This also runs on Save+Connect (harmless double-write) so the
+        // sort in the modal viewer is always accurate.
+        bump_last_connected_for(&location);
 
         {
             let mut st = self.state.lock();
@@ -632,6 +839,12 @@ impl ConnectController {
             st.status_is_error = false;
             st.visible = false;
             st.cancel_flag = None;
+        }
+        // Refresh the saved-servers list so the modal picks up the bumped
+        // recency (harmless when the modal is closed — cheap toml read).
+        {
+            let rows = load_saved_server_rows();
+            self.state.lock().saved_servers = rows;
         }
         self.push_to_ui();
     }
@@ -660,6 +873,8 @@ impl ConnectController {
         let snapshot = self.state.lock().snapshot();
         let window = self.window.lock().clone();
         let _ = slint::invoke_from_event_loop(move || {
+            use slint::{ModelRc, SharedString, VecModel};
+
             let Some(win) = window.upgrade() else {
                 return;
             };
@@ -682,6 +897,21 @@ impl ConnectController {
             win.set_connect_connecting(snapshot.connecting);
             win.set_connect_status_text(snapshot.status_text.into());
             win.set_connect_status_is_error(snapshot.status_is_error);
+
+            let rows: Vec<crate::SavedServerRow> = snapshot
+                .saved_servers
+                .into_iter()
+                .map(|r| crate::SavedServerRow {
+                    id: SharedString::from(r.id),
+                    label: SharedString::from(r.label),
+                    address: SharedString::from(r.address),
+                    glyph: SharedString::from(r.glyph),
+                    #[allow(non_snake_case)]
+                    last_connected_relative: SharedString::from(r.last_connected_relative),
+                    delete_pending: r.delete_pending,
+                })
+                .collect();
+            win.set_connect_saved_servers(ModelRc::new(VecModel::from(rows)));
         });
     }
 
@@ -714,6 +944,7 @@ pub(crate) struct StateSnapshot {
     pub connecting: bool,
     pub status_text: String,
     pub status_is_error: bool,
+    pub saved_servers: Vec<SavedServerRow>,
 }
 
 impl State {
@@ -738,6 +969,7 @@ impl State {
             connecting: self.connecting,
             status_text: self.status_text.clone(),
             status_is_error: self.status_is_error,
+            saved_servers: self.saved_servers.clone(),
         }
     }
 }
@@ -942,6 +1174,153 @@ fn classify_probe_error(msg: &str) -> ErrorKind {
         // differentiation between them; expand when the modal gains
         // per-field highlights.
         ErrorKind::Server
+    }
+}
+
+/// Unicode glyph rendered next to a saved-server row and in the pane
+/// header for remote panes. Kept monochrome-friendly; the palette
+/// source and breadcrumb polish commit reuse this helper.
+#[must_use]
+pub(crate) fn backend_glyph(kind: BackendKind) -> &'static str {
+    match kind {
+        BackendKind::Local => "📁",
+        BackendKind::Sftp => "🔐",
+        BackendKind::Ftp => "📡",
+        BackendKind::WebDav => "🌐",
+        BackendKind::S3 => "☁️",
+    }
+}
+
+/// Human-friendly relative time. Returns "just now" for < 60s,
+/// "Nm ago" for minutes, "Nh ago" for hours, "Nd ago" for days,
+/// or the epoch seconds itself for very old timestamps.  "never"
+/// when the timestamp is missing.
+fn relative_time(epoch_secs: Option<u64>) -> String {
+    let Some(then) = epoch_secs else {
+        return "never".to_owned();
+    };
+    let now = now_unix();
+    if then >= now {
+        return "just now".to_owned();
+    }
+    let delta = now - then;
+    if delta < 60 {
+        "just now".to_owned()
+    } else if delta < 3600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86_400 {
+        format!("{}h ago", delta / 3600)
+    } else if delta < 30 * 86_400 {
+        format!("{}d ago", delta / 86_400)
+    } else if delta < 365 * 86_400 {
+        format!("{}mo ago", delta / (30 * 86_400))
+    } else {
+        format!("{}y ago", delta / (365 * 86_400))
+    }
+}
+
+/// Build the display URI shown in the saved-servers list. Mirrors
+/// `Location::Remote(uri, kind)`'s `Display` impl but resilient to
+/// missing username/port fields.
+fn saved_server_uri(server: &SavedServer) -> String {
+    let mut s = String::new();
+    s.push_str(server.backend.scheme());
+    s.push_str("://");
+    if let Some(user) = &server.username {
+        s.push_str(user);
+        s.push('@');
+    }
+    s.push_str(&server.address);
+    if let Some(port) = server.port {
+        s.push(':');
+        s.push_str(&port.to_string());
+    }
+    if server.path.is_empty() {
+        s.push('/');
+    } else if !server.path.starts_with('/') {
+        s.push('/');
+        s.push_str(&server.path);
+    } else {
+        s.push_str(&server.path);
+    }
+    s
+}
+
+/// Load all saved servers and convert them into UI-ready rows sorted
+/// last-connected desc. Never returns an error — failures degrade to
+/// an empty list plus a warn log.
+fn load_saved_server_rows() -> Vec<SavedServerRow> {
+    match list() {
+        Ok(list) => list
+            .into_iter()
+            .map(|server| SavedServerRow {
+                glyph: backend_glyph(server.backend).to_owned(),
+                last_connected_relative: relative_time(server.last_connected),
+                address: saved_server_uri(&server),
+                label: if server.label.is_empty() {
+                    default_label(&server.username, &Some(server.address.clone()))
+                } else {
+                    server.label.clone()
+                },
+                id: server.id,
+                delete_pending: false,
+            })
+            .collect(),
+        Err(err) => {
+            tracing::warn!(error = %err, "connect: failed to load servers.toml");
+            Vec::new()
+        }
+    }
+}
+
+/// Build a [`Credentials`] value from a saved-server record, fetching
+/// the associated secret from the OS keychain if a `credential_ref` is
+/// present. Returns [`Credentials::Anonymous`] on keychain failure so
+/// the connect flow can still surface a coherent error banner rather
+/// than exploding.
+pub(crate) fn credentials_from_saved(server: &SavedServer) -> Credentials {
+    let Some(handle) = server.credential_ref.as_deref() else {
+        return Credentials::Anonymous;
+    };
+    match secrets::retrieve(handle) {
+        Ok(secret) => match server.backend {
+            BackendKind::S3 => Credentials::Iam {
+                access_key_id: server.username.clone().unwrap_or_default(),
+                secret_key: secret,
+                session_token: None,
+            },
+            _ => Credentials::Password(secret),
+        },
+        Err(err) => {
+            tracing::warn!(handle, error = %err, "connect: keychain fetch failed");
+            Credentials::Anonymous
+        }
+    }
+}
+
+/// Bump `last_connected` on any saved server whose dedup-key tuple
+/// matches the location we just mounted. Silent no-op if the location
+/// isn't remote or no saved entry matches.
+fn bump_last_connected_for(location: &Location) {
+    let Location::Remote(uri, kind) = location else {
+        return;
+    };
+    let host = match &uri.host {
+        Some(h) => h.clone(),
+        None => return,
+    };
+    let saved = match list() {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let matching = saved.into_iter().find(|s| {
+        s.backend == *kind && s.address == host && s.port == uri.port && s.username == uri.username
+    });
+    if let Some(mut server) = matching {
+        server.last_connected = Some(now_unix());
+        if let Err(err) = add_or_replace(server) {
+            tracing::debug!(error = %err, "connect: could not bump last_connected");
+        }
     }
 }
 

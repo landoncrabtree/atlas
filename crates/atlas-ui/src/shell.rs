@@ -3454,6 +3454,30 @@ impl AppShell {
             let connect = Arc::clone(&self.connect);
             window.on_connect_save_and_connect(move || connect.save_and_connect());
         }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_saved_server_selected(move |id| {
+                connect.select_saved_server(id.as_str());
+            });
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_saved_server_delete_requested(move |id| {
+                connect.request_delete_saved_server(id.as_str());
+            });
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_saved_server_delete_confirmed(move |id| {
+                connect.confirm_delete_saved_server(id.as_str());
+            });
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_saved_server_delete_cancelled(move || {
+                connect.cancel_delete_saved_server();
+            });
+        }
 
         // ── Navigation location callbacks ─────────────────────────────────────
         {
