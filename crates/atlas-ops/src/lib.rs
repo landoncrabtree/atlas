@@ -19,7 +19,7 @@ pub mod execute;
 pub mod op;
 pub(crate) mod primitives;
 pub mod queue;
-pub(crate) mod remote;
+pub mod remote;
 pub(crate) mod runtime;
 pub mod undo;
 
@@ -27,6 +27,7 @@ pub use conflict::{ConflictDecision, ConflictPolicy, ConflictResponder};
 pub use execute::execute_op;
 pub use op::{OpEvent, OpId, OpKind, OpKindDescriptor, OpStatus, Operation, ProgressSnapshot};
 pub use queue::{OperationQueue, QueueOptions};
+pub use remote::{cache_session_credentials, clear_session_credentials};
 pub use undo::{UndoEntry, UndoStack, UndoToken};
 
 #[doc(hidden)]

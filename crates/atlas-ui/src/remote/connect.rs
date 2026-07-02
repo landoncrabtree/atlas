@@ -572,11 +572,30 @@ impl ConnectController {
         }
 
         // Step 3 — persist (if the user checked "Save to keychain") and
-        // mount the vm onto the pane.
+        // mount the vm onto the pane. When persist succeeds it returns
+        // the credential handle; we splice it into the pane's
+        // Location so atlas-ops (which re-opens the location for
+        // copy/paste ops) can retrieve the secret from the keychain.
+        let mut location = location;
         if let Some(save) = save_data {
-            if let Err(e) = save.persist(&credentials) {
-                tracing::warn!(error = %e, "connect: failed to persist saved server");
+            match save.persist(&credentials) {
+                Ok(Some(cred_ref)) => {
+                    if let Location::Remote(uri, _) = &mut location {
+                        uri.credential_ref = Some(cred_ref);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "connect: failed to persist saved server");
+                }
             }
+        }
+
+        // Step 3.5 — cache the credentials in atlas-ops for this session
+        // so cross-backend copy/paste can reconnect without touching the
+        // OS keychain (which would trigger a dialog on macOS).
+        if let Location::Remote(uri, _) = &location {
+            atlas_ops::cache_session_credentials(uri, credentials.clone());
         }
 
         let shell = self.shell.lock().upgrade();
@@ -945,14 +964,13 @@ impl SaveIntent {
         }
     }
 
-    fn persist(&self, credentials: &Credentials) -> anyhow::Result<()> {
+    fn persist(&self, credentials: &Credentials) -> anyhow::Result<Option<String>> {
         let credential_ref = match credentials {
             Credentials::Password(secret) if !secret.is_empty() => {
                 let namespace = keychain_namespace(self.backend);
                 let account = self.keychain_account();
-                let handle = secrets::store(&namespace, &account, secret)
-                    .map_err(|e| anyhow::anyhow!("keychain store failed: {e}"))?;
-                Some(handle.into_string())
+                let handle = store_or_recover(&namespace, &account, secret)?;
+                Some(handle)
             }
             Credentials::Iam {
                 access_key_id,
@@ -961,9 +979,8 @@ impl SaveIntent {
             } if !access_key_id.is_empty() && !secret_key.is_empty() => {
                 let namespace = keychain_namespace(self.backend);
                 let account = format!("{}#{}", self.keychain_account(), access_key_id);
-                let handle = secrets::store(&namespace, &account, secret_key)
-                    .map_err(|e| anyhow::anyhow!("keychain store failed: {e}"))?;
-                Some(handle.into_string())
+                let handle = store_or_recover(&namespace, &account, secret_key)?;
+                Some(handle)
             }
             _ => None,
         };
@@ -976,11 +993,11 @@ impl SaveIntent {
             port: self.port,
             path: self.path.clone(),
             username: self.username.clone(),
-            credential_ref,
+            credential_ref: credential_ref.clone(),
             last_connected: Some(now_unix()),
         };
         add_or_replace(server).map_err(|e| anyhow::anyhow!("save servers.toml: {e}"))?;
-        Ok(())
+        Ok(credential_ref)
     }
 
     fn keychain_account(&self) -> String {
@@ -992,6 +1009,42 @@ impl SaveIntent {
 
 fn keychain_namespace(kind: BackendKind) -> String {
     format!("com.atlas.remote.{}", kind.scheme())
+}
+
+/// Store `secret` under (`namespace`, `account`); on macOS if the
+/// entry already exists with the same value, avoid re-writing (which
+/// would trigger the OS keychain-access dialog). Returns the
+/// deterministic credential handle in either case. If the existing
+/// entry has a different secret we still try to write and propagate
+/// the OS's error message on failure.
+fn store_or_recover(namespace: &str, account: &str, secret: &str) -> anyhow::Result<String> {
+    let handle_str = format!("{namespace}::{account}");
+
+    // Fast path — if we've stored this exact secret before, the OS
+    // keychain lookup returns it without prompting (the app has
+    // read-access from the initial `set_password` call, and read is
+    // silent even after app relaunch).
+    if let Ok(existing) = secrets::retrieve(&handle_str) {
+        if existing == secret {
+            return Ok(handle_str);
+        }
+    }
+
+    match secrets::store(namespace, account, secret) {
+        Ok(handle) => Ok(handle.into_string()),
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("already exists") || msg.contains("Duplicate") {
+                tracing::info!(
+                    namespace = %namespace,
+                    "keychain entry already exists; reusing existing credential_ref"
+                );
+                Ok(handle_str)
+            } else {
+                Err(anyhow::anyhow!("keychain store failed: {err}"))
+            }
+        }
+    }
 }
 
 fn now_unix() -> u64 {

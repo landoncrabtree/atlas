@@ -2133,6 +2133,36 @@ impl AppShell {
             .collect()
     }
 
+    /// Return each currently-selected entry in pane `id` as a full
+    /// [`Location`]. Local panes yield [`Location::Local`]; remote
+    /// panes yield [`Location::Remote`] with the pane's URI extended
+    /// by the entry's file name.
+    ///
+    /// The clipboard, drag-drop, and cross-pane copy dispatchers need
+    /// the *full* location — the raw `entry.path` from
+    /// [`Self::selected_paths`] is a filename fragment on remote
+    /// backends and cannot be reconstituted into a URI on its own.
+    #[must_use]
+    pub fn selected_locations(&self, id: PaneId) -> Vec<Location> {
+        let base = match self.pane_location_full(id) {
+            Some(loc) => loc,
+            None => return Vec::new(),
+        };
+        self.selected_paths(id)
+            .into_iter()
+            .map(|p| match &base {
+                Location::Local(_) => Location::Local(p),
+                Location::Remote(_, _) => {
+                    let name = p
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| p.to_string_lossy().into_owned());
+                    base.join(&name)
+                }
+            })
+            .collect()
+    }
+
     /// Return the path of the focused (cursor) entry in pane `id`, if any.
     ///
     /// Safe to call from any thread.
@@ -2998,11 +3028,7 @@ impl AppShell {
                 let Some((id, _)) = shell.context_menu_target() else {
                     return;
                 };
-                let locs: Vec<Location> = shell
-                    .selected_paths(id)
-                    .into_iter()
-                    .map(Location::local)
-                    .collect();
+                let locs = shell.selected_locations(id);
                 shell.clipboard.copy(locs);
             });
         }
@@ -3012,11 +3038,7 @@ impl AppShell {
                 let Some((id, _)) = shell.context_menu_target() else {
                     return;
                 };
-                let locs: Vec<Location> = shell
-                    .selected_paths(id)
-                    .into_iter()
-                    .map(Location::local)
-                    .collect();
+                let locs = shell.selected_locations(id);
                 shell.clipboard.cut(locs);
             });
         }

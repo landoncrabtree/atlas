@@ -33,7 +33,6 @@ use arc_swap::ArcSwap;
 use slint::ComponentHandle as _;
 use tracing_subscriber::EnvFilter;
 
-use atlas_core::Location;
 use atlas_keymap::{ActionId, Chord, Dispatcher, Key, Modifiers, NamedKey, PrettyPlatform};
 use atlas_ui::{
     actions::{ActionSink, UiAction},
@@ -1112,16 +1111,14 @@ fn build_dispatcher(
     {
         let s = Arc::clone(shell);
         d.register("fs::Copy", move || {
-            let paths = s.selected_paths(s.focused_pane_id());
-            let locs: Vec<Location> = paths.into_iter().map(Location::local).collect();
+            let locs = s.selected_locations(s.focused_pane_id());
             s.clipboard().copy(locs);
         });
     }
     {
         let s = Arc::clone(shell);
         d.register("fs::Cut", move || {
-            let paths = s.selected_paths(s.focused_pane_id());
-            let locs: Vec<Location> = paths.into_iter().map(Location::local).collect();
+            let locs = s.selected_locations(s.focused_pane_id());
             s.clipboard().cut(locs);
         });
     }

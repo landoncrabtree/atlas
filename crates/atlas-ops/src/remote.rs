@@ -49,8 +49,36 @@ use atlas_remote::{
     RemoteLocationViewModel, RemoteMode, StreamProgress, WalkEntry,
 };
 use crossbeam_channel::Sender;
+use once_cell::sync::Lazy;
+use parking_lot::RwLock;
+use std::collections::HashMap;
 
 use crate::op::{OpEvent, OpId, Operation, ProgressSnapshot, FLAG_CANCEL, FLAG_PAUSE};
+
+/// Process-wide credential cache keyed by (scheme, user, host, port).
+/// Populated by atlas-ui when the user successfully connects to a
+/// remote server; consumed by atlas-ops when it needs to re-open the
+/// same server for a copy / move / delete operation.
+///
+/// Bypasses the OS keychain for the current session so cross-backend
+/// paste and drag-drop work without repeated macOS access dialogs. The
+/// cache is intentionally in-memory only — persistence stays in
+/// `~/.config/atlas/servers.toml` + the keychain entry, populated
+/// separately by the connect controller.
+static SESSION_CREDENTIALS: Lazy<RwLock<HashMap<String, Credentials>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+/// Compute the cache key for a remote URI. Same host+user+port maps
+/// to the same credentials regardless of path.
+fn cred_key(uri: &atlas_core::RemoteUri) -> String {
+    format!(
+        "{}://{}@{}:{}",
+        uri.scheme,
+        uri.username.clone().unwrap_or_default(),
+        uri.host.clone().unwrap_or_default(),
+        uri.port.map(|p| p.to_string()).unwrap_or_default(),
+    )
+}
 
 /// One-time snapshot of counted items + bytes for a subtree.
 #[derive(Debug, Clone, Copy, Default)]
@@ -68,7 +96,29 @@ pub(crate) struct RemoteHandle {
     pub(crate) display: String,
 }
 
+/// Record credentials for a remote host so subsequent atlas-ops can
+/// reconnect without touching the OS keychain. Called from the connect
+/// controller once the initial handshake succeeds.
+pub fn cache_session_credentials(uri: &atlas_core::RemoteUri, credentials: Credentials) {
+    let key = cred_key(uri);
+    SESSION_CREDENTIALS.write().insert(key, credentials);
+}
+
+/// Drop the cached credentials for a remote host (e.g. after the user
+/// disconnects). Silently no-ops if no entry exists.
+pub fn clear_session_credentials(uri: &atlas_core::RemoteUri) {
+    let key = cred_key(uri);
+    SESSION_CREDENTIALS.write().remove(&key);
+}
+
 fn credentials_for(uri: &atlas_core::RemoteUri) -> Result<Credentials, AtlasError> {
+    // 1) Session-scoped in-memory cache — the fast path taken during
+    // interactive Cmd+C / Cmd+V without keychain prompts.
+    if let Some(cred) = SESSION_CREDENTIALS.read().get(&cred_key(uri)).cloned() {
+        return Ok(cred);
+    }
+
+    // 2) Persistent keychain lookup via saved credential_ref.
     if let Some(cref) = &uri.credential_ref {
         match atlas_remote::retrieve_secret(cref) {
             Ok(secret) => Ok(Credentials::Password(secret)),
@@ -793,5 +843,34 @@ mod tests {
         assert_eq!(parent_path("/foo"), "/");
         assert_eq!(parent_path("/foo/bar"), "/foo");
         assert_eq!(parent_path("/foo/bar/"), "/foo");
+    }
+
+    #[test]
+    fn credential_cache_round_trip() {
+        let uri = atlas_core::RemoteUri {
+            scheme: "sftp".into(),
+            host: Some("host.session-test.example".into()),
+            port: Some(2222),
+            path: "/only-cache-here".into(),
+            username: Some("alice".into()),
+            credential_ref: None,
+        };
+        // Path must be irrelevant to the key.
+        let uri_other_path = atlas_core::RemoteUri {
+            path: "/somewhere-else".into(),
+            ..uri.clone()
+        };
+        cache_session_credentials(&uri, Credentials::Password("hunter2".into()));
+
+        let got = credentials_for(&uri_other_path).unwrap();
+        match got {
+            Credentials::Password(s) => assert_eq!(s, "hunter2"),
+            other => panic!("expected cached password, got {other:?}"),
+        }
+
+        clear_session_credentials(&uri);
+        // No credential_ref, cache empty — falls back to Anonymous.
+        let cleared = credentials_for(&uri).unwrap();
+        assert!(matches!(cleared, Credentials::Anonymous));
     }
 }
