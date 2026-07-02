@@ -1694,6 +1694,67 @@ impl AppShell {
             .map(PaneState::active_location)
     }
 
+    /// Given a pane and an [`atlas_fs::Entry`] surfaced by that pane's
+    /// view model, produce the full [`Location`] of the entry. This is
+    /// the *canonical* location resolver — every navigation and open
+    /// path routes through it so remote panes never leak a bare
+    /// filename into a local-path fast path.
+    ///
+    /// Semantics:
+    ///
+    /// * For a [`Location::Local`] pane, the entry's `path` is
+    ///   already absolute (or absolute-in-scope for a walker); return
+    ///   [`Location::Local`] verbatim.
+    /// * For a [`Location::Remote`] pane, the entry's `path` is
+    ///   backend-relative (the SFTP/FTP/WebDAV/S3 listers surface it
+    ///   as either the file name or a listing-root-relative fragment).
+    ///   Join the entry's `name` onto the pane's current URI to
+    ///   reconstitute the full remote address.
+    ///
+    /// Returns `None` when the pane doesn't exist (should never
+    /// happen for a live callback, but the pane could have been
+    /// closed while the event was in flight).
+    #[must_use]
+    pub fn resolve_entry_location(
+        &self,
+        pane_id: PaneId,
+        entry: &atlas_fs::Entry,
+    ) -> Option<Location> {
+        let base = self.pane_location_full(pane_id)?;
+        Some(crate::remote::resolve_entry_location(&base, entry))
+    }
+
+    /// Return the focused entry (index + `Entry` value) for pane `id`.
+    ///
+    /// Higher-signal companion to [`Self::focused_entry`], which only
+    /// exposes the [`PathBuf`] and is therefore unsafe for remote
+    /// panes (bare filename).
+    #[must_use]
+    pub fn focused_entry_full(&self, id: PaneId) -> Option<atlas_fs::Entry> {
+        let focused_idx = self
+            .pane_cache
+            .read()
+            .get(&id)
+            .map(|c| c.details_focused_index)?;
+        if focused_idx < 0 {
+            return None;
+        }
+        let vm_guard = self.vms.read();
+        let vm = vm_guard.get(&id)?;
+        vm.entries().get(focused_idx as usize).cloned()
+    }
+
+    /// Return the entry at `index` in pane `id`, if any.
+    ///
+    /// Companion to [`Self::view_entry_at_index`] used by the
+    /// double-click handlers to bypass the focused-index cache.
+    #[must_use]
+    pub fn entry_at_index(&self, id: PaneId, index: usize) -> Option<atlas_fs::Entry> {
+        let vm_guard = self.vms.read();
+        let vm = vm_guard.get(&id)?;
+        vm.entries().get(index).cloned()
+    }
+
     /// Overwrite the preview cache configuration (called on startup
     /// and by the config hot-reload watcher).
     pub fn set_remote_preview_config(&self, config: atlas_config::RemotePreview) {
@@ -1705,6 +1766,106 @@ impl AppShell {
     #[must_use]
     pub fn preview_cache(&self) -> &crate::remote::PreviewCache {
         &self.preview
+    }
+
+    /// Navigate pane `id` to `dest`, transparently dispatching between
+    /// the local [`NavigationController`] and the remote mount path.
+    /// This is the single funnel every navigation (view-activation,
+    /// breadcrumb, address bar, go-up, back/forward) routes through so
+    /// remote panes never accidentally re-enter a local-only fast
+    /// path.
+    ///
+    /// * [`Location::Local`] → push to tab history and delegate to
+    ///   [`NavigationController::navigate_pane`], which opens an
+    ///   [`atlas_fs::InMemoryLocationViewModel`] on the worker pool.
+    /// * [`Location::Remote`] → push to tab history and open a fresh
+    ///   [`atlas_remote::RemoteLocationViewModel`]; on success mount
+    ///   it via [`Self::open_remote_location`]. Credentials come from
+    ///   the session cache / OS keychain — never prompts.
+    pub fn navigate_pane_to_location(self: &Arc<Self>, id: PaneId, dest: Location) {
+        match &dest {
+            Location::Local(path) => {
+                let target = path.clone();
+                {
+                    let mut ws = self.workspace.write();
+                    if let Some(p) = ws.pane_mut(id) {
+                        p.active_mut().navigate_to(dest.clone());
+                    }
+                }
+                self.navigation.navigate_pane(id, target);
+            }
+            Location::Remote(_, _) => {
+                self.mount_remote_navigation(id, dest);
+            }
+        }
+    }
+
+    /// Open a live [`atlas_remote::RemoteLocationViewModel`] at `dest`
+    /// and mount it onto pane `id`. Called by
+    /// [`Self::navigate_pane_to_location`] when the destination is
+    /// remote.
+    ///
+    /// This never prompts the user for credentials — it looks them up
+    /// via [`atlas_ops::credentials_for`], which consults the session
+    /// cache first and falls back to the persisted `credential_ref`
+    /// in the OS keychain. If nothing matches (e.g. the pane's URI
+    /// carries no keychain reference and the session has never
+    /// authenticated to this host), the open silently fails and
+    /// tracing surfaces the reason.
+    fn mount_remote_navigation(self: &Arc<Self>, id: PaneId, dest: Location) {
+        let (uri, kind) = match &dest {
+            Location::Remote(uri, kind) => (uri.clone(), *kind),
+            Location::Local(_) => return,
+        };
+        let credentials = match atlas_ops::credentials_for(&uri) {
+            Ok(c) => c,
+            Err(err) => {
+                tracing::warn!(%err, dest = %dest.display_path(), "remote nav: credential lookup failed");
+                return;
+            }
+        };
+        let opts = atlas_fs::OpenOptions::default();
+        let concrete_result = match kind {
+            atlas_core::BackendKind::Sftp => {
+                atlas_remote::RemoteLocationViewModel::open_live_sftp_with_options(
+                    uri.clone(),
+                    credentials,
+                    opts,
+                    atlas_remote::vm::sftp::SftpOptions {
+                        // The initial connect already ran through the
+                        // Prompt-based resolver on the connect modal;
+                        // subsequent nav paths use the pool-cached
+                        // connection or, on pool miss, the persisted
+                        // known-hosts entry. Never prompt from here.
+                        known_hosts_mode: atlas_remote::KnownHostsMode::Strict,
+                        resolver: None,
+                    },
+                )
+            }
+            _ => atlas_remote::RemoteLocationViewModel::open_live(
+                uri.clone(),
+                kind,
+                credentials,
+                opts,
+            ),
+        };
+        match concrete_result {
+            Ok(vm) => {
+                let vm_dyn: Arc<dyn LocationViewModel> = Arc::clone(&vm) as _;
+                // Push history *before* the mount so back/forward on
+                // remote panes work.
+                {
+                    let mut ws = self.workspace.write();
+                    if let Some(p) = ws.pane_mut(id) {
+                        p.active_mut().navigate_to(dest.clone());
+                    }
+                }
+                self.open_remote_location(id, dest, vm_dyn, Some(vm));
+            }
+            Err(err) => {
+                tracing::warn!(%err, dest = %dest.display_path(), "remote nav: open_live failed");
+            }
+        }
     }
 
     /// Set the view mode for pane `id` and push the change to the UI.
@@ -2003,22 +2164,19 @@ impl AppShell {
         self.navigation.navigate_pane(pane, loc);
     }
 
-    /// Navigate pane `id` to the parent of its current location.
+    /// Navigate pane `id` to the parent of its current location. Works
+    /// on both local and remote panes: `Location::parent` handles the
+    /// URI-vs-`PathBuf` split, and the resulting location is dispatched
+    /// through [`Self::navigate_pane_to_location`] so remote panes stay
+    /// remote.
     pub fn go_up(self: &Arc<Self>, id: PaneId) {
-        if let Some(parent) = self
-            .pane_location(id)
-            .as_deref()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
-        {
-            {
-                let mut ws = self.workspace.write();
-                if let Some(p) = ws.pane_mut(id) {
-                    p.active_mut().navigate_to(parent.clone());
-                }
-            }
-            self.navigation.navigate_pane(id, parent);
-        }
+        let Some(current) = self.pane_location_full(id) else {
+            return;
+        };
+        let Some(parent) = current.parent() else {
+            return;
+        };
+        self.navigate_pane_to_location(id, parent);
     }
 
     /// Open the focused entry in pane `id`: `cd` into directories, hand
@@ -2028,15 +2186,18 @@ impl AppShell {
     /// view's double-click callback so folder-vs-file dispatch is
     /// centralised.
     ///
-    /// Symlinks are followed for the dir check via `std::path::Path::is_dir`,
-    /// which resolves the target (broken symlinks fall through to
-    /// `open::that`, which handles the error).
+    /// On a [`Location::Remote`] pane the local-open fast path is
+    /// unsafe — the entry's `path` is a bare filename fragment and
+    /// `open::that` would receive `"pub"` instead of `sftp://…/pub`.
+    /// The remote branch dispatches through
+    /// [`Self::navigate_pane_to_location`] (directories) or
+    /// [`Self::preview`] (files).
     pub fn view_focused_entry(self: &Arc<Self>, id: PaneId) {
-        let Some(path) = self.focused_entry(id) else {
+        let Some(entry) = self.focused_entry_full(id) else {
             tracing::debug!(?id, "fs::View: no focused entry");
             return;
         };
-        self.view_path(id, path);
+        self.view_entry(id, entry);
     }
 
     /// Open a specific entry `index` within pane `id`, bypassing the
@@ -2047,24 +2208,125 @@ impl AppShell {
     /// has scheduled the model update but the Rust cache reads through
     /// the stale value.
     pub fn view_entry_at_index(self: &Arc<Self>, id: PaneId, index: usize) {
-        let path = {
-            let vms = self.vms.read();
-            vms.get(&id)
-                .and_then(|vm| vm.entries().get(index).map(|e| e.path.clone()))
-        };
-        let Some(path) = path else {
+        let Some(entry) = self.entry_at_index(id, index) else {
             tracing::debug!(?id, index, "fs::View: index out of range");
             return;
         };
-        self.view_path(id, path);
+        self.view_entry(id, entry);
     }
 
-    /// Common tail: cd into `path` if it's a directory, or hand it off
-    /// to the OS default handler otherwise. Public so views with
-    /// non-trivial index → path resolution (Tree, Miller) can push the
-    /// path directly instead of round-tripping through a focused-index
-    /// cache.
+    /// Common tail: given a resolved [`atlas_fs::Entry`] and its owning
+    /// pane, either navigate (directory) or hand off to the platform
+    /// / preview-cache open path (file). Public so views with
+    /// non-trivial index → entry resolution (Tree, Miller) can push
+    /// the entry directly.
+    ///
+    /// This is the *only* place where the local `path.is_dir()` fast
+    /// path is allowed — every other view-activation call site funnels
+    /// through here.
+    pub fn view_entry(self: &Arc<Self>, id: PaneId, entry: atlas_fs::Entry) {
+        let Some(dest) = self.resolve_entry_location(id, &entry) else {
+            tracing::warn!(?id, name = %entry.name, "fs::View: no pane location; skipping");
+            return;
+        };
+        let is_dir = match &entry.kind {
+            atlas_fs::EntryKind::Dir => true,
+            atlas_fs::EntryKind::Symlink { .. } => {
+                // Symlinks: on the local fast path we can follow via
+                // `path.is_dir()`; on remote we ask the backend to
+                // stat. For MVP treat symlinks as files on remote —
+                // the OS handler will refuse gracefully if the target
+                // is a directory, and the follow-up "resolve target
+                // via stat" is a nice-to-have.
+                match &dest {
+                    Location::Local(p) => p.is_dir(),
+                    Location::Remote(_, _) => false,
+                }
+            }
+            atlas_fs::EntryKind::File | atlas_fs::EntryKind::Other => false,
+        };
+        match (&dest, is_dir) {
+            (Location::Local(path), true) => {
+                let target = path.clone();
+                {
+                    let mut ws = self.workspace.write();
+                    if let Some(p) = ws.pane_mut(id) {
+                        p.active_mut().navigate_to(target.clone());
+                    }
+                }
+                self.navigation.navigate_pane(id, target);
+            }
+            (Location::Local(path), false) => {
+                tracing::info!(?path, "fs::View: opening file with OS default handler");
+                if let Err(err) = open::that(path) {
+                    tracing::warn!(?path, %err, "fs::View: OS open failed");
+                }
+            }
+            (Location::Remote(_, _), true) => {
+                tracing::info!(loc = %dest.display_path(), "fs::View: navigating into remote directory");
+                self.navigate_pane_to_location(id, dest);
+            }
+            (Location::Remote(uri, kind), false) => {
+                tracing::info!(
+                    loc = %dest.display_path(),
+                    size = entry.metadata.size,
+                    "fs::View: routing remote file through preview cache"
+                );
+                let outcome = self
+                    .preview
+                    .open_remote_file(uri.clone(), *kind, entry.clone());
+                match outcome {
+                    crate::remote::PreviewOutcome::CachedOpen(path) => {
+                        tracing::debug!(?path, "fs::View: preview cache hit");
+                    }
+                    crate::remote::PreviewOutcome::Downloading => {
+                        tracing::debug!("fs::View: preview download spawned");
+                    }
+                    crate::remote::PreviewOutcome::TooLarge { size, cap } => {
+                        tracing::warn!(
+                            size, cap,
+                            "fs::View: remote file too large to preview; copy to a local pane first"
+                        );
+                    }
+                    crate::remote::PreviewOutcome::OpenFailed(err) => {
+                        tracing::warn!(err, "fs::View: OS open failed on cached preview");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Compatibility shim for view-controllers that push a raw
+    /// [`PathBuf`] (Tree, Miller). Prefers the entry-based route:
+    /// the caller-supplied path is looked up in the pane's vm to
+    /// recover the full [`atlas_fs::Entry`]; missing entries fall
+    /// back to the legacy local-only path so behaviour on
+    /// [`Location::Local`] panes is unchanged.
     pub fn view_path(self: &Arc<Self>, id: PaneId, path: PathBuf) {
+        // Preferred route: find the entry by path in the pane's vm and
+        // re-use the entry-based dispatch.
+        let entry_by_path = {
+            let vms = self.vms.read();
+            vms.get(&id)
+                .and_then(|vm| vm.entries().into_iter().find(|e| e.path == path))
+        };
+        if let Some(entry) = entry_by_path {
+            self.view_entry(id, entry);
+            return;
+        }
+        // Fallback for local-only views (Tree/Miller may push a
+        // walker-discovered path that is not in the top-level vm).
+        // Remote panes have no meaningful `PathBuf` at this level so
+        // guard on the pane's location type before touching the local
+        // filesystem.
+        if matches!(self.pane_location_full(id), Some(Location::Remote(_, _))) {
+            tracing::warn!(
+                ?path,
+                ?id,
+                "view_path: remote pane cannot resolve raw PathBuf; ignoring"
+            );
+            return;
+        }
         if path.is_dir() {
             {
                 let mut ws = self.workspace.write();
@@ -2112,25 +2374,17 @@ impl AppShell {
     }
 
     /// Navigate pane `id` to the ancestor at breadcrumb `segment_index`.
+    ///
+    /// Semantics live in [`crate::remote::breadcrumb_target`]; this
+    /// method is the workspace-facing wrapper.
     pub fn breadcrumb_clicked(self: &Arc<Self>, id: PaneId, segment_index: usize) {
-        let Some(current) = self.pane_location(id) else {
+        let Some(current) = self.pane_location_full(id) else {
             return;
         };
-        let components: Vec<_> = current.components().collect();
-        if segment_index >= components.len() {
+        let Some(target) = crate::remote::breadcrumb_target(&current, segment_index) else {
             return;
-        }
-        let mut target = PathBuf::new();
-        for component in &components[..=segment_index] {
-            target.push(component);
-        }
-        {
-            let mut ws = self.workspace.write();
-            if let Some(p) = ws.pane_mut(id) {
-                p.active_mut().navigate_to(target.clone());
-            }
-        }
-        self.navigation.navigate_pane(id, target);
+        };
+        self.navigate_pane_to_location(id, target);
     }
 
     /// Navigate the focused pane backward in its active tab's history.
@@ -2788,12 +3042,19 @@ impl AppShell {
 
         {
             let shell = Arc::clone(self);
-            let nav = Arc::clone(&self.navigation);
             window.on_address_submitted(move |pane_id, path| {
                 let id = PaneId(pane_id as u32);
                 shell.set_focused_pane_id(id);
-                let expanded = expand_tilde(Path::new(path.as_str()));
-                nav.navigate_pane(id, expanded);
+                let pane_loc = shell.pane_location_full(id);
+                let Some(dest) =
+                    crate::remote::parse_address_input(path.as_str(), pane_loc.as_ref(), |p| {
+                        expand_tilde(p)
+                    })
+                else {
+                    tracing::warn!(input = path.as_str(), "address-bar: unparseable input");
+                    return;
+                };
+                shell.navigate_pane_to_location(id, dest);
                 shell.bump_refocus_tick();
             });
         }
