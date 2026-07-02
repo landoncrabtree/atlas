@@ -390,6 +390,7 @@ fn parse_multistatus(xml: &str) -> Vec<RemoteEntry> {
                             current_size
                         },
                         modified: current_modified,
+                        symlink_target: None,
                     });
                 }
                 in_response = false;

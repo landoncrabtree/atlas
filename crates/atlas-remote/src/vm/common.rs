@@ -63,12 +63,25 @@ pub struct RemoteEntry {
     /// Path returned by the backend, relative to the listing root.
     /// May or may not end with `/` — the caller uses `mode` to decide.
     pub path: String,
-    /// Coarse kind — file / dir / other.
+    /// Coarse kind — file / dir / other. For symlinks that could be
+    /// resolved by the backend (SFTP: via `SFTP_STAT` on the target),
+    /// this reflects the *target's* kind so navigation and preview
+    /// dispatch work transparently. When the target is unresolvable
+    /// (broken symlink) the mode falls back to
+    /// [`RemoteMode::Other`] and [`Self::symlink_target`] is populated
+    /// with the raw link target.
     pub mode: RemoteMode,
     /// Content length in bytes. Directories should report 0.
     pub size: u64,
     /// Modification timestamp when the backend surfaces one.
     pub modified: Option<SystemTime>,
+    /// For symbolic links: the raw link target string as reported by
+    /// the backend (SFTP `readlink`). `None` for regular files,
+    /// directories, and backends that don't have a symlink concept
+    /// (WebDAV, S3). Populated for both resolvable and broken
+    /// symlinks so callers can display the target and offer
+    /// "follow link" affordances.
+    pub symlink_target: Option<String>,
 }
 
 /// A boxed async reader used by [`crate::stream::stream_copy`].
@@ -109,6 +122,18 @@ pub trait BackendClient: Send + Sync {
 
     /// Delete the object at `path`.
     async fn delete(&self, path: &str) -> RemoteResult<()>;
+
+    /// Read the raw target of a symbolic link at `path`.
+    ///
+    /// Backends without a first-class symlink concept
+    /// (WebDAV, S3, plain FTP) return
+    /// [`RemoteErrorKind::Unsupported`](crate::error::RemoteErrorKind::Unsupported).
+    /// SFTP overrides this with `SSH_FXP_READLINK`.
+    async fn read_link(&self, _path: &str) -> RemoteResult<String> {
+        Err(RemoteError::unsupported(
+            "backend does not support symbolic links",
+        ))
+    }
 }
 
 /// AsyncRead built from an in-memory buffer. Used by

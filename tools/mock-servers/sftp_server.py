@@ -130,23 +130,32 @@ class RootedSFTPServer(paramiko.SFTPServerInterface):
 
     def _realpath(self, path: str) -> Path:
         # SFTP paths are always absolute-in-root. Strip leading slashes and
-        # rejoin against ROOT to prevent traversal.
+        # rejoin against ROOT to prevent traversal. We deliberately do NOT
+        # follow the *final* component's symlink so callers like
+        # ``lstat`` and ``readlink`` see the link itself; the parent
+        # chain is resolved so upstream directory symlinks work.
         rel = path.lstrip("/")
-        resolved = (self.ROOT / rel).resolve()
+        parent_rel, _, name = rel.rpartition("/")
+        parent = (self.ROOT / parent_rel).resolve() if parent_rel else self.ROOT.resolve()
         root_resolved = self.ROOT.resolve()
         try:
-            resolved.relative_to(root_resolved)
+            parent.relative_to(root_resolved)
         except ValueError as exc:
             raise PermissionError(f"path traversal denied: {path}") from exc
-        return resolved
+        return parent / name if name else parent
 
     def list_folder(self, path: str) -> object:
         try:
             real = self._realpath(path)
+            # `real` may itself be a symlink (e.g. `link_to_dir/`) — for
+            # listing we want to enumerate the *target's* children, so
+            # ``os.listdir`` follows symlinks automatically. For each
+            # child we use ``os.lstat`` so link-kind is preserved and
+            # our SFTP backend's `is_symlink()` branch fires.
             entries = []
             for name in os.listdir(real):
                 full = real / name
-                attr = paramiko.SFTPAttributes.from_stat(os.stat(full))
+                attr = paramiko.SFTPAttributes.from_stat(os.lstat(full))
                 attr.filename = name
                 entries.append(attr)
             return entries
@@ -162,6 +171,19 @@ class RootedSFTPServer(paramiko.SFTPServerInterface):
     def lstat(self, path: str) -> object:
         try:
             return paramiko.SFTPAttributes.from_stat(os.lstat(self._realpath(path)))
+        except OSError as exc:
+            return paramiko.SFTPServer.convert_errno(exc.errno or errno.EIO)
+
+    def readlink(self, path: str) -> object:
+        try:
+            return os.readlink(self._realpath(path))
+        except OSError as exc:
+            return paramiko.SFTPServer.convert_errno(exc.errno or errno.EIO)
+
+    def symlink(self, target_path: str, path: str) -> int:
+        try:
+            os.symlink(target_path, self._realpath(path))
+            return paramiko.SFTP_OK
         except OSError as exc:
             return paramiko.SFTPServer.convert_errno(exc.errno or errno.EIO)
 

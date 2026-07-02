@@ -2259,13 +2259,20 @@ impl AppShell {
         };
         let is_dir = match &entry.kind {
             atlas_fs::EntryKind::Dir => true,
-            atlas_fs::EntryKind::Symlink { .. } => {
-                // Symlinks: on the local fast path we can follow via
-                // `path.is_dir()`; on remote we ask the backend to
-                // stat. For MVP treat symlinks as files on remote —
-                // the OS handler will refuse gracefully if the target
-                // is a directory, and the follow-up "resolve target
-                // via stat" is a nice-to-have.
+            atlas_fs::EntryKind::Symlink { broken, .. } => {
+                // For resolvable symlinks the backend (SFTP) collapses
+                // the target's kind into the entry's mode — so we
+                // land in File / Dir above, and this arm is only hit
+                // for local symlinks and for *broken* remote ones.
+                // Local symlinks resolve via `path.is_dir()`; broken
+                // remote symlinks bail out with a `debug!` and return.
+                if *broken && matches!(&dest, Location::Remote(_, _)) {
+                    tracing::debug!(
+                        loc = %dest.display_path(),
+                        "fs::View: skipping broken remote symlink",
+                    );
+                    return;
+                }
                 match &dest {
                     Location::Local(p) => p.is_dir(),
                     Location::Remote(_, _) => false,

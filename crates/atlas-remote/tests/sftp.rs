@@ -267,6 +267,100 @@ async fn list_nested_uri_path_lists_children() -> Result<()> {
     Ok(())
 }
 
+/// Symlink-resolution regression: a symlink pointing at a directory
+/// on the SFTP server should surface as `EntryKind::Dir` (so
+/// `fs::View` transparently navigates into the target); a symlink
+/// pointing at a file should surface as `EntryKind::File`. A broken
+/// symlink surfaces as `EntryKind::Symlink { broken: true, .. }`.
+/// See `SftpBackend::list` in `crates/atlas-remote/src/vm/sftp.rs`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_resolves_symlink_target_kinds() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+
+    // Seed:
+    //   real_dir/           (dir)
+    //   real_file.txt       (file, 5 bytes)
+    //   link_to_dir → real_dir
+    //   link_to_file → real_file.txt
+    //   dangling → ./nowhere
+    let real_dir = server.root_dir().join("real_dir");
+    std::fs::create_dir(&real_dir)?;
+    std::fs::write(real_dir.join("inside.txt"), b"x")?;
+    std::fs::write(server.root_dir().join("real_file.txt"), b"hello")?;
+    std::os::unix::fs::symlink("real_dir", server.root_dir().join("link_to_dir"))?;
+    std::os::unix::fs::symlink("real_file.txt", server.root_dir().join("link_to_file"))?;
+    std::os::unix::fs::symlink("nowhere", server.root_dir().join("dangling"))?;
+
+    let vm = open(
+        &Location::Remote(server.uri("atlas"), BackendKind::Sftp),
+        Credentials::SshKey(server.client_key(), None),
+        OpenOptions::default(),
+    )?;
+    wait_loaded(&vm, Duration::from_secs(15))?;
+
+    let entries = vm.entries();
+    let by_name = |n: &str| entries.iter().find(|e| e.name == n).cloned();
+
+    let link_dir = by_name("link_to_dir").expect("link_to_dir listed");
+    assert!(
+        matches!(link_dir.kind, atlas_fs::EntryKind::Dir),
+        "link_to_dir should surface as Dir (target follows), got {:?}",
+        link_dir.kind,
+    );
+
+    let link_file = by_name("link_to_file").expect("link_to_file listed");
+    assert!(
+        matches!(link_file.kind, atlas_fs::EntryKind::File),
+        "link_to_file should surface as File, got {:?}",
+        link_file.kind,
+    );
+    assert_eq!(link_file.metadata.size, 5, "target size propagated");
+
+    let dangling = by_name("dangling").expect("dangling listed");
+    match &dangling.kind {
+        atlas_fs::EntryKind::Symlink { broken, target } => {
+            assert!(*broken, "dangling symlink should be broken");
+            assert_eq!(
+                target.as_ref().and_then(|p| p.to_str()),
+                Some("nowhere"),
+                "raw target string preserved",
+            );
+        }
+        other => panic!("dangling should be Symlink{{broken:true}}, got {other:?}"),
+    }
+    Ok(())
+}
+
+/// `follow_symlink` on the VM resolves relative-and-absolute link
+/// targets and returns a fully-formed [`Location::Remote`] pointing
+/// at the resolved path. See `RemoteLocationViewModel::follow_symlink`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn follow_symlink_returns_target_location() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+
+    std::fs::write(server.root_dir().join("real.txt"), b"payload")?;
+    // Relative link at root.
+    std::os::unix::fs::symlink("real.txt", server.root_dir().join("link.txt"))?;
+
+    let vm = open_vm(
+        server.uri("atlas"),
+        Credentials::SshKey(server.client_key(), None),
+    )?;
+
+    let loc = vm.follow_symlink("link.txt").await?;
+    match loc {
+        Location::Remote(uri, kind) => {
+            assert_eq!(kind, BackendKind::Sftp);
+            // Relative link at root resolves against parent "/".
+            assert_eq!(uri.path, "/real.txt");
+        }
+        Location::Local(p) => panic!("expected Remote, got Local({p:?})"),
+    }
+    Ok(())
+}
+
 // Import unused ViewModelEvent from atlas_fs to give the compiler a
 // visible reference (used indirectly through subscribe() in the smoke
 // test above).

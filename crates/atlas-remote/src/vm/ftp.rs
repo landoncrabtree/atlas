@@ -323,6 +323,7 @@ fn parse_mlsd(rows: &[String], listing_root: &str) -> Vec<RemoteEntry> {
             mode,
             size,
             modified,
+            symlink_target: None,
         });
     }
     out
@@ -360,6 +361,7 @@ fn parse_list(rows: &[String], listing_root: &str) -> Vec<RemoteEntry> {
             mode,
             size,
             modified: None,
+            symlink_target: None,
         });
     }
     out

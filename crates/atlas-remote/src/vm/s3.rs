@@ -185,6 +185,7 @@ impl BackendClient for S3Backend {
                 mode,
                 size: obj.size as u64,
                 modified: systime_from_utc(obj.last_modified),
+                symlink_target: None,
             });
         }
 
@@ -194,6 +195,7 @@ impl BackendClient for S3Backend {
                 mode: RemoteMode::Dir,
                 size: 0,
                 modified: None,
+                symlink_target: None,
             });
         }
 

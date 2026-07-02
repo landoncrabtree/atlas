@@ -467,21 +467,58 @@ impl BackendClient for SftpBackend {
         for entry in read {
             let name = entry.file_name();
             let attrs = entry.metadata();
-            let mode = ftype_to_mode(attrs.file_type());
-            let size = attrs.size.unwrap_or(0);
-            let modified = attrs
-                .mtime
-                .map(|secs| UNIX_EPOCH + Duration::from_secs(u64::from(secs)));
             let child_path = if listing_root.is_empty() {
                 name.clone()
             } else {
                 format!("{listing_root}/{name}")
+            };
+            // For symlinks: read the target string and stat-follow to
+            // resolve the target's kind + size. This makes the entry
+            // dispatch transparently — a symlink pointing to a
+            // directory shows up as `RemoteMode::Dir`, one pointing
+            // to a file shows up as `RemoteMode::File`, and broken
+            // symlinks fall through as `RemoteMode::Other` with the
+            // raw target populated.
+            let (mode, size, modified, symlink_target) = if attrs.file_type().is_symlink() {
+                let raw_target = live.sftp.read_link(child_path.clone()).await.ok();
+                match live.sftp.metadata(child_path.clone()).await {
+                    Ok(target_attrs) => {
+                        let target_mode = if target_attrs.is_dir() {
+                            RemoteMode::Dir
+                        } else if target_attrs.is_regular() {
+                            RemoteMode::File
+                        } else {
+                            RemoteMode::Other
+                        };
+                        let target_size = target_attrs.size.unwrap_or(0);
+                        let target_modified = target_attrs
+                            .mtime
+                            .map(|secs| UNIX_EPOCH + Duration::from_secs(u64::from(secs)));
+                        (target_mode, target_size, target_modified, raw_target)
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            path = %child_path,
+                            %err,
+                            "sftp list: broken symlink, keeping mode=Other",
+                        );
+                        (RemoteMode::Other, 0, None, raw_target)
+                    }
+                }
+            } else {
+                let mode = ftype_to_mode(attrs.file_type());
+                let size = attrs.size.unwrap_or(0);
+                let modified = attrs
+                    .mtime
+                    .map(|secs| UNIX_EPOCH + Duration::from_secs(u64::from(secs)));
+                (mode, size, modified, None)
             };
             out.push(RemoteEntry {
                 path: child_path,
                 mode,
                 size,
                 modified,
+                symlink_target,
             });
         }
         Ok(out)
@@ -552,5 +589,11 @@ impl BackendClient for SftpBackend {
                 Err(map_sftp_err(e))
             }
         }
+    }
+
+    async fn read_link(&self, path: &str) -> RemoteResult<String> {
+        let abs = self.abs(path);
+        let live = self.live().await?;
+        live.sftp.read_link(&abs).await.map_err(map_sftp_err)
     }
 }
