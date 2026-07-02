@@ -391,6 +391,9 @@ export component AtlasWindow inherits Window {
     callback ctx-trash();
     callback ctx-reveal();
     callback ctx-get-info();
+    callback ctx-copy-remote-uri();
+    callback ctx-copy-shell-path();
+    callback ctx-reveal-in-new-pane();
 
     /// Cancel the operation at `index` in `ops-rows`.
     callback ops-cancel(int);
@@ -646,10 +649,39 @@ export component AtlasWindow inherits Window {
     in property <int> context-menu-tick: 0;
     in property <length> context-menu-x: 0px;
     in property <length> context-menu-y: 0px;
-    /// Set by Rust before bumping `context-menu-tick` — controls whether
-    /// clipboard "paste" appears (only when the clipboard is non-empty)
-    /// and reveal-in-OS (only on desktop platforms). MVP: always shown.
+    /// Legacy visibility gates. `context-menu-has-clipboard` predates the
+    /// full capability model below but is still consulted for the Paste
+    /// item, which only depends on clipboard state (never on the target).
+    /// The `context-menu-can-*` flags are the current capability system:
+    /// pushed from `AppShell::open_context_menu` before the menu opens,
+    /// gated 1:1 against MenuItem visibility via `if …` blocks. To add a
+    /// new item, add a flag here, mirror it in
+    /// `crates/atlas-ui/src/context/capabilities.rs`, push it from
+    /// `AppShell::open_context_menu`, and add a matching
+    /// `if root.context-menu-can-<flag>: MenuItem { … }` below.
     in property <bool> context-menu-has-clipboard: true;
+    in property <bool> context-menu-can-open: true;
+    in property <bool> context-menu-can-open-with: true;
+    in property <bool> context-menu-can-copy: true;
+    in property <bool> context-menu-can-cut: true;
+    in property <bool> context-menu-can-paste: true;
+    in property <bool> context-menu-can-rename: true;
+    in property <bool> context-menu-can-trash: true;
+    in property <bool> context-menu-can-duplicate: true;
+    in property <bool> context-menu-can-show-in-native-manager: true;
+    in property <bool> context-menu-can-copy-remote-uri: false;
+    in property <bool> context-menu-can-copy-shell-path: true;
+    in property <bool> context-menu-can-reveal-in-new-pane: true;
+    in property <bool> context-menu-can-get-info: true;
+    /// OS-specific label for the "reveal in native file manager" item.
+    /// "Show in Finder" (macOS), "Show in Explorer" (Windows), "Show in
+    /// Files" (Linux). Pushed by Rust in `AppShell::open_context_menu`
+    /// via `#[cfg(target_os = …)]`.
+    in property <string> context-menu-native-manager-label: "⌕  Show in Finder";
+    /// "Move to Trash" (local) / "Delete permanently" (remote). Pushed
+    /// from Rust when the target changes: remote backends have no OS
+    /// trash concept, so we surface the destructive nature clearly.
+    in property <string> context-menu-trash-label: "⌫  Move to Trash";
 
     context-menu := ContextMenuArea {
         // Mirror the root tick into a local property so `changed` can
@@ -659,48 +691,63 @@ export component AtlasWindow inherits Window {
         changed tick => {
             self.show({ x: root.context-menu-x, y: root.context-menu-y });
         }
+        // MenuItem in Slint 1.17 has no `visible` property, so we gate
+        // each item via a surrounding `if …: MenuItem { … }` block —
+        // the item is only instantiated when the capability is true.
         Menu {
-            MenuItem {
+            if root.context-menu-can-open: MenuItem {
                 title: "▸  Open";
                 activated => { root.ctx-open(); }
             }
-            MenuItem {
+            if root.context-menu-can-open-with: MenuItem {
                 title: "⇱  Open With…";
                 activated => { root.ctx-open-with(); }
             }
             MenuSeparator {}
-            MenuItem {
+            if root.context-menu-can-copy: MenuItem {
                 title: "⌘  Copy";
                 activated => { root.ctx-copy(); }
             }
-            MenuItem {
+            if root.context-menu-can-cut: MenuItem {
                 title: "✂  Cut";
                 activated => { root.ctx-cut(); }
             }
-            MenuItem {
+            if root.context-menu-can-paste: MenuItem {
                 title: "⎘  Paste";
                 enabled: root.context-menu-has-clipboard;
                 activated => { root.ctx-paste(); }
             }
-            MenuItem {
+            if root.context-menu-can-duplicate: MenuItem {
                 title: "⧉  Duplicate";
                 activated => { root.ctx-duplicate(); }
             }
             MenuSeparator {}
-            MenuItem {
+            if root.context-menu-can-rename: MenuItem {
                 title: "✎  Rename";
                 activated => { root.ctx-rename(); }
             }
-            MenuItem {
-                title: "⌫  Move to Trash";
+            if root.context-menu-can-trash: MenuItem {
+                title: root.context-menu-trash-label;
                 activated => { root.ctx-trash(); }
             }
             MenuSeparator {}
-            MenuItem {
-                title: "⌕  Show in Finder";
+            if root.context-menu-can-copy-shell-path: MenuItem {
+                title: "⧗  Copy Path";
+                activated => { root.ctx-copy-shell-path(); }
+            }
+            if root.context-menu-can-copy-remote-uri: MenuItem {
+                title: "🔗  Copy Remote URI";
+                activated => { root.ctx-copy-remote-uri(); }
+            }
+            if root.context-menu-can-reveal-in-new-pane: MenuItem {
+                title: "⇱  Reveal in New Pane";
+                activated => { root.ctx-reveal-in-new-pane(); }
+            }
+            if root.context-menu-can-show-in-native-manager: MenuItem {
+                title: root.context-menu-native-manager-label;
                 activated => { root.ctx-reveal(); }
             }
-            MenuItem {
+            if root.context-menu-can-get-info: MenuItem {
                 title: "ⓘ  Get Info";
                 activated => { root.ctx-get-info(); }
             }

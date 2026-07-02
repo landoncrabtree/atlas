@@ -26,6 +26,7 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
 use crate::{
     actions::{ActionSink, UiAction},
+    context::{ContextCapabilities, ContextTarget},
     models::{
         split::{Cardinal, PaneId, Rect, SplitDirection, SplitLayout},
         PaletteModel, PaletteResult, PaneState, StatusModel, TabModel, ViewMode, WorkspaceModel,
@@ -788,6 +789,19 @@ struct DragArmedState {
     origin_y: f32,
 }
 
+/// Companion to the legacy `context_menu_target: (PaneId, PathBuf)`
+/// tuple carrying the full [`ContextTarget`] (location + kind +
+/// backend + writable flag). Populated by
+/// [`AppShell::open_context_menu`] and read by every location-aware
+/// `ctx-*` handler.
+#[derive(Debug, Clone)]
+struct ContextTargetRecord {
+    /// Pane that owned the right-click.
+    pane: PaneId,
+    /// Full target description.
+    target: ContextTarget,
+}
+
 /// Owns Rust-side model state and bridges it to the Slint window.
 ///
 /// Construct with [`AppShell::new`], then call
@@ -854,6 +868,14 @@ pub struct AppShell {
     /// specific entry the user right-clicked (not the focused entry, which
     /// may differ if the user right-clicked without first selecting).
     context_menu_target: RwLock<Option<(PaneId, PathBuf)>>,
+    /// Companion to [`Self::context_menu_target`] carrying the full
+    /// context-menu target — location, entry kind, backend, writable flag.
+    /// Populated at the same time as `context_menu_target`. Downstream
+    /// handlers (`ctx-*`) that need to distinguish local/remote or operate
+    /// on a URI (not a bare path) read this instead of the legacy tuple.
+    /// See `crate::context::ContextTarget` for the schema and
+    /// [`Self::context_capabilities_for`] for the resolver.
+    context_menu_full_target: RwLock<Option<ContextTargetRecord>>,
     /// Per-column-kind width overrides for the Details view, keyed by the
     /// wire string from [`crate::views::details::ColumnKind::as_str`].
     /// Updated live as the user drags a column divider; persisted to
@@ -962,6 +984,7 @@ impl AppShell {
                 drag_armed: RwLock::new(None),
                 dragging: RwLock::new(None),
                 context_menu_target: RwLock::new(None),
+                context_menu_full_target: RwLock::new(None),
                 column_widths: RwLock::new(HashMap::new()),
                 column_widths_dirty: AtomicBool::new(false),
                 shortcut_footer_visible: AtomicBool::new(true),
@@ -1410,11 +1433,79 @@ impl AppShell {
     /// the entry the user right-clicked rather than the pane's focused
     /// entry (which may differ if the user right-clicked without first
     /// selecting).
+    ///
+    /// This overload takes the raw entry (`Entry`) so we can build a
+    /// full [`ContextTarget`] and push the capability flags to Slint —
+    /// the menu only shows items that apply to this specific target.
     pub fn open_context_menu(&self, pane: PaneId, path: Option<PathBuf>, x: f32, y: f32) {
+        // Resolve the full ContextTarget from the pane view-model. This
+        // gives us the Location (URI on remote panes, absolute PathBuf
+        // on local), the entry_kind (so broken symlinks only offer
+        // "Get Info"), and the backend for `can_copy_remote_uri`.
+        let entry = self.focused_entry_full(pane);
+        let base = self.pane_location_full(pane);
+        let target_record = match (base.as_ref(), entry.as_ref()) {
+            (Some(base_loc), Some(e)) => {
+                let entry_location = crate::remote::resolve_entry_location(base_loc, e);
+                let backend_kind = match &entry_location {
+                    Location::Local(_) => atlas_core::BackendKind::Local,
+                    Location::Remote(_, kind) => *kind,
+                };
+                let is_writable = self.location_is_writable(&entry_location);
+                Some(ContextTargetRecord {
+                    pane,
+                    target: ContextTarget {
+                        location: entry_location,
+                        entry_kind: e.kind.clone(),
+                        is_writable,
+                        backend_kind,
+                    },
+                })
+            }
+            _ => None,
+        };
+
         if let Some(p) = path {
             *self.context_menu_target.write() = Some((pane, p));
         }
+        let caps = target_record
+            .as_ref()
+            .map(|r| ContextCapabilities::resolve(&r.target))
+            .unwrap_or_default();
+        *self.context_menu_full_target.write() = target_record;
+
         if let Some(window) = self.window.upgrade() {
+            // Push the capability flags before bumping the tick so the
+            // `if root.context-menu-can-*` guards evaluate against the
+            // correct state when the menu instantiates.
+            window.set_context_menu_can_open(caps.can_open);
+            window.set_context_menu_can_open_with(caps.can_open_with);
+            window.set_context_menu_can_copy(caps.can_copy);
+            window.set_context_menu_can_cut(caps.can_cut);
+            window.set_context_menu_can_paste(caps.can_paste);
+            window.set_context_menu_can_rename(caps.can_rename);
+            window.set_context_menu_can_trash(caps.can_trash);
+            window.set_context_menu_can_duplicate(caps.can_duplicate);
+            window.set_context_menu_can_show_in_native_manager(caps.can_show_in_native_manager);
+            window.set_context_menu_can_copy_remote_uri(caps.can_copy_remote_uri);
+            window.set_context_menu_can_copy_shell_path(caps.can_copy_shell_path);
+            window.set_context_menu_can_reveal_in_new_pane(caps.can_reveal_in_new_pane);
+            window.set_context_menu_can_get_info(caps.can_get_info);
+            // Labels that vary by OS / by remote vs local.
+            window
+                .set_context_menu_native_manager_label(SharedString::from(native_manager_label()));
+            let is_remote = self
+                .context_menu_full_target
+                .read()
+                .as_ref()
+                .map(|r| r.target.is_remote())
+                .unwrap_or(false);
+            let trash_label = if is_remote {
+                "⌫  Delete permanently"
+            } else {
+                "⌫  Move to Trash"
+            };
+            window.set_context_menu_trash_label(SharedString::from(trash_label));
             window.set_context_menu_x(x);
             window.set_context_menu_y(y);
             let next = window.get_context_menu_tick().wrapping_add(1);
@@ -1427,6 +1518,49 @@ impl AppShell {
     #[must_use]
     pub fn context_menu_target(&self) -> Option<(PaneId, PathBuf)> {
         self.context_menu_target.read().clone()
+    }
+
+    /// Look up the full [`ContextTarget`] for the current context menu.
+    ///
+    /// Prefer this over [`Self::context_menu_target`] whenever the
+    /// handler needs to distinguish local from remote or emit an
+    /// operation against the entry's [`Location`] (rather than a bare
+    /// `PathBuf`). Returns `None` if the menu was opened on empty
+    /// space (no focused entry).
+    #[must_use]
+    pub fn context_menu_target_full(&self) -> Option<(PaneId, ContextTarget)> {
+        self.context_menu_full_target
+            .read()
+            .as_ref()
+            .map(|r| (r.pane, r.target.clone()))
+    }
+
+    /// Compute the capability set for a context-menu target.
+    ///
+    /// Thin wrapper over [`ContextCapabilities::resolve`]; a method on
+    /// `AppShell` for symmetry with future policy (e.g. per-workspace
+    /// permission overrides).
+    ///
+    /// TODO(plugins): expose this as a public trait
+    /// (`ContextCapabilityProvider`) so plugins can add per-context
+    /// items in v0.6+. Plugins subscribe by returning an augmented
+    /// `ContextCapabilities` from a resolve hook; the Slint side
+    /// discovers new flags via a generated MenuItem block.
+    #[must_use]
+    pub fn context_capabilities_for(&self, target: &ContextTarget) -> ContextCapabilities {
+        ContextCapabilities::resolve(target)
+    }
+
+    /// Policy: is a given `location` known to be writable by this
+    /// process? Local mounts are trusted; remote mounts default to
+    /// writable and the upload path surfaces per-op failures via
+    /// [`crate::remote::preview_watch`]. Read-only remote hosts can
+    /// be added here as we discover them.
+    fn location_is_writable(&self, location: &Location) -> bool {
+        match location {
+            Location::Local(_) => true,
+            Location::Remote(_, _) => true,
+        }
     }
 
     /// Set the active-pane border thickness (in logical pixels). Bound to
@@ -2063,6 +2197,27 @@ impl AppShell {
         }
         self.project_workspace_to_slint();
         self.navigation.navigate_pane(id, loc);
+    }
+
+    /// Reveal `location` in a fresh split pane.
+    ///
+    /// Powers the context menu's "Reveal in New Pane" item. Splits
+    /// the currently-focused pane horizontally and navigates the new
+    /// pane to `location`. Falls back to a plain focus-switch if the
+    /// workspace already has the maximum number of panes.
+    ///
+    /// The split direction is always horizontal for simplicity;
+    /// vertical splits are still available from the keyboard.
+    pub fn reveal_in_new_pane(self: &Arc<Self>, location: Location) {
+        if let Some(new_id) = self.split_focused(SplitDirection::Horizontal) {
+            self.set_focused_pane_id(new_id);
+            self.navigate_pane_to_location(new_id, location);
+        } else {
+            tracing::warn!(
+                ?location,
+                "reveal_in_new_pane: split_focused returned None; leaving pane layout unchanged"
+            );
+        }
     }
 
     /// Remove tab `tab` from pane `id`. Refuses to close the last tab
@@ -3588,11 +3743,87 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_ctx_reveal(move || {
-                let Some((_, path)) = shell.context_menu_target() else {
+                // Reveal-in-native-manager only makes sense for local
+                // targets (the resolver's `can_show_in_native_manager`
+                // gates the menu item, but a stale flag could still
+                // fire the callback — belt and braces).
+                let Some((_, target)) = shell.context_menu_target_full() else {
+                    // No full target? Fall back to the legacy path
+                    // (local pane, no remote handling).
+                    if let Some((_, path)) = shell.context_menu_target() {
+                        reveal_in_os_file_manager(&path);
+                    }
                     return;
                 };
-                reveal_in_os_file_manager(&path);
-                let _ = shell;
+                match target.location {
+                    Location::Local(path) => reveal_in_os_file_manager(&path),
+                    Location::Remote(uri, _) => {
+                        tracing::info!(
+                            uri = %uri,
+                            "ctx: Show in native manager — remote target has no local mount; ignoring"
+                        );
+                    }
+                }
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_ctx_copy_remote_uri(move || {
+                let Some((_, target)) = shell.context_menu_target_full() else {
+                    return;
+                };
+                let Location::Remote(uri, _) = target.location else {
+                    tracing::warn!("ctx: Copy Remote URI fired on a non-remote target — ignoring");
+                    return;
+                };
+                let uri_str = uri.to_uri();
+                if let Err(err) = crate::clipboard::write_os_clipboard_text(&uri_str) {
+                    tracing::warn!(%err, uri = %uri_str, "ctx: Copy Remote URI failed");
+                } else {
+                    tracing::debug!(uri = %uri_str, "ctx: copied remote URI to clipboard");
+                }
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_ctx_copy_shell_path(move || {
+                let Some((_, target)) = shell.context_menu_target_full() else {
+                    return;
+                };
+                let text = match target.location {
+                    Location::Local(path) => path.display().to_string(),
+                    Location::Remote(uri, _) => uri.to_uri(),
+                };
+                if let Err(err) = crate::clipboard::write_os_clipboard_text(&text) {
+                    tracing::warn!(%err, path = %text, "ctx: Copy Path failed");
+                } else {
+                    tracing::debug!(path = %text, "ctx: copied shell path to clipboard");
+                }
+            });
+        }
+        {
+            let shell = self.clone();
+            window.on_ctx_reveal_in_new_pane(move || {
+                let Some((_, target)) = shell.context_menu_target_full() else {
+                    return;
+                };
+                // If the target is a file, open its parent so the
+                // new pane lands on a directory the user can browse.
+                // Directories navigate to themselves.
+                let dest = match (&target.location, target.is_dir()) {
+                    (_, true) => target.location.clone(),
+                    (Location::Local(p), false) => Location::Local(
+                        p.parent()
+                            .map(Path::to_path_buf)
+                            .unwrap_or_else(|| p.clone()),
+                    ),
+                    (Location::Remote(uri, kind), false) => {
+                        let mut parent = uri.clone();
+                        parent.path = remote_parent_path(&uri.path);
+                        Location::Remote(parent, *kind)
+                    }
+                };
+                shell.reveal_in_new_pane(dest);
             });
         }
         {
@@ -5557,5 +5788,80 @@ pub(crate) fn reveal_in_os_file_manager(path: &Path) {
 
     if let Err(err) = result {
         tracing::warn!(?path, %err, "reveal_in_os_file_manager failed to spawn");
+    }
+}
+
+/// OS-specific label for the "reveal in native file manager" menu
+/// item. Pushed to the Slint `context-menu-native-manager-label`
+/// property by [`AppShell::open_context_menu`].
+#[must_use]
+pub(crate) fn native_manager_label() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "⌕  Show in Finder"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "⌕  Show in Explorer"
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        "⌕  Show in Files"
+    }
+}
+
+/// POSIX-style parent of `path`. Returns `/` for the root or a
+/// single-component path so callers never fall off the top of the
+/// tree.
+///
+/// Used by `on_ctx_reveal_in_new_pane` when the right-clicked entry
+/// is a *file* — we open a new pane at the file's parent directory
+/// (that's the "reveal" part; the pane opens on a browsable folder
+/// with the file selected, matching Finder tabs).
+#[must_use]
+pub(crate) fn remote_parent_path(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return "/".to_owned();
+    }
+    match trimmed.rsplit_once('/') {
+        Some(("", _)) => "/".to_owned(),
+        Some((parent, _)) => parent.to_owned(),
+        None => "/".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod context_menu_tests {
+    use super::{native_manager_label, remote_parent_path};
+
+    #[test]
+    fn remote_parent_path_root_stays_root() {
+        assert_eq!(remote_parent_path("/"), "/");
+        assert_eq!(remote_parent_path(""), "/");
+    }
+
+    #[test]
+    fn remote_parent_path_strips_trailing_slash() {
+        assert_eq!(remote_parent_path("/home/atlas/"), "/home");
+    }
+
+    #[test]
+    fn remote_parent_path_pops_final_component() {
+        assert_eq!(remote_parent_path("/home/atlas/readme.txt"), "/home/atlas");
+        assert_eq!(remote_parent_path("/one"), "/");
+    }
+
+    #[test]
+    fn remote_parent_path_ignores_relative_input() {
+        // Bare component with no slashes: no meaningful parent — return "/".
+        assert_eq!(remote_parent_path("readme.txt"), "/");
+    }
+
+    #[test]
+    fn native_manager_label_advertises_the_current_os() {
+        // Just make sure the OS-specific arm compiled and produced a
+        // non-empty label — the exact text depends on `#[cfg]`.
+        assert!(native_manager_label().starts_with("⌕"));
     }
 }

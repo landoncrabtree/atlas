@@ -12,6 +12,7 @@ slint::include_modules!();
 
 pub mod actions;
 pub mod clipboard;
+pub mod context;
 pub mod focus;
 pub mod models;
 pub mod navigation;

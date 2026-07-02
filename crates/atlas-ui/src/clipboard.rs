@@ -196,6 +196,23 @@ pub fn encode_clipboard(locations: &[Location]) -> String {
     lines.join("\n")
 }
 
+/// Push a plain-text payload to the OS clipboard.
+///
+/// Used by the context menu's "Copy Path" / "Copy Remote URI" items
+/// where the payload is a single string rather than the multi-URI
+/// format produced by [`encode_clipboard`]. Opens a fresh
+/// `arboard::Clipboard` handle per call — the existing
+/// [`ClipboardController`] guards its handle behind a mutex for the
+/// copy/cut/paste flow, but this function is stateless so it can be
+/// called from any thread (typically the Slint event-loop thread).
+///
+/// Returns the underlying [`arboard::Error`] on failure so callers
+/// can log or surface it.
+pub fn write_os_clipboard_text(text: &str) -> Result<(), arboard::Error> {
+    let mut cb = arboard::Clipboard::new()?;
+    cb.set_text(text.to_owned())
+}
+
 /// Parse clipboard text back into a de-duplicated list of
 /// [`Location`]s.
 pub fn decode_clipboard(text: &str) -> Vec<Location> {
