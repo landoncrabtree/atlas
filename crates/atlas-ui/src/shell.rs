@@ -1929,12 +1929,18 @@ impl AppShell {
                     credentials,
                     opts,
                     atlas_remote::vm::sftp::SftpOptions {
-                        // The initial connect already ran through the
-                        // Prompt-based resolver on the connect modal;
-                        // subsequent nav paths use the pool-cached
-                        // connection or, on pool miss, the persisted
-                        // known-hosts entry. Never prompt from here.
-                        known_hosts_mode: atlas_remote::KnownHostsMode::Strict,
+                        // Honor the process-wide default installed at
+                        // startup (or by the initial connect flow when
+                        // the user picked "Trust always"). Hard-coding
+                        // `Strict` here broke the user's Trust-always
+                        // choice for deeper navigation on the same
+                        // host. `Prompt` (the production default) is
+                        // still fine because the pool-cached SSH
+                        // session is what actually serves this call —
+                        // the KnownHostsMode only matters on pool
+                        // misses, and in that rare case we want the
+                        // same trust policy the user picked upstream.
+                        known_hosts_mode: atlas_remote::vm::sftp::default_known_hosts_mode(),
                         resolver: None,
                     },
                 )

@@ -361,6 +361,41 @@ async fn follow_symlink_returns_target_location() -> Result<()> {
     Ok(())
 }
 
+/// Regression for Phase 2.7's "Trust always doesn't stick on deeper
+/// nav" bug: with an `AutoTrust` default installed at process level
+/// (mirroring what the connect controller does when the user picks
+/// "Trust always"), `SftpBackend::new` — the code path invoked by
+/// `mount_remote_navigation` on pool-miss — must consult
+/// `default_known_hosts_mode()` instead of hard-coding `Strict`.
+/// This test flows a *fresh* URL (subdir) that would otherwise
+/// require a host-key prompt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mount_deeper_path_honours_autotrust_default() -> Result<()> {
+    crate::skip_if_no_python!();
+    // The mock installs `AutoTrust` via `install_sftp_test_env`.
+    let server = MockSftpServer::start_anon()?;
+
+    // Seed <root>/sub/file.txt.
+    std::fs::create_dir(server.root_dir().join("sub"))?;
+    std::fs::write(server.root_dir().join("sub").join("file.txt"), b"x")?;
+
+    // Simulate a deeper mount: open at `/sub` (as
+    // `mount_remote_navigation` does on the pool-miss code path).
+    // With `Strict` this would fail because the mock's ephemeral
+    // host key is never persisted; with `AutoTrust` it succeeds.
+    let mut uri = server.uri("atlas");
+    uri.path = "/sub".into();
+    let vm = open(
+        &Location::Remote(uri, BackendKind::Sftp),
+        Credentials::SshKey(server.client_key(), None),
+        OpenOptions::default(),
+    )?;
+    wait_loaded(&vm, Duration::from_secs(15))?;
+    let names: Vec<String> = vm.entries().iter().map(|e| e.name.clone()).collect();
+    assert!(names.iter().any(|n| n == "file.txt"), "found: {names:?}");
+    Ok(())
+}
+
 // Import unused ViewModelEvent from atlas_fs to give the compiler a
 // visible reference (used indirectly through subscribe() in the smoke
 // test above).

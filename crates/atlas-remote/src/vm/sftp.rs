@@ -108,6 +108,21 @@ fn current_default_options() -> SftpOptions {
         .unwrap_or_default()
 }
 
+/// Read the process-wide default [`KnownHostsMode`] currently
+/// installed via [`set_default_sftp_options`]. Returns
+/// [`KnownHostsMode::Prompt`] when no override is set (the
+/// production default).
+///
+/// Higher-level callers use this when they need to construct an
+/// `SftpOptions` that respects the user's earlier "Trust always"
+/// choice — e.g. `AppShell::mount_remote_navigation` on subsequent
+/// navigation into a deeper directory on a host the user has
+/// already accepted.
+#[must_use]
+pub fn default_known_hosts_mode() -> KnownHostsMode {
+    current_default_options().known_hosts_mode
+}
+
 /// Server-key handler for the russh client.
 ///
 /// The handler consults [`crate::known_hosts::KnownHosts`] on every
@@ -595,5 +610,39 @@ impl BackendClient for SftpBackend {
         let abs = self.abs(path);
         let live = self.live().await?;
         live.sftp.read_link(&abs).await.map_err(map_sftp_err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `default_known_hosts_mode` reflects the process-wide default:
+    /// with no install it returns [`KnownHostsMode::Prompt`], and
+    /// after `set_default_sftp_options` it returns the installed
+    /// value.
+    ///
+    /// This is what
+    /// `AppShell::mount_remote_navigation` reads on deeper
+    /// navigation: hard-coding [`KnownHostsMode::Strict`] there
+    /// broke the user's earlier "Trust always" choice on pool-miss.
+    #[test]
+    fn default_known_hosts_mode_reflects_process_default() {
+        // Snapshot the current default so parallel tests don't clash
+        // (integration tests install `AutoTrust`; this restores that
+        // afterwards).
+        let previous = current_default_options();
+        clear_default_sftp_options();
+        assert_eq!(default_known_hosts_mode(), KnownHostsMode::Prompt);
+
+        set_default_sftp_options(SftpOptions {
+            known_hosts_mode: KnownHostsMode::AutoTrust,
+            resolver: None,
+        });
+        assert_eq!(default_known_hosts_mode(), KnownHostsMode::AutoTrust);
+
+        // Restore whatever the test harness had installed so we don't
+        // interfere with other tests running in the same process.
+        set_default_sftp_options(previous);
     }
 }
