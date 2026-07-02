@@ -803,6 +803,7 @@ dependencies = [
  "atlas-remote",
  "atlas-search",
  "atlas-thumbs",
+ "atlas-watch",
  "crossbeam-channel",
  "directories",
  "fs2",

@@ -396,6 +396,23 @@ pub struct RemotePreview {
     /// used as the upper bound on memory held per download. Default:
     /// 256 KiB (262_144).
     pub stream_chunk_bytes: u64,
+    /// Whether to watch cached preview files for local edits and
+    /// upload changes back to the remote via
+    /// [`atlas_remote::RemoteLocationViewModel::write`]. When `true`
+    /// the shell registers each opened preview with the
+    /// [`atlas_watch::DirectoryWatcher`] serving the cache dir; on
+    /// modification we debounce, re-hash, and if the SHA differs from
+    /// the open-time baseline, upload. On upload failure (read-only
+    /// mount, quota exhausted, network) the local edit is preserved
+    /// and surfaced through the write-back callback sink so the
+    /// shell can present a toast. Default: `true`.
+    pub write_back_enabled: bool,
+    /// Debounce window (milliseconds) applied to modification events
+    /// on the watched cache file. Editors (VS Code, TextEdit, Vim,
+    /// …) frequently write in bursts — a save may fire several
+    /// `Modified` events in ~50 ms — so we coalesce them before
+    /// hashing. Default: 500.
+    pub write_back_debounce_ms: u32,
 }
 
 /// Connection-pool tunables.

@@ -88,6 +88,9 @@ struct Inner {
     // A crude counter of downloads served — the tests use this to
     // assert that a second open on the same file is a cache hit.
     downloads: parking_lot::Mutex<u64>,
+    /// Write-back watcher; registers each successfully-opened file
+    /// so subsequent local edits are uploaded back to the remote.
+    watch_registry: super::preview_watch::PreviewWatchRegistry,
 }
 
 impl PreviewCache {
@@ -102,19 +105,34 @@ impl PreviewCache {
     /// use this to substitute a recording double for `open::that`.
     #[must_use]
     pub fn with_opener(config: RemotePreview, opener: Arc<dyn OpenHandler>) -> Self {
+        let watch_registry = super::preview_watch::PreviewWatchRegistry::new(
+            config.write_back_enabled,
+            config.write_back_debounce_ms,
+        );
         Self {
             inner: Arc::new(Inner {
                 config: Mutex::new(config),
                 cache_dir: Mutex::new(None),
                 opener,
                 downloads: parking_lot::Mutex::new(0),
+                watch_registry,
             }),
         }
+    }
+
+    /// Access the write-back registry so the shell can install a
+    /// notification sink (typically a status-bar toast pusher).
+    #[must_use]
+    pub fn watch_registry(&self) -> &super::preview_watch::PreviewWatchRegistry {
+        &self.inner.watch_registry
     }
 
     /// Overwrite the runtime-tunable preview config. Called by the
     /// config hot-reload watcher.
     pub fn set_config(&self, config: RemotePreview) {
+        self.inner
+            .watch_registry
+            .set_config(config.write_back_enabled, config.write_back_debounce_ms);
         *self.inner.config.lock() = config;
     }
 
@@ -195,7 +213,16 @@ impl PreviewCache {
         if cached_file.exists() && !is_stale(&cached_file, cfg.max_age_secs) {
             tracing::debug!(?cached_file, "preview: cache hit");
             match self.inner.opener.open(&cached_file) {
-                Ok(()) => return PreviewOutcome::CachedOpen(cached_file),
+                Ok(()) => {
+                    if let Err(err) =
+                        self.inner
+                            .watch_registry
+                            .register(cached_file.clone(), uri.clone(), kind)
+                    {
+                        tracing::warn!(?cached_file, %err, "preview: watch register failed");
+                    }
+                    return PreviewOutcome::CachedOpen(cached_file);
+                }
                 Err(err) => {
                     tracing::warn!(?cached_file, %err, "preview: OS open failed on cached file");
                     return PreviewOutcome::OpenFailed(err.to_string());
@@ -206,11 +233,20 @@ impl PreviewCache {
         // Cache miss — spawn the download.
         let inner = Arc::clone(&self.inner);
         let handle = atlas_remote::runtime::handle();
+        let uri_for_watch = uri.clone();
+        let kind_for_watch = kind;
         handle.spawn(async move {
             match download_and_open(&inner, uri, kind, entry, cache_line.clone(), cached_file).await
             {
                 Ok(path) => {
                     tracing::info!(?path, "preview: download + open complete");
+                    if let Err(err) =
+                        inner
+                            .watch_registry
+                            .register(path.clone(), uri_for_watch, kind_for_watch)
+                    {
+                        tracing::warn!(?path, %err, "preview: watch register failed after download");
+                    }
                 }
                 Err(err) => {
                     tracing::warn!(%err, "preview: download failed");
@@ -585,6 +621,8 @@ mod tests {
             max_open_bytes: 10_000_000,
             stream_threshold_bytes: 4_194_304,
             stream_chunk_bytes: 262_144,
+            write_back_enabled: false,
+            write_back_debounce_ms: 500,
         };
         let opener = Arc::new(RecordingOpener::default());
         let cache = PreviewCache::with_opener(cfg, opener.clone());
@@ -618,6 +656,8 @@ mod tests {
             max_open_bytes: 10,
             stream_threshold_bytes: 4_194_304,
             stream_chunk_bytes: 262_144,
+            write_back_enabled: false,
+            write_back_debounce_ms: 500,
         };
         let opener = Arc::new(RecordingOpener::default());
         let cache = PreviewCache::with_opener(cfg, opener.clone());
@@ -671,6 +711,8 @@ mod tests {
             max_open_bytes: 10_000_000,
             stream_threshold_bytes: 4_194_304,
             stream_chunk_bytes: 262_144,
+            write_back_enabled: false,
+            write_back_debounce_ms: 500,
         };
         let opener = Arc::new(RecordingOpener::default());
         let cache = PreviewCache::with_opener(cfg, opener.clone());

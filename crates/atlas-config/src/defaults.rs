@@ -131,6 +131,8 @@ impl Default for RemotePreview {
             max_open_bytes: 100_000_000,
             stream_threshold_bytes: 4_194_304,
             stream_chunk_bytes: 262_144,
+            write_back_enabled: true,
+            write_back_debounce_ms: 500,
         }
     }
 }

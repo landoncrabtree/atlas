@@ -92,6 +92,8 @@ fn make_cache(dir: &std::path::Path, opener: Arc<RecordingOpener>) -> PreviewCac
             max_open_bytes: 10_000_000,
             stream_threshold_bytes: 4_194_304,
             stream_chunk_bytes: 262_144,
+            write_back_enabled: false,
+            write_back_debounce_ms: 500,
         },
         opener,
     )
@@ -279,6 +281,8 @@ fn large_file_preview_streams_via_stream_copy() -> Result<()> {
         max_open_bytes: 10_000_000,
         stream_threshold_bytes: 1_024,
         stream_chunk_bytes: 4_096,
+        write_back_enabled: false,
+        write_back_debounce_ms: 500,
     };
     let cache = PreviewCache::with_opener(cfg, opener.clone());
 
