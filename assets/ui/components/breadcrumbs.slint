@@ -1,8 +1,17 @@
 import { Theme } from "../theme.slint";
 
 // Path breadcrumb strip.
+//
+// For remote panes the first segment is a `sftp://user@host` (or
+// equivalent) authority — sourced from `Location::breadcrumb_segments`.
+// When `remote-root` is set the first chip is emphasised (accent
+// colour + slightly larger font) so the reader visually anchors on
+// which host they're currently browsing.
 export component Breadcrumbs {
     in property <[string]> segments: [];
+    /// True for panes rooted at a non-local backend (SFTP, S3, WebDAV,
+    /// FTP). Controls the emphasis rendered on `segments[0]`.
+    in property <bool> remote-root: false;
     callback clicked(int);
 
     height: 26px;
@@ -36,8 +45,11 @@ export component Breadcrumbs {
                     seg-text := Text {
                         x: Theme.space-2;
                         text: seg;
-                        color: i == segments.length - 1 ? Theme.fg : Theme.fg-muted;
-                        font-size: 12px;
+                        color: (root.remote-root && i == 0)
+                            ? Theme.accent
+                            : (i == segments.length - 1 ? Theme.fg : Theme.fg-muted);
+                        font-size: (root.remote-root && i == 0) ? 13px : 12px;
+                        font-weight: (root.remote-root && i == 0) ? 600 : 400;
                         vertical-alignment: center;
                         animate color { duration: Theme.motion-quick; easing: ease-out; }
                     }

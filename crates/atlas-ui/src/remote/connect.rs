@@ -1178,17 +1178,12 @@ fn classify_probe_error(msg: &str) -> ErrorKind {
 }
 
 /// Unicode glyph rendered next to a saved-server row and in the pane
-/// header for remote panes. Kept monochrome-friendly; the palette
-/// source and breadcrumb polish commit reuse this helper.
+/// header for remote panes. Kept as a re-export around
+/// [`BackendKind::glyph`] so tests and callers within this module can
+/// find it under the same name.
 #[must_use]
 pub(crate) fn backend_glyph(kind: BackendKind) -> &'static str {
-    match kind {
-        BackendKind::Local => "📁",
-        BackendKind::Sftp => "🔐",
-        BackendKind::Ftp => "📡",
-        BackendKind::WebDav => "🌐",
-        BackendKind::S3 => "☁️",
-    }
+    kind.glyph()
 }
 
 /// Human-friendly relative time. Returns "just now" for < 60s,

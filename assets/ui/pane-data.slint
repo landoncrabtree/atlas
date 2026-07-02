@@ -32,6 +32,11 @@ export struct PaneSlintData {
 
     /// Index of the active tab within the pane's tab list.
     active-tab: int,
+
+    /// Backend glyph (`🔐` / `📡` / `🌐` / `☁️` / empty for local). Pushed by
+    /// `project_workspace_to_slint`. Rendered as a small prefix on the
+    /// address bar and inside the first breadcrumb chip for remote panes.
+    backend-glyph: string,
 }
 
 /// Describes a draggable resize handle between two split children.

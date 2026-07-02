@@ -130,6 +130,10 @@ export component Pane {
     in property <int> pane-id: -1;
     in property <bool> focused: false;
     in property <string> path: "";
+    /// Optional backend glyph (`🔐` / `📡` / `🌐` / `☁️`). Empty string
+    /// means local pane; the address bar and breadcrumb chip skip the
+    /// glyph in that case. Populated from `PaneSlintData.backend-glyph`.
+    in property <string> backend-glyph: "";
     /// When true, the breadcrumb strip below the address bar is rendered. When
     /// false, it is hidden entirely (wired from `ui.show_breadcrumbs`).
     in property <bool> show-breadcrumbs: true;
@@ -268,6 +272,7 @@ export component Pane {
 
                         address-bar := AddressBar {
                             path: root.path;
+                            backend-glyph: root.backend-glyph;
                             submitted(p) => { root.address-submitted(p); }
                             cancelled => { root.address-cancelled(); }
                         }
@@ -276,6 +281,7 @@ export component Pane {
 
                 if root.show-breadcrumbs : Breadcrumbs {
                     segments: root.path-segments;
+                    remote-root: root.backend-glyph != "";
                     clicked(i) => { root.breadcrumb-clicked(i); }
                 }
 

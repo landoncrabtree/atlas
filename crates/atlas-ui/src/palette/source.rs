@@ -432,17 +432,11 @@ fn saved_server_uri_display(server: &atlas_config::servers::SavedServer) -> Stri
 }
 
 /// Return the small unicode glyph rendered next to a backend in the
-/// palette + saved-servers modal. Duplicated with
-/// `atlas_ui::remote::connect::backend_glyph` so this module doesn't
-/// depend on `remote::connect` (same cycle-avoidance rationale).
+/// palette + saved-servers modal. Thin wrapper around
+/// [`atlas_core::BackendKind::glyph`] kept here so this module doesn't
+/// grow a dependency on `remote::connect`.
 fn backend_glyph(kind: atlas_core::BackendKind) -> &'static str {
-    match kind {
-        atlas_core::BackendKind::Local => "📁",
-        atlas_core::BackendKind::Sftp => "🔐",
-        atlas_core::BackendKind::Ftp => "📡",
-        atlas_core::BackendKind::WebDav => "🌐",
-        atlas_core::BackendKind::S3 => "☁️",
-    }
+    kind.glyph()
 }
 
 #[cfg(test)]

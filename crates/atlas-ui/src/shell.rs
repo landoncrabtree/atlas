@@ -3587,6 +3587,7 @@ impl AppShell {
             tabs: Vec<TabModel>,
             active_tab: i32,
             segments: Vec<String>,
+            backend_glyph: String,
         }
 
         let (focused_id, focus_idx, pane_data, handle_data) = {
@@ -3611,6 +3612,7 @@ impl AppShell {
                 .map(|(id, rect)| {
                     let pane = ws.pane(*id).expect("leaf in layout must have pane state");
                     let location = pane.active_location();
+                    let backend_glyph = location.backend().glyph().to_owned();
                     PaneData {
                         id: *id,
                         id_i32: id.0 as i32,
@@ -3623,6 +3625,7 @@ impl AppShell {
                         tabs: pane.tabs.clone(),
                         active_tab: pane.active_tab as i32,
                         segments: location.breadcrumb_segments(),
+                        backend_glyph,
                     }
                 })
                 .collect();
@@ -3698,6 +3701,7 @@ impl AppShell {
                     path: SharedString::from(p.path.as_str()),
                     view_mode: SharedString::from(p.view_mode.as_str()),
                     active_tab: p.active_tab,
+                    backend_glyph: SharedString::from(p.backend_glyph.as_str()),
                 })
                 .collect();
 

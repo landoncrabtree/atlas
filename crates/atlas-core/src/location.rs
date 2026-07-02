@@ -87,6 +87,21 @@ impl BackendKind {
             _ => None,
         }
     }
+
+    /// Monochrome-friendly unicode glyph rendered next to remote-pane
+    /// UI elements — the address-bar prefix, the palette entries, and
+    /// the saved-servers list. Returns an empty string for `Local` so
+    /// the caller can render "hide the glyph" as `text.is_empty()`.
+    #[must_use]
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::Local => "",
+            Self::Sftp => "🔐",
+            Self::Ftp => "📡",
+            Self::WebDav => "🌐",
+            Self::S3 => "☁️",
+        }
+    }
 }
 
 impl fmt::Display for BackendKind {

@@ -11,6 +11,11 @@ import { Theme } from "../theme.slint";
 // fs::Paste against the pane's list of entries.
 export component AddressBar {
     in-out property <string> path: "";
+    /// Optional backend glyph rendered before the path text.  Empty for
+    /// local panes; `🔐` / `📡` / `🌐` / `☁️` for the remote backends.
+    /// Sourced from `atlas_core::BackendKind::glyph()` via
+    /// `PaneSlintData.backend-glyph`.
+    in property <string> backend-glyph: "";
     /// True while the inner TextInput owns keyboard focus. Bubbled up by
     /// [`Pane`] as `text-input-focused` so the root can bypass Pane-context
     /// keymap chords in favour of the TextInput's native edit shortcuts.
@@ -34,6 +39,15 @@ export component AddressBar {
             padding-left: Theme.space-3;
             padding-right: Theme.space-3;
             spacing: Theme.space-2;
+
+            if root.backend-glyph != "" : Text {
+                text: root.backend-glyph;
+                color: Theme.fg;
+                font-size: 14px;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                width: 20px;
+            }
 
             input := TextInput {
                 text <=> root.path;
