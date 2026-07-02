@@ -24,6 +24,7 @@ const MAX_RESULTS: usize = 200;
 
 type DispatchCallback = dyn Fn(&str) + Send + Sync;
 type PathConfirmCallback = dyn Fn(PathBuf) + Send + Sync;
+type ServerConfirmCallback = dyn Fn(&str) + Send + Sync;
 
 /// Orchestrates the command palette: mode switching, fuzzy query dispatch,
 /// result caching, and selection movement.
@@ -38,6 +39,7 @@ pub struct PaletteController {
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
     on_dispatch: RwLock<Option<Box<DispatchCallback>>>,
     on_path_confirm: RwLock<Option<Box<PathConfirmCallback>>>,
+    on_server_confirm: RwLock<Option<Box<ServerConfirmCallback>>>,
 }
 
 impl PaletteController {
@@ -55,6 +57,7 @@ impl PaletteController {
             actions,
             on_dispatch: RwLock::new(None),
             on_path_confirm: RwLock::new(None),
+            on_server_confirm: RwLock::new(None),
         })
     }
 
@@ -95,21 +98,51 @@ impl PaletteController {
         *self.on_path_confirm.write() = Some(Box::new(callback));
     }
 
+    /// Register a callback invoked when a `Server`-kind item is
+    /// confirmed. Wired by `shell::AppShell::wire_callbacks` to
+    /// [`crate::remote::connect::ConnectController::run_connect_saved`]
+    /// so Enter on a Cmd+P server hit mounts the pane directly (no
+    /// modal). Called with the saved-server id string.
+    ///
+    /// When unset, confirming a server entry logs a warning and does
+    /// nothing.
+    pub fn set_on_server_confirm(&self, callback: impl Fn(&str) + Send + Sync + 'static) {
+        *self.on_server_confirm.write() = Some(Box::new(callback));
+    }
+
     /// Open the palette with the source at `source_index`.
     pub fn open(&self, source_index: usize) {
-        let source = {
-            let sources = self.sources.read();
-            sources.get(source_index).cloned()
-        };
-        let Some(source) = source else {
-            return;
-        };
+        self.open_multi(&[source_index]);
+    }
 
-        self.active_source.store(source_index, Ordering::Relaxed);
+    /// Open the palette with a composite item list built from multiple
+    /// sources merged in the order they appear. Used to combine goto
+    /// paths with saved servers so a single Cmd+P search hits both.
+    /// Empty slice is a no-op.
+    pub fn open_multi(&self, source_indices: &[usize]) {
+        if source_indices.is_empty() {
+            return;
+        }
+
+        let sources: Vec<Arc<dyn PaletteSource>> = {
+            let all = self.sources.read();
+            source_indices
+                .iter()
+                .filter_map(|i| all.get(*i).cloned())
+                .collect()
+        };
+        if sources.is_empty() {
+            return;
+        }
+
+        self.active_source
+            .store(source_indices[0], Ordering::Relaxed);
         self.visible.store(true, Ordering::Relaxed);
 
         let mut items = Vec::new();
-        source.populate(&mut VecSink(&mut items));
+        for source in sources {
+            source.populate(&mut VecSink(&mut items));
+        }
         self.matcher.lock().set_items(items);
         self.run_query_and_push(String::new());
     }
@@ -181,6 +214,16 @@ impl PaletteController {
                     self.actions
                         .lock()
                         .dispatch(UiAction::Navigate { pane: 0, path });
+                }
+            }
+            PaletteItemKind::Server => {
+                if let Some(callback) = self.on_server_confirm.read().as_ref() {
+                    callback(&item.id);
+                } else {
+                    tracing::warn!(
+                        server_id = %item.id,
+                        "palette server confirm without on_server_confirm callback; entry ignored"
+                    );
                 }
             }
         }
@@ -431,5 +474,112 @@ mod tests {
             saw_navigate.load(Ordering::Relaxed),
             "confirm() must fall back to Navigate dispatch when no path callback is registered"
         );
+    }
+
+    /// When the palette confirms a `Server`-kind item, it MUST route
+    /// through the registered `on_server_confirm` callback with the
+    /// server id. It must NOT emit `UiAction::Navigate` because that
+    /// dispatch is only meaningful for local paths.
+    #[test]
+    fn server_confirm_routes_through_server_callback() {
+        use crate::palette::source::PaletteItemKind;
+        use std::sync::atomic::AtomicBool;
+
+        struct RecordingSink {
+            saw_navigate: Arc<AtomicBool>,
+        }
+        impl ActionSink for RecordingSink {
+            fn dispatch(&mut self, action: UiAction) {
+                if matches!(action, UiAction::Navigate { .. }) {
+                    self.saw_navigate.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+
+        let saw_navigate = Arc::new(AtomicBool::new(false));
+        let sink = RecordingSink {
+            saw_navigate: Arc::clone(&saw_navigate),
+        };
+        let controller = PaletteController::new(Arc::new(Mutex::new(Box::new(sink))));
+
+        let seen_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        {
+            let seen_id = Arc::clone(&seen_id);
+            controller.set_on_server_confirm(move |id| {
+                *seen_id.lock() = Some(id.to_owned());
+            });
+        }
+
+        controller.visible.store(true, Ordering::Relaxed);
+        *controller.current_items.lock() = vec![PaletteItem {
+            id: String::from("srv::abc::landon@host"),
+            title: String::from("🔐 prod"),
+            subtitle: String::from("sftp://landon@host:22/"),
+            kind: PaletteItemKind::Server,
+        }];
+        *controller.model.lock() = PaletteModel {
+            visible: true,
+            query: String::new(),
+            results: vec![PaletteResult {
+                title: String::from("🔐 prod"),
+                subtitle: String::from("sftp://landon@host:22/"),
+                action_id: String::from("srv::abc::landon@host"),
+            }],
+            selected: 0,
+        };
+
+        controller.confirm();
+
+        assert_eq!(
+            seen_id.lock().as_deref(),
+            Some("srv::abc::landon@host"),
+            "on_server_confirm should fire with the server id"
+        );
+        assert!(
+            !saw_navigate.load(Ordering::Relaxed),
+            "confirm() must NOT dispatch UiAction::Navigate for Server-kind items"
+        );
+    }
+
+    /// `open_multi` merges items from every listed source into one
+    /// palette open. Verify a two-source combine yields the union.
+    #[test]
+    fn open_multi_merges_sources() {
+        use crate::palette::source::PaletteItemKind;
+
+        struct FixedSource(Vec<PaletteItem>);
+        impl PaletteSource for FixedSource {
+            fn placeholder(&self) -> &'static str {
+                "fixed"
+            }
+            fn populate(&self, sink: &mut dyn ItemSink) {
+                for item in &self.0 {
+                    sink.push(item.clone());
+                }
+            }
+        }
+
+        let controller = PaletteController::new(Arc::new(Mutex::new(Box::new(NoopSink))));
+        let s1 = Arc::new(FixedSource(vec![PaletteItem {
+            id: "path1".into(),
+            title: "alpha".into(),
+            subtitle: "/tmp/alpha".into(),
+            kind: PaletteItemKind::Path,
+        }]));
+        let s2 = Arc::new(FixedSource(vec![PaletteItem {
+            id: "srv1".into(),
+            title: "🔐 prod".into(),
+            subtitle: "sftp://user@host".into(),
+            kind: PaletteItemKind::Server,
+        }]));
+        let i1 = controller.register_source(s1);
+        let i2 = controller.register_source(s2);
+
+        controller.open_multi(&[i1, i2]);
+
+        let items = controller.current_items.lock().clone();
+        assert_eq!(items.len(), 2, "should merge items from both sources");
+        assert!(items.iter().any(|it| it.kind == PaletteItemKind::Path));
+        assert!(items.iter().any(|it| it.kind == PaletteItemKind::Server));
     }
 }

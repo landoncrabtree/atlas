@@ -14,5 +14,5 @@ pub mod source;
 pub use controller::PaletteController;
 pub use source::{
     ActionsSource, BookmarksSource, GotoPathsSource, ItemSink, PaletteItem, PaletteItemKind,
-    PaletteSource, PathIndex, WalkerPathIndex,
+    PaletteSource, PathIndex, SavedServersSource, WalkerPathIndex,
 };

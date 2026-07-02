@@ -33,7 +33,8 @@ use crate::{
     navigation::NavigationController,
     ops::OpsController,
     palette::{
-        ActionsSource, BookmarksSource, GotoPathsSource, PaletteController, WalkerPathIndex,
+        ActionsSource, BookmarksSource, GotoPathsSource, PaletteController, SavedServersSource,
+        WalkerPathIndex,
     },
     remote::ConnectController,
     rename::BulkRenameController,
@@ -226,12 +227,19 @@ fn build_palette_controller(
     let path_index = Arc::new(WalkerPathIndex::new(palette_root()));
     let goto_source = Arc::new(GotoPathsSource::new(path_index));
     let bookmarks_source = Arc::new(BookmarksSource::new(bookmarks));
+    let servers_source = Arc::new(SavedServersSource::new());
 
     let controller = PaletteController::new(actions);
     controller.attach_window(window.as_weak());
+    // Source indices (order matters — referenced by index in shell wiring):
+    //   0: actions             (Shift+Cmd+P)
+    //   1: goto paths          (Cmd+P — merged with 3)
+    //   2: bookmarks
+    //   3: saved servers       (Cmd+P — merged with 1)
     controller.register_source(actions_source);
     controller.register_source(goto_source);
     controller.register_source(bookmarks_source);
+    controller.register_source(servers_source);
     controller.set_on_dispatch(|action_id| {
         tracing::info!(%action_id, "palette action dispatched");
     });
@@ -958,6 +966,19 @@ impl AppShell {
                 let Some(shell) = weak.upgrade() else { return };
                 let id = shell.focused_pane_id();
                 shell.view_path(id, path);
+            });
+        }
+
+        // Route Server-kind palette results into the connect flow —
+        // dispatches `run_connect_saved(id, focused_pane)` which mounts
+        // the pane directly (no modal). Also uses a weak self so the
+        // callback doesn't extend the shell's lifetime.
+        {
+            let weak = Arc::downgrade(&shell);
+            shell.palette_ctrl.set_on_server_confirm(move |id| {
+                let Some(shell) = weak.upgrade() else { return };
+                let pane_id = shell.focused_pane_id();
+                shell.connect.run_connect_saved(id, pane_id);
             });
         }
 
@@ -2582,7 +2603,10 @@ impl AppShell {
         {
             let palette_ctrl = Arc::clone(&self.palette_ctrl);
             window.on_open_goto(move || {
-                palette_ctrl.open(1);
+                // Merge saved-server entries into the goto palette so a
+                // single Cmd+P search hits both local paths and remote
+                // mounts. Source indices come from `build_palette_controller`.
+                palette_ctrl.open_multi(&[1, 3]);
             });
         }
         {

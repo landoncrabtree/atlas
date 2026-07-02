@@ -70,6 +70,10 @@ pub enum PaletteItemKind {
     Action,
     /// A filesystem path.
     Path,
+    /// A saved remote server. `PaletteItem::id` holds the
+    /// [`atlas_config::servers::SavedServer::id`] used to look the
+    /// entry up when the user confirms it.
+    Server,
 }
 
 /// Sink that receives [`PaletteItem`] values during population.
@@ -331,6 +335,113 @@ impl PaletteSource for BookmarksSource {
                 kind: PaletteItemKind::Path,
             });
         }
+    }
+}
+
+/// Palette source that emits saved-server entries (Cmd+K persisted
+/// connections). Reused as a secondary source inside the goto/paths
+/// palette so a user can jump straight from Cmd+P to a remote mount.
+///
+/// The list is loaded from `atlas_config::servers::list()` on every
+/// [`Self::populate`] call — the config file is small and this keeps
+/// entries fresh without wiring a change-notification channel.
+pub struct SavedServersSource;
+
+impl SavedServersSource {
+    /// Construct a new source. Stateless — every populate re-reads
+    /// `servers.toml`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for SavedServersSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PaletteSource for SavedServersSource {
+    fn placeholder(&self) -> &'static str {
+        "Saved servers"
+    }
+
+    fn populate(&self, sink: &mut dyn ItemSink) {
+        let servers = match atlas_config::servers::list() {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!(error = %err, "palette: could not load servers.toml");
+                return;
+            }
+        };
+        for server in servers {
+            let glyph = backend_glyph(server.backend);
+            let title = if server.label.is_empty() {
+                match (server.username.as_deref(), server.address.as_str()) {
+                    (Some(u), h) if !u.is_empty() && !h.is_empty() => format!("{u}@{h}"),
+                    _ => server.address.clone(),
+                }
+            } else {
+                server.label.clone()
+            };
+            // Prefix the title with a small "server:" tag so the user
+            // can tell path hits from server hits when the query is
+            // empty. When the user types, the fuzzy matcher still
+            // scores against the same string — the "server:" prefix
+            // participates naturally and does not hurt short-query
+            // ranking (nucleo strips the prefix on partial matches).
+            let title = format!("{glyph}  {title}");
+            let subtitle = saved_server_uri_display(&server);
+            sink.push(PaletteItem {
+                id: server.id,
+                title,
+                subtitle,
+                kind: PaletteItemKind::Server,
+            });
+        }
+    }
+}
+
+/// Build the same URI string the modal viewer renders for a saved
+/// server. Duplicated intentionally so `atlas-ui::palette` doesn't
+/// depend on `atlas-ui::remote` — that would introduce a cycle inside
+/// the same crate module tree once `palette` is used from `shell`.
+fn saved_server_uri_display(server: &atlas_config::servers::SavedServer) -> String {
+    let mut s = String::new();
+    s.push_str(server.backend.scheme());
+    s.push_str("://");
+    if let Some(user) = &server.username {
+        s.push_str(user);
+        s.push('@');
+    }
+    s.push_str(&server.address);
+    if let Some(port) = server.port {
+        s.push(':');
+        s.push_str(&port.to_string());
+    }
+    if server.path.is_empty() {
+        s.push('/');
+    } else if !server.path.starts_with('/') {
+        s.push('/');
+        s.push_str(&server.path);
+    } else {
+        s.push_str(&server.path);
+    }
+    s
+}
+
+/// Return the small unicode glyph rendered next to a backend in the
+/// palette + saved-servers modal. Duplicated with
+/// `atlas_ui::remote::connect::backend_glyph` so this module doesn't
+/// depend on `remote::connect` (same cycle-avoidance rationale).
+fn backend_glyph(kind: atlas_core::BackendKind) -> &'static str {
+    match kind {
+        atlas_core::BackendKind::Local => "📁",
+        atlas_core::BackendKind::Sftp => "🔐",
+        atlas_core::BackendKind::Ftp => "📡",
+        atlas_core::BackendKind::WebDav => "🌐",
+        atlas_core::BackendKind::S3 => "☁️",
     }
 }
 
