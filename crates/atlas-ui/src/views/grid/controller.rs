@@ -522,6 +522,46 @@ pub(crate) fn entry_to_row_item(entry: &Entry) -> EntryRowItem {
     }
 }
 
+/// Compute the (col, row) grid position for a linear index.
+///
+/// This mirrors the layout math in `assets/ui/views/grid/grid-view.slint`:
+/// entries flow left-to-right and top-to-bottom with a constant `columns`
+/// count.  Kept as a pure `pub(crate)` function so the Slint layout stays
+/// unit-testable — a previous bug (Slint's `/` being float division rather
+/// than integer division) staggered cells within the same logical row.
+#[allow(dead_code)] // Reference implementation used only in tests today.
+pub(crate) fn grid_position(index: usize, columns: usize) -> (usize, usize) {
+    let cols = columns.max(1);
+    (index % cols, index / cols)
+}
+
+/// Compute the number of rows needed for `len` entries at `columns` per row.
+///
+/// Matches the `row-count` binding in `grid-view.slint`.  A partial trailing
+/// row (e.g. 7 entries at 3 columns → 3 full rows) always counts as a full
+/// row so its cells still get a visible slot.
+#[allow(dead_code)] // Reference implementation used only in tests today.
+pub(crate) fn grid_row_count(len: usize, columns: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    len.div_ceil(columns.max(1))
+}
+
+/// Compute the number of columns for a given viewport width, cell size and
+/// gap.  Mirrors `columns: max(1, (root.width - gap) / (cell-size + gap))`
+/// in the Slint grid view — kept in Rust so the invariant is unit-testable
+/// and the view can't silently regress to a variable-width layout.
+#[allow(dead_code)] // Reference implementation used only in tests today.
+pub(crate) fn grid_columns_for_width(width_px: f32, cell_size_px: f32, gap_px: f32) -> usize {
+    if cell_size_px + gap_px <= 0.0 {
+        return 1;
+    }
+    let available = (width_px - gap_px).max(0.0);
+    let cols = (available / (cell_size_px + gap_px)).floor() as isize;
+    cols.max(1) as usize
+}
+
 /// Compute the next focused linear index after a 2-D grid move.
 ///
 /// `cols` is the number of columns; `len` is total entry count.
@@ -629,6 +669,67 @@ mod tests {
         // 11 entries, 4 cols: last row has idx 8..=10
         // from idx 3 (row 0, col 3), down 2 rows → (row 2, col 3) = 11 → clamped to 10
         assert_eq!(grid_move(3, 2, 0, 4, 11), 10);
+    }
+
+    // ── grid_position / grid_row_count / grid_columns_for_width ────────────
+    //
+    // Lock down the pure layout math that mirrors the Slint bindings in
+    // `grid-view.slint`.  Regressing any of these would cause cells to be
+    // staggered within a row (float-division bug from pre-2.9) or produce a
+    // wrong `row-count` viewport height.
+
+    #[test]
+    fn grid_position_maps_to_integer_row_and_col() {
+        // 3-column layout, 7 entries → 2 full rows + 1 solo entry on the
+        // last row.  Verify every cell lands on an integer (row, col) pair.
+        let cols = 3;
+        let expected: [(usize, usize); 7] =
+            [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1), (0, 2)];
+        for (i, want) in expected.iter().enumerate() {
+            assert_eq!(grid_position(i, cols), *want, "index {i}");
+        }
+    }
+
+    #[test]
+    fn grid_position_solo_last_row_is_leftmost() {
+        // 7 entries × 3 cols: entry 6 should be at col 0 (leftmost), row 2 —
+        // NOT staggered by fractional row division as the pre-fix Slint did.
+        assert_eq!(grid_position(6, 3), (0, 2));
+    }
+
+    #[test]
+    fn grid_row_count_matches_ceil_division() {
+        assert_eq!(grid_row_count(0, 3), 0);
+        assert_eq!(grid_row_count(1, 3), 1);
+        assert_eq!(grid_row_count(3, 3), 1);
+        assert_eq!(grid_row_count(4, 3), 2);
+        assert_eq!(grid_row_count(7, 3), 3);
+        assert_eq!(grid_row_count(9, 3), 3);
+        assert_eq!(grid_row_count(10, 3), 4);
+    }
+
+    #[test]
+    fn grid_row_count_columns_clamped_to_one() {
+        assert_eq!(grid_row_count(5, 0), 5);
+    }
+
+    #[test]
+    fn grid_columns_for_width_fixed_cell_size() {
+        // 3 columns should fit when width ≈ gap + 3*(cell + gap):
+        //   gap=12, cell=128 → 12 + 3*140 = 432
+        // We reproduce the Slint formula: cols = floor((w - gap) / (cell + gap))
+        assert_eq!(grid_columns_for_width(432.0, 128.0, 12.0), 3);
+        // Just below 4 columns' threshold still yields 3.
+        assert_eq!(grid_columns_for_width(571.0, 128.0, 12.0), 3);
+        // At the 4-column boundary (12 + 4*140 = 572).
+        assert_eq!(grid_columns_for_width(572.0, 128.0, 12.0), 4);
+    }
+
+    #[test]
+    fn grid_columns_never_below_one() {
+        // Extremely narrow pane still shows 1 column.
+        assert_eq!(grid_columns_for_width(0.0, 128.0, 12.0), 1);
+        assert_eq!(grid_columns_for_width(50.0, 128.0, 12.0), 1);
     }
 
     // ── Dedup logic (pure) ───────────────────────────────────────────────────

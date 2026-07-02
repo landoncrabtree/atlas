@@ -43,8 +43,10 @@ export component GridView inherits FocusScope {
 
     changed columns => { root.columns-changed(columns); }
 
-    // Row count for viewport sizing
-    property <int> row-count: max(0, (entries.length + columns - 1) / columns);
+    // Row count for viewport sizing. `floor()` is required because Slint's
+    // `/` is float division; without it a partial row would produce a
+    // fractional `row-count` and the viewport would be slightly too short.
+    property <int> row-count: max(0, floor((entries.length + columns - 1) / columns));
 
     ScrollView {
         width: parent.width;
@@ -56,8 +58,11 @@ export component GridView inherits FocusScope {
         );
 
         for item[i] in root.entries : GridCell {
+            // `floor()` guards against Slint's float division: without it
+            // every entry ended up at a different fractional `y`, so cells
+            // in the same logical row were vertically staggered.
             x: gap + mod(i, columns) * (cell-size + gap);
-            y: gap + (i / columns) * (cell-size + label-height + gap);
+            y: gap + floor(i / columns) * (cell-size + label-height + gap);
             cell-size: root.cell-size;
             label-height: root.label-height;
             item: item;
