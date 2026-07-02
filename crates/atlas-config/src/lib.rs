@@ -17,6 +17,7 @@ pub mod load;
 pub mod paths;
 pub mod save;
 pub mod schema;
+pub mod servers;
 pub mod watcher;
 
 // ── Re-exports ──────────────────────────────────────────────────────────────
@@ -28,7 +29,12 @@ pub use schema::{
 
 pub use load::{load, load_from_file, load_from_str};
 pub use paths::{
-    config_dir, config_file_path, ensure_config_dir, keymap_file_path, keymaps_dir, themes_dir,
+    config_dir, config_file_path, ensure_config_dir, keymap_file_path, keymaps_dir,
+    servers_file_path, themes_dir,
 };
 pub use save::{save, save_to_string, skeleton_toml};
+pub use servers::{
+    add_or_replace as add_or_replace_server, delete as delete_server, list as list_servers,
+    load as load_servers, save as save_servers, SavedServer, SavedServersFile,
+};
 pub use watcher::{ConfigEvent, ConfigWatcher};

@@ -47,6 +47,14 @@ pub fn config_file_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("config.toml"))
 }
 
+/// Return the path to `servers.toml`, the persisted catalogue of remote
+/// servers the user has connected to. See [`crate::servers`] for the file
+/// schema. Missing on first launch; created by
+/// [`crate::servers::save`].
+pub fn servers_file_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("servers.toml"))
+}
+
 /// Return the path to the primary keymap file (`keymaps/default.toml`).
 ///
 /// User overrides may add additional keymap files under `keymaps/`; the loader
