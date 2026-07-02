@@ -213,4 +213,43 @@ mod tests {
         let tab = TabModel::at(loc);
         assert_eq!(tab.title, "host");
     }
+
+    /// Regression test for the "Cmd+[ / Cmd+] on a remote pane is a
+    /// no-op" bug. The tab's back/forward stack MUST return
+    /// [`Location::Remote`] values verbatim — the shell-level
+    /// dispatcher [`AppShell::navigate_pane_to_location_no_push`] then
+    /// remounts a fresh remote VM at that URI, unlike the old code
+    /// that shunted back/forward through
+    /// [`NavigationController::navigate_pane_no_push`], which
+    /// early-returned on remote.
+    #[test]
+    fn back_and_forward_on_remote_history_return_remote_locations() {
+        let a = Location::from_str("sftp://user@host/a").unwrap();
+        let b = Location::from_str("sftp://user@host/a/b").unwrap();
+        let c = Location::from_str("sftp://user@host/a/b/c").unwrap();
+
+        let mut tab = TabModel::at(a.clone());
+        tab.navigate_to(b.clone());
+        tab.navigate_to(c.clone());
+        assert!(tab.can_back());
+        assert!(!tab.can_forward());
+
+        // Cmd+[ twice → back at a.
+        let back1 = tab.back().expect("first back should return b");
+        assert_eq!(back1, b, "first back must land on b");
+        assert!(matches!(back1, Location::Remote(_, _)));
+
+        let back2 = tab.back().expect("second back should return a");
+        assert_eq!(back2, a, "second back must land on a");
+        assert!(matches!(back2, Location::Remote(_, _)));
+        assert!(!tab.can_back());
+        assert!(tab.can_forward());
+
+        // Cmd+] once → forward to b.
+        let fwd = tab.forward().expect("forward should return b");
+        assert_eq!(fwd, b, "forward must land on b");
+        assert!(matches!(fwd, Location::Remote(_, _)));
+        assert!(tab.can_back());
+        assert!(tab.can_forward());
+    }
 }

@@ -1775,27 +1775,48 @@ impl AppShell {
     /// remote panes never accidentally re-enter a local-only fast
     /// path.
     ///
-    /// * [`Location::Local`] → push to tab history and delegate to
-    ///   [`NavigationController::navigate_pane`], which opens an
-    ///   [`atlas_fs::InMemoryLocationViewModel`] on the worker pool.
+    /// * [`Location::Local`] → push to the pane's tab history and open
+    ///   a fresh in-process [`atlas_fs::InMemoryLocationViewModel`] on
+    ///   the worker pool.
     /// * [`Location::Remote`] → push to tab history and open a fresh
     ///   [`atlas_remote::RemoteLocationViewModel`]; on success mount
     ///   it via [`Self::open_remote_location`]. Credentials come from
     ///   the session cache / OS keychain — never prompts.
     pub fn navigate_pane_to_location(self: &Arc<Self>, id: PaneId, dest: Location) {
+        self.navigate_pane_to_location_impl(id, dest, true);
+    }
+
+    /// Same as [`Self::navigate_pane_to_location`] but skips the tab
+    /// history push. Used by back/forward, which already advanced the
+    /// tab's history cursor before calling us — a second push would
+    /// wipe the forward stack.
+    pub fn navigate_pane_to_location_no_push(self: &Arc<Self>, id: PaneId, dest: Location) {
+        self.navigate_pane_to_location_impl(id, dest, false);
+    }
+
+    fn navigate_pane_to_location_impl(
+        self: &Arc<Self>,
+        id: PaneId,
+        dest: Location,
+        push_history: bool,
+    ) {
         match &dest {
             Location::Local(path) => {
                 let target = path.clone();
-                {
+                if push_history {
                     let mut ws = self.workspace.write();
                     if let Some(p) = ws.pane_mut(id) {
                         p.active_mut().navigate_to(dest.clone());
                     }
                 }
-                self.navigation.navigate_pane(id, target);
+                if push_history {
+                    self.navigation.navigate_pane(id, target);
+                } else {
+                    self.navigation.navigate_pane_no_push(id, target);
+                }
             }
             Location::Remote(_, _) => {
-                self.mount_remote_navigation(id, dest);
+                self.mount_remote_navigation(id, dest, push_history);
             }
         }
     }
@@ -1812,7 +1833,12 @@ impl AppShell {
     /// carries no keychain reference and the session has never
     /// authenticated to this host), the open silently fails and
     /// tracing surfaces the reason.
-    fn mount_remote_navigation(self: &Arc<Self>, id: PaneId, dest: Location) {
+    ///
+    /// `push_history` controls whether the tab's back/forward stack
+    /// records this navigation. Interactive re-navigation passes
+    /// `true`; back/forward passes `false` because the tab already
+    /// advanced its cursor.
+    fn mount_remote_navigation(self: &Arc<Self>, id: PaneId, dest: Location, push_history: bool) {
         let (uri, kind) = match &dest {
             Location::Remote(uri, kind) => (uri.clone(), *kind),
             Location::Local(_) => return,
@@ -1853,8 +1879,10 @@ impl AppShell {
             Ok(vm) => {
                 let vm_dyn: Arc<dyn LocationViewModel> = Arc::clone(&vm) as _;
                 // Push history *before* the mount so back/forward on
-                // remote panes work.
-                {
+                // remote panes work. Callers on the back/forward
+                // path pass `push_history = false` because the tab's
+                // history cursor already moved.
+                if push_history {
                     let mut ws = self.workspace.write();
                     if let Some(p) = ws.pane_mut(id) {
                         p.active_mut().navigate_to(dest.clone());
@@ -2388,6 +2416,13 @@ impl AppShell {
     }
 
     /// Navigate the focused pane backward in its active tab's history.
+    ///
+    /// The tab's back-stack already stores full [`Location`] values so
+    /// both local and remote back/forward funnel through
+    /// [`Self::navigate_pane_to_location_no_push`]. Remote back/forward
+    /// mounts a fresh [`atlas_remote::RemoteLocationViewModel`] via the
+    /// same code path as an interactive re-navigation, minus the
+    /// history push (the tab already advanced its cursor).
     pub fn back_focused(self: &Arc<Self>) {
         let id = self.focused_pane_id();
         let dest = {
@@ -2396,8 +2431,8 @@ impl AppShell {
                 .pane_mut(id)
                 .and_then(|p| p.active_mut().back())
         };
-        if let Some(path) = dest {
-            self.navigation.navigate_pane_no_push(id, path);
+        if let Some(loc) = dest {
+            self.navigate_pane_to_location_no_push(id, loc);
         }
     }
 
@@ -2410,8 +2445,8 @@ impl AppShell {
                 .pane_mut(id)
                 .and_then(|p| p.active_mut().forward())
         };
-        if let Some(path) = dest {
-            self.navigation.navigate_pane_no_push(id, path);
+        if let Some(loc) = dest {
+            self.navigate_pane_to_location_no_push(id, loc);
         }
     }
 

@@ -36,10 +36,13 @@ type PaneLocationChangedCallback = dyn Fn(PaneId, Arc<InMemoryLocationViewModel>
 ///
 /// # Remote locations
 ///
-/// The controller understands [`Location::Remote`] at the API surface —
-/// callers may pass any [`Location`] to `navigate*` — but until the remote
-/// backend registry lands (Phase 2.2), navigating to a remote location
-/// emits a `warn!` and is a no-op. The local fast path is unchanged.
+/// The controller accepts [`Location::Remote`] at the API surface for
+/// symmetry with local paths — but remote navigation is not this
+/// controller's concern. When a remote location arrives here the
+/// controller silently no-ops; the shell-level dispatcher
+/// [`AppShell::navigate_pane_to_location`] catches [`Location::Remote`]
+/// *before* calling this controller and routes it through the remote
+/// mount path instead.
 pub struct NavigationController {
     /// One back/forward stack per pane.
     stacks: SmallVec<[Mutex<BackForwardStack>; 2]>,
@@ -313,16 +316,15 @@ impl NavigationController {
     }
 
     /// Resolve a [`Location`] down to a canonical local [`PathBuf`], or
-    /// `None` if the location is remote (TODO(remote)) or cannot be
-    /// canonicalized.
+    /// `None` if the location is remote (handled by the shell-level
+    /// dispatcher) or cannot be canonicalized.
     fn resolve_local(&self, location: Location) -> Option<PathBuf> {
         let path = match location {
             Location::Local(path) => path,
             Location::Remote(uri, _) => {
-                tracing::warn!(
+                tracing::debug!(
                     uri = %uri,
-                    "navigation: remote locations are not yet wired through NavigationController; \
-                     remote::Connect will land the plumbing in Phase 2.2"
+                    "navigation: remote location dispatched at shell level, controller no-ops"
                 );
                 return None;
             }
@@ -569,9 +571,12 @@ mod tests {
     }
 
     #[test]
-    fn navigate_pane_ignores_remote_location_with_warning() {
+    fn navigate_pane_ignores_remote_location_at_controller_layer() {
+        // Remote destinations are dispatched at the shell level, not
+        // here — the controller silently no-ops so the shell's remote
+        // mount path can handle them without duelling with the local
+        // canonicalise pipeline.
         let ctrl = NavigationController::new(&[]);
-        // Should NOT panic and should NOT install a location.
         ctrl.navigate_pane(
             PaneId(42),
             <Location as std::str::FromStr>::from_str("sftp://user@host/tmp").expect("uri parses"),
