@@ -131,3 +131,96 @@ on all seven.
 test count (+16 unit + 7 integration), same pre-existing FSEvents-timing
 flakies as Phase 2.6 (5 tests). See the session-state `plan.md` for the
 detailed item-by-item breakdown.
+
+---
+
+## Phase 2.9 — remove tree, fix miller/grid/context/icons — LANDED
+
+Follow-up polish sprint after Phase 2.8: retire the Tree view (it
+never left placeholder status), sand off four Miller/Grid/Remote/
+Context bugs, and land a proper lsd-inspired filetype-icon system
+that unifies every view. Full run committed on `main`; test count
+net +31 (4 miller + 27 icons); same known FSEvents flake as prior
+phases that clears on retry.
+
+- **89b8f02** — Remove Tree view + associated action / keybind /
+  cycle. Tree was a placeholder stub since v0.1; removing it cleans
+  up `ViewMode`, the view-cycle keybind sequence, the tree
+  subdirectory, and all Slint plumbing.
+
+- **c9b3838** — Miller autoscroll keeps the newest column in view.
+  Drilling into a deep directory now scrolls the Miller column
+  stack so the newest rightmost column stays visible.
+
+- **3bbeb2a** — Miller loads the pane's own Location, not the local
+  `/`. A remote (SFTP) pane switching into Miller view no longer
+  rebuilds column 0 from the local filesystem root. Threaded
+  `pane.location()` through `MillerController::open_at`.
+
+- **ae0b0c0** — Grid view is a proper grid. Row heights and cell
+  widths are now constants — the last row no longer stretches to
+  fill leftover vertical space.
+
+- **926998e** — Capability-aware context menu extended to Miller +
+  Gallery. Reuses the Phase 2.8 `ContextTarget` / `ContextCapabilities`
+  model (`5e8f69b`). New `MillerController::column_entry` +
+  `focus_row_within_column` (visual-only — right-click does NOT
+  navigate). New `GalleryController::entry_at`. New
+  `AppShell::open_context_menu_for_entry(pane, entry, x, y)` for
+  views that own per-cell focus state and cannot rely on
+  `pane_cache.details_focused_index`. Slint: new `entry-context-menu`
+  / `row-context-menu` callbacks on the Gallery strip and Miller
+  columns, both using the `absolute-position` translation pattern
+  from `details/row.slint`. +4 unit tests on the new Miller helpers.
+
+- **2fec4d3** — Symlink glyph uses a covered codepoint (tofu-safe).
+  Previous `↳` (U+21B3) rendered as tofu on the SF Pro Text / Apple
+  Symbols stack. Replaced with `↪` (U+21AA) for healthy symlinks
+  and `⚠` (U+26A0) for broken. One-line swap in each of the four
+  view controllers; supersession by `ca35f80` centralises later.
+
+- **ca35f80** — Filetype icon system (lsd-inspired), unified across
+  Details / Grid / Miller / Gallery. New module
+  `crates/atlas-ui/src/theming/icons.rs` exposes
+  `icon_for(entry) → IconGlyph { glyph, description }` plus a pure
+  test-friendly `icon_for_with(entry, use_emoji)` variant. Emoji map
+  covers directories (📁), symlinks (↪ / ⚠), executables (⚡), rust
+  (🦀), markdown (📝), json (📋), config (⚙), images (🖼), video
+  (🎬), audio (🎵), pdf (📕), archives (🗜), shell scripts (▶),
+  python (🐍), js/ts (📘), web assets (🌐), text (📄), go (🐹), c/c++
+  (⚙). Executable detection uses unix `x` bits with Windows extension
+  fallback. Symlinks keep their symlink glyph regardless of target
+  kind — we do NOT recurse. New config knob `[ui.icons] use_emoji`
+  (default `true`) toggles a bracketed ASCII fallback (`[D]`, `[F]`,
+  `[L]`, `[X]`, `[!]`, `[?]`) — live-reload aware. `TODO(fonts):`
+  marker documents the deferred Nerd Font pack. +27 unit tests
+  covering every mapped extension family and edge case (symlink-to-
+  dir doesn't recurse, executable bit beats extension mapping,
+  uppercase extension normalises, unknown / no extension fall back,
+  ASCII mode swaps every glyph).
+
+### Baseline & regressions
+
+Baseline before Phase 2.9: 530 lib tests, 1 pre-existing FSEvents
+flake (`theming::watcher::tests::hot_reload_on_file_change`).
+
+After Phase 2.9: 561 lib tests (net +31), same one known flake, no
+new failures. `cargo build --workspace ✓ · cargo clippy --workspace
+--all-targets -- -D warnings ✓ · cargo fmt --all --check ✓ · cargo
+test --workspace ✓`.
+
+### Deferred items after Phase 2.9
+
+- ⏸️ Nerd Font pack for the icons module — would let us render
+  `nf-fa-file-code`, `nf-dev-rust`, etc. beyond emoji. Requires
+  bundling a Nerd Font in resources and adding a
+  `[ui.icons] pack = "emoji" | "nerd" | "ascii"` config knob.
+  `TODO(fonts):` marker on the icons module documents the
+  extension point.
+- ⏸️ Per-filetype color tinting (lsd colours the glyph background
+  by kind). Slint 1.17 cannot paint per-run text colour from a
+  Rust callback out of the box. Defer to either the Nerd Font
+  pack (colour baked into the glyph) or a Slint 2.x upgrade.
+- ⏸️ Dynamic `Menu` items — Slint 1.17 `Menu` cannot rebuild
+  children from a model at runtime; every item is declared with an
+  `if <bool>: MenuItem { … }` guard. Waiting for Slint 2.x.
