@@ -6,5 +6,7 @@
 //! server-catalogue viewer will land here as separate modules.
 
 pub mod connect;
+pub mod preview;
 
 pub use connect::ConnectController;
+pub use preview::{OpenHandler, PreviewCache, PreviewError, PreviewOutcome, RealOpener};

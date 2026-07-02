@@ -27,7 +27,7 @@ pub use conflict::{ConflictDecision, ConflictPolicy, ConflictResponder};
 pub use execute::execute_op;
 pub use op::{OpEvent, OpId, OpKind, OpKindDescriptor, OpStatus, Operation, ProgressSnapshot};
 pub use queue::{OperationQueue, QueueOptions};
-pub use remote::{cache_session_credentials, clear_session_credentials};
+pub use remote::{cache_session_credentials, clear_session_credentials, credentials_for};
 pub use undo::{UndoEntry, UndoStack, UndoToken};
 
 #[doc(hidden)]

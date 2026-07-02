@@ -811,6 +811,9 @@ pub struct AppShell {
     bulk_rename: Arc<BulkRenameController>,
     /// Connect-to-Server modal controller.
     connect: Arc<ConnectController>,
+    /// Remote-file preview cache — used by `fs::View` on remote panes
+    /// to download-then-open a file with the OS default handler.
+    preview: crate::remote::PreviewCache,
     /// OS-clipboard bridge for Copy / Cut / Paste of file paths.
     clipboard: Arc<crate::clipboard::ClipboardController>,
     /// Shared thumbnail cache used when building new pane controllers on split.
@@ -897,6 +900,7 @@ impl AppShell {
         let connect = ConnectController::new();
         connect.attach_window(window.as_weak());
         let clipboard = crate::clipboard::ClipboardController::new(Arc::clone(&ops));
+        let preview = crate::remote::PreviewCache::new(atlas_config::RemotePreview::default());
 
         // Construct the shell cyclically so controllers can hold a weak
         // reference to it (used to route publish_* calls back into the cache).
@@ -932,6 +936,7 @@ impl AppShell {
                 ops,
                 bulk_rename,
                 connect: Arc::clone(&connect),
+                preview,
                 clipboard,
                 thumb_cache,
                 thumb_worker_count,
@@ -1687,6 +1692,19 @@ impl AppShell {
             .read()
             .pane(id)
             .map(PaneState::active_location)
+    }
+
+    /// Overwrite the preview cache configuration (called on startup
+    /// and by the config hot-reload watcher).
+    pub fn set_remote_preview_config(&self, config: atlas_config::RemotePreview) {
+        self.preview.set_config(config);
+    }
+
+    /// Access the preview cache, primarily for tests that need to
+    /// substitute a recording `OpenHandler`.
+    #[must_use]
+    pub fn preview_cache(&self) -> &crate::remote::PreviewCache {
+        &self.preview
     }
 
     /// Set the view mode for pane `id` and push the change to the UI.

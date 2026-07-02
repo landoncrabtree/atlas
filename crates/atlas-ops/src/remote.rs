@@ -111,7 +111,23 @@ pub fn clear_session_credentials(uri: &atlas_core::RemoteUri) {
     SESSION_CREDENTIALS.write().remove(&key);
 }
 
-fn credentials_for(uri: &atlas_core::RemoteUri) -> Result<Credentials, AtlasError> {
+/// Resolve the effective [`Credentials`] for `uri` without prompting the
+/// user. Consults the session cache first (populated on successful
+/// connect); falls back to the OS keychain via the persisted
+/// `credential_ref`; and finally to [`Credentials::Anonymous`].
+///
+/// This is the shared entry point used by every `atlas-ops` re-open
+/// call and, out-of-crate, by `atlas-ui` for silent remote-pane
+/// navigation and the preview cache — both of which need the same
+/// credentials the user already authorised at connect time.
+///
+/// # Errors
+///
+/// Only returns [`AtlasError`] if the session cache lookup itself
+/// fails (never, in practice). Keychain lookup failures are logged and
+/// degraded to [`Credentials::Anonymous`] so the caller can decide
+/// whether an anonymous retry makes sense.
+pub fn credentials_for(uri: &atlas_core::RemoteUri) -> Result<Credentials, AtlasError> {
     // 1) Session-scoped in-memory cache — the fast path taken during
     // interactive Cmd+C / Cmd+V without keychain prompts.
     if let Some(cred) = SESSION_CREDENTIALS.read().get(&cred_key(uri)).cloned() {

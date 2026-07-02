@@ -47,6 +47,7 @@ pub mod host_key;
 pub mod known_hosts;
 pub mod pool;
 pub mod retry;
+pub mod runtime;
 pub mod secrets;
 pub mod stream;
 pub mod vm;

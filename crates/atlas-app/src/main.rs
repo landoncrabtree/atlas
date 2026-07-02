@@ -249,6 +249,10 @@ fn main() -> Result<()> {
     shell.set_animations_enabled(config.ui.animations);
     // config: reads config.ui.active_pane_border_px
     shell.set_active_pane_border_px(config.ui.active_pane_border_px);
+    // config: reads config.remote.preview (cache_dir, max_bytes,
+    // max_age_secs, max_open_bytes) so remote-file previews land in
+    // the user-configured cache.
+    shell.set_remote_preview_config(config.remote.preview.clone());
     spawn_theme_event_thread(Arc::clone(&shell), Arc::clone(&themes_arc), theme_events);
 
     // Start the config hot-reload watcher so users can edit config.toml and

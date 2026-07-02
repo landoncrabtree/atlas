@@ -1,8 +1,8 @@
 //! Default values for every configuration struct.
 
 use super::schema::{
-    Density, DetailsView, General, Indexer, Navigation, Remote, RemotePool, Search, SortKey,
-    SortOrder, Thumbnails, Ui, View, ViewMode,
+    Density, DetailsView, General, Indexer, Navigation, Remote, RemotePool, RemotePreview, Search,
+    SortKey, SortOrder, Thumbnails, Ui, View, ViewMode,
 };
 
 impl Default for General {
@@ -117,6 +117,18 @@ impl Default for Remote {
             backoff_initial_ms: 100,
             backoff_max_ms: 5_000,
             backoff_multiplier: 2.0,
+            preview: RemotePreview::default(),
+        }
+    }
+}
+
+impl Default for RemotePreview {
+    fn default() -> Self {
+        Self {
+            cache_dir: None,
+            max_bytes: 200_000_000,
+            max_age_secs: 86_400,
+            max_open_bytes: 100_000_000,
         }
     }
 }

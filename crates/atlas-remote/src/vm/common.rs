@@ -34,6 +34,13 @@ use crate::error::{RemoteError, RemoteMetadata, RemoteMode, RemoteResult};
 /// available. A single multi-thread runtime backs all
 /// [`super::RemoteLocationViewModel`] instances so we don't spawn a
 /// thread pool per open pane.
+///
+/// # Note
+///
+/// The runtime factory is defined in [`crate::runtime`]; the local
+/// wrapper is kept for the historical call sites so tests can still
+/// grab the same handle via `common::worker_runtime`.
+#[allow(dead_code)]
 pub(crate) fn worker_runtime() -> &'static Runtime {
     static WORKER: OnceCell<Runtime> = OnceCell::new();
     WORKER.get_or_init(|| {
@@ -47,7 +54,7 @@ pub(crate) fn worker_runtime() -> &'static Runtime {
 }
 
 pub(crate) fn resolve_runtime_handle() -> Handle {
-    Handle::try_current().unwrap_or_else(|_| worker_runtime().handle().clone())
+    crate::runtime::handle()
 }
 
 /// A directory-listing entry surfaced by a [`BackendClient`].

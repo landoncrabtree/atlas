@@ -355,6 +355,35 @@ pub struct Remote {
     pub backoff_max_ms: u32,
     /// Exponential growth factor applied between retries.
     pub backoff_multiplier: f32,
+    /// Preview cache for remote file open (double-click / Enter on a
+    /// remote pane).
+    pub preview: RemotePreview,
+}
+
+/// Preview cache for remote file open (Phase 2.7). When the user
+/// activates a file on a remote pane we download it into
+/// `<cache_dir>/<sha256(uri:mtime:size)>/<name>` and hand the local
+/// copy off to `open::that`. Subsequent opens of the same file are a
+/// cache hit and skip the network entirely.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RemotePreview {
+    /// Cache directory override. `None` → `ProjectDirs::cache_dir/preview`
+    /// (per platform: `~/Library/Caches/dev.atlas.atlas/preview` on
+    /// macOS, `$XDG_CACHE_HOME/atlas/preview` on Linux,
+    /// `%LOCALAPPDATA%\atlas\preview` on Windows).
+    pub cache_dir: Option<PathBuf>,
+    /// Hard cap on the total on-disk cache size in bytes. When
+    /// exceeded, oldest-accessed entries are evicted first (LRU).
+    /// Default: 200 MB.
+    pub max_bytes: u64,
+    /// Maximum age of a cached preview before it is treated as stale
+    /// and re-downloaded. Default: 24 h (86 400 s).
+    pub max_age_secs: u64,
+    /// Refuse to preview remote files larger than this cap. Above the
+    /// limit the shell logs a hint and instructs the user to copy the
+    /// file into a local pane first. Default: 100 MB.
+    pub max_open_bytes: u64,
 }
 
 /// Connection-pool tunables.
