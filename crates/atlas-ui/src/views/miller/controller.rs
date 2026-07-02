@@ -1,11 +1,12 @@
 //! [`MillerController`] — drives the Slint Miller columns view.
 //!
-//! The controller manages a stack of [`Column`]s, each backed by an
-//! [`atlas_fs::InMemoryLocationViewModel`] and a background subscription
-//! thread.  When the user selects a directory row in column *N* the stack is
-//! truncated to *N+1* columns and a new column is opened for the child
-//! directory.  File selection just updates the focused index without extending
-//! the stack.
+//! The controller manages a stack of [`Column`]s, each backed by a
+//! [`atlas_fs::LocationViewModel`] (constructed by the pane's
+//! [`LocationOpener`]) and a background subscription thread.  When the user
+//! selects a directory row in column *N* the stack is truncated to *N+1*
+//! columns and a new column is opened for the child directory using the same
+//! opener, so a Miller pane rooted at a remote SFTP location descends into
+//! remote sub-directories rather than punching through to the local `/`.
 //!
 //! All Slint property updates are marshalled through
 //! [`slint::invoke_from_event_loop`] so this controller is safe to use from
@@ -37,6 +38,138 @@ use crate::{
     },
     AtlasWindow, EntryRowItem,
 };
+
+// ── LocationOpener ────────────────────────────────────────────────────────────
+
+/// Abstraction over "open a directory as a [`LocationViewModel`]".
+///
+/// The shell hands one of these to the Miller controller when it navigates a
+/// pane: a [`LocalLocationOpener`] for local file:// panes, or an opener that
+/// wraps a live [`atlas_remote::RemoteLocationViewModel`] so Miller columns
+/// can descend into remote sub-directories using the pane's already-opened
+/// connection pool entry.
+pub trait LocationOpener: Send + Sync {
+    /// Open `path` as a live [`LocationViewModel`].
+    ///
+    /// Called synchronously from the controller when a new column is pushed;
+    /// implementations should return quickly (the returned VM streams entries
+    /// asynchronously via its subscribe channel).
+    fn open(&self, path: PathBuf) -> Arc<dyn LocationViewModel>;
+}
+
+/// Default [`LocationOpener`] that opens local paths via
+/// [`InMemoryLocationViewModel::open_live`] with hidden files filtered out
+/// and symlinks followed.
+pub struct LocalLocationOpener;
+
+impl LocationOpener for LocalLocationOpener {
+    fn open(&self, path: PathBuf) -> Arc<dyn LocationViewModel> {
+        InMemoryLocationViewModel::open_live(
+            path,
+            OpenOptions {
+                include_hidden: false,
+                follow_symlinks: true,
+                ..OpenOptions::default()
+            },
+        )
+    }
+}
+
+/// [`LocationOpener`] for a remote-backed Miller pane.
+///
+/// Rebuilds a fresh [`atlas_remote::RemoteLocationViewModel`] for every
+/// column by cloning the pane's initial `uri` and swapping its `.path`
+/// component.  The remote connection pool guarantees that all sub-columns
+/// reuse the pane's already-established SSH / HTTP session, so descending
+/// through a Miller pane does not re-handshake for every column.
+pub struct RemoteLocationOpener {
+    /// Template URI for the pane.  Only the `.path` component changes per
+    /// column.
+    template: atlas_core::RemoteUri,
+    /// Backend kind, cloned onto every derived URI.
+    kind: atlas_core::BackendKind,
+}
+
+impl RemoteLocationOpener {
+    /// Construct a remote opener from the pane's root
+    /// [`atlas_remote::RemoteLocationViewModel`].
+    #[must_use]
+    pub fn from_remote(remote: &atlas_remote::RemoteLocationViewModel) -> Self {
+        Self {
+            template: remote.remote_uri().clone(),
+            kind: remote.backend_kind(),
+        }
+    }
+}
+
+impl LocationOpener for RemoteLocationOpener {
+    fn open(&self, path: PathBuf) -> Arc<dyn LocationViewModel> {
+        // Re-fetch credentials from the ops keyring on each open.  The pool
+        // key already re-uses the existing session for the (kind, host,
+        // port, user, credentials) tuple, so this is cheap and keeps the
+        // opener stateless w.r.t. secret material.
+        let mut uri = self.template.clone();
+        // Remote paths are always POSIX-style; convert via to_string_lossy so
+        // Windows callers producing e.g. `PathBuf::from("/tmp/x")` still
+        // serialise correctly.
+        uri.path = path.to_string_lossy().into_owned();
+
+        let credentials = match atlas_ops::credentials_for(&uri) {
+            Ok(c) => c,
+            Err(err) => {
+                tracing::warn!(%err, path = %uri.path, "miller remote opener: credential lookup failed; falling back to local");
+                return InMemoryLocationViewModel::open_live(
+                    path,
+                    OpenOptions {
+                        include_hidden: false,
+                        follow_symlinks: true,
+                        ..OpenOptions::default()
+                    },
+                );
+            }
+        };
+        let opts = OpenOptions::default();
+
+        let opened = match self.kind {
+            atlas_core::BackendKind::Sftp => {
+                atlas_remote::RemoteLocationViewModel::open_live_sftp_with_options(
+                    uri.clone(),
+                    credentials,
+                    opts,
+                    atlas_remote::vm::sftp::SftpOptions {
+                        known_hosts_mode: atlas_remote::vm::sftp::default_known_hosts_mode(),
+                        resolver: None,
+                    },
+                )
+            }
+            _ => atlas_remote::RemoteLocationViewModel::open_live(
+                uri.clone(),
+                self.kind,
+                credentials,
+                opts,
+            ),
+        };
+
+        match opened {
+            Ok(vm) => vm as Arc<dyn LocationViewModel>,
+            Err(err) => {
+                tracing::warn!(%err, path = %uri.path, "miller remote opener: open_live failed");
+                // Return an in-memory empty view model so the column renders as
+                // an empty list rather than panicking.  Uses a nonexistent local
+                // path so `is_loaded()` transitions to true immediately with 0
+                // entries.
+                InMemoryLocationViewModel::open_live(
+                    path,
+                    OpenOptions {
+                        include_hidden: false,
+                        follow_symlinks: true,
+                        ..OpenOptions::default()
+                    },
+                )
+            }
+        }
+    }
+}
 
 // ── Internal types ────────────────────────────────────────────────────────────
 
@@ -70,6 +203,10 @@ pub struct MillerController {
     shell: std::sync::Weak<AppShell>,
     /// Shared action sink for emitting navigation / open-file actions.
     actions: Arc<Mutex<Box<dyn ActionSink>>>,
+    /// Opener used to construct new columns.  Swapped whenever the pane's
+    /// [`atlas_fs::LocationViewModel`] flavour changes (e.g. mounting a
+    /// remote location swaps in a remote-aware opener).
+    opener: RwLock<Arc<dyn LocationOpener>>,
 }
 
 impl MillerController {
@@ -90,6 +227,7 @@ impl MillerController {
             window: RwLock::new(slint::Weak::default()),
             shell,
             actions,
+            opener: RwLock::new(Arc::new(LocalLocationOpener) as Arc<dyn LocationOpener>),
         })
     }
 
@@ -100,15 +238,37 @@ impl MillerController {
         *self.window.write() = window;
     }
 
+    /// Swap in a new [`LocationOpener`] for subsequent column pushes.
+    ///
+    /// Existing columns keep their originally-opened view models.  The next
+    /// call to [`Self::set_root`] (or a `select_row` that pushes a child
+    /// column) will use the new opener.
+    pub fn set_opener(&self, opener: Arc<dyn LocationOpener>) {
+        *self.opener.write() = opener;
+    }
+
     /// Root the Miller stack at `path`.
     ///
-    /// Stops and drops all existing columns, then opens a fresh column for
-    /// `path`.  Pushes the updated state to the Slint UI.
+    /// Uses the currently-installed [`LocationOpener`] (see
+    /// [`Self::set_opener`]).  Stops and drops all existing columns, then
+    /// opens a fresh column for `path`.  Pushes the updated state to the
+    /// Slint UI.
     pub fn set_root(self: &Arc<Self>, path: PathBuf) {
         self.stop_all_columns();
         self.push_new_column(path);
         self.focused_column.store(0, Ordering::Relaxed);
         self.push_ui_metadata();
+    }
+
+    /// Root the Miller stack at `path` using an explicit [`LocationOpener`].
+    ///
+    /// Convenience wrapper that swaps the opener and then calls
+    /// [`Self::set_root`] in one atomic-looking operation.  This is the seam
+    /// used by the shell when mounting a remote location so subsequent
+    /// column pushes reuse the remote connection pool entry.
+    pub fn set_root_with_opener(self: &Arc<Self>, path: PathBuf, opener: Arc<dyn LocationOpener>) {
+        self.set_opener(opener);
+        self.set_root(path);
     }
 
     /// Handle a row click in `column`.
@@ -280,17 +440,12 @@ impl MillerController {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
-    /// Open a new column for `path`, spawn its subscription thread, and append
-    /// it to the columns stack.  Pushes the initial entry list to the UI.
+    /// Open a new column for `path` using the currently-installed
+    /// [`LocationOpener`], spawn its subscription thread, and append it to
+    /// the columns stack.  Pushes the initial entry list to the UI.
     fn push_new_column(self: &Arc<Self>, path: PathBuf) {
-        let location = InMemoryLocationViewModel::open_live(
-            path.clone(),
-            OpenOptions {
-                include_hidden: false,
-                follow_symlinks: true,
-                ..OpenOptions::default()
-            },
-        );
+        let opener = Arc::clone(&*self.opener.read());
+        let location: Arc<dyn LocationViewModel> = opener.open(path.clone());
 
         let column = Column::new(path, Arc::clone(&location));
         let (stop_tx, stop_rx) = unbounded::<()>();
@@ -727,6 +882,68 @@ mod tests {
         ctrl.move_column(-1);
         assert_eq!(ctrl.column_count(), 1, "move_column(-1) should close col 1");
         assert_eq!(ctrl.focused_col(), 0);
+    }
+
+    // ── LocationOpener plumbing ───────────────────────────────────────────────
+
+    /// Counting opener that records every path it's asked to open — used to
+    /// verify that `set_root_with_opener` routes through the caller's opener
+    /// (rather than always falling back to a local `InMemoryLocationViewModel`,
+    /// which was the bug for Miller on remote panes in phase 2.3).
+    struct CountingOpener {
+        target: PathBuf,
+        seen: parking_lot::Mutex<Vec<PathBuf>>,
+    }
+
+    impl LocationOpener for CountingOpener {
+        fn open(&self, path: PathBuf) -> Arc<dyn LocationViewModel> {
+            self.seen.lock().push(path.clone());
+            // Redirect every open() to a fixed test directory so entries are
+            // deterministic regardless of the `path` argument.  This models a
+            // "remote" opener that ignores local path structure and always
+            // reads from its own backend.
+            InMemoryLocationViewModel::open_live(
+                self.target.clone(),
+                OpenOptions {
+                    include_hidden: false,
+                    follow_symlinks: true,
+                    ..OpenOptions::default()
+                },
+            )
+        }
+    }
+
+    #[test]
+    fn set_root_with_opener_uses_custom_opener() {
+        // Two independent temp trees: `real` mimics the "remote" tree the
+        // opener redirects to, `fake` is the path the miller root is nominally
+        // set to (mimicking the remote URI path being `/`).
+        let real = make_tree();
+        let fake = tempfile::tempdir().expect("tempdir");
+        let opener = Arc::new(CountingOpener {
+            target: real.path().to_path_buf(),
+            seen: parking_lot::Mutex::new(Vec::new()),
+        });
+
+        let ctrl = make_ctrl();
+        ctrl.set_root_with_opener(fake.path().to_path_buf(), opener.clone());
+        wait_until(|| ctrl.column_loaded(0));
+
+        // Even though set_root was called with `fake.path()`, the opener
+        // redirected the listing to `real.path()`, so we see real's entries.
+        let names: Vec<String> = ctrl
+            .column_entries(0)
+            .iter()
+            .map(|e| e.name.to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "subdir_a"),
+            "opener listing should contain subdir_a, got {names:?}"
+        );
+
+        // The opener saw exactly one open() call for the root column.
+        assert_eq!(opener.seen.lock().len(), 1);
+        assert_eq!(opener.seen.lock()[0], fake.path().to_path_buf());
     }
 
     // ── compute_miller_viewport_x ─────────────────────────────────────────────

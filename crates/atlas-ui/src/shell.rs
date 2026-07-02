@@ -1172,13 +1172,13 @@ impl AppShell {
     /// Called by [`ConnectController`] once the OpenDAL handshake
     /// succeeds. Swaps the pane's `PaneModel::location`, injects the vm
     /// into the shell's per-pane vm map, and re-subscribes the details /
-    /// grid / gallery view controllers. Also fires the same UI refresh
-    /// as local navigation (breadcrumb, address bar, ops panel).
+    /// grid / gallery / miller view controllers. Also fires the same UI
+    /// refresh as local navigation (breadcrumb, address bar, ops panel).
     ///
-    /// Unlike [`Self::on_location_changed_impl`] this does NOT touch
-    /// `ctrl.miller`: the miller column view does not have remote-fs
-    /// plumbing yet (it is a file-tree walker over a native `PathBuf`).
-    /// Remote-fs support for it is scheduled for phase 2.5.
+    /// The miller controller is re-rooted at the remote path using a
+    /// [`crate::views::miller::RemoteLocationOpener`] so subsequent column
+    /// pushes reuse the pane's SSH/S3/… session pool entry instead of
+    /// punching through to the local `/`.
     pub fn open_remote_location(
         self: &Arc<Self>,
         pane_id: PaneId,
@@ -1196,11 +1196,25 @@ impl AppShell {
                 ctrl.details.set_location(Arc::clone(&vm_dyn));
                 ctrl.grid.set_location(Arc::clone(&vm_dyn));
                 ctrl.gallery.set_location(Arc::clone(&vm_dyn));
-                // Note: miller is local-only for now. On
-                // remote mount it retains its previous local root
-                // silently; the pane's details/grid/gallery views are
-                // what the user actually sees for a remote pane in
-                // phase 2.3.
+                // Miller: re-root at the remote path using a remote-aware
+                // opener so descending into subdirs reuses the pool session.
+                // Local panes get a `LocalLocationOpener` when they navigate
+                // via `on_location_changed_impl`.
+                if let Some(remote) = remote.as_ref() {
+                    let opener: Arc<dyn crate::views::miller::LocationOpener> = Arc::new(
+                        crate::views::miller::RemoteLocationOpener::from_remote(remote),
+                    );
+                    ctrl.miller
+                        .set_root_with_opener(vm_dyn.location().to_path_buf(), opener);
+                } else {
+                    // No concrete remote handle — fall back to the local
+                    // opener so at least the root column shows *some*
+                    // listing (better than the stale previous path).
+                    let opener: Arc<dyn crate::views::miller::LocationOpener> =
+                        Arc::new(crate::views::miller::LocalLocationOpener);
+                    ctrl.miller
+                        .set_root_with_opener(vm_dyn.location().to_path_buf(), opener);
+                }
             }
         }
 
@@ -3036,7 +3050,12 @@ impl AppShell {
                 ctrl.details.set_location(Arc::clone(&vm_dyn));
                 ctrl.grid.set_location(Arc::clone(&vm_dyn));
                 ctrl.gallery.set_location(Arc::clone(&vm_dyn));
-                ctrl.miller.set_root(path.clone());
+                // Explicitly install the local opener before re-rooting so a
+                // pane that was previously remote drops its stale remote
+                // opener and future column pushes hit the local filesystem.
+                let opener: Arc<dyn crate::views::miller::LocationOpener> =
+                    Arc::new(crate::views::miller::LocalLocationOpener);
+                ctrl.miller.set_root_with_opener(path.clone(), opener);
             }
         }
 

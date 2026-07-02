@@ -1,8 +1,12 @@
 //! Per-column state for the Miller columns view.
 //!
 //! Each [`Column`] corresponds to one visible column in the Miller stack and
-//! owns a live [`atlas_fs::InMemoryLocationViewModel`] that streams directory
-//! contents into [`Column::entries`].
+//! owns a live [`LocationViewModel`] that streams directory contents into
+//! [`Column::entries`].  The concrete backing view model (local
+//! [`atlas_fs::InMemoryLocationViewModel`], remote
+//! [`atlas_remote::RemoteLocationViewModel`], …) is chosen by the controller's
+//! [`super::controller::LocationOpener`] so a Miller pane can descend into
+//! either a local path or a remote SFTP/S3/… tree without duplicating logic.
 
 use std::{
     path::PathBuf,
@@ -12,7 +16,7 @@ use std::{
     },
 };
 
-use atlas_fs::{Entry, InMemoryLocationViewModel};
+use atlas_fs::{Entry, LocationViewModel};
 use parking_lot::RwLock;
 
 /// Maximum number of concurrently visible Miller columns.
@@ -25,10 +29,10 @@ pub const MAX_COLUMNS: usize = 8;
 /// Shared between the main thread (reads entries for Slint pushes) and the
 /// per-column subscription thread (writes entries when the location updates).
 pub struct Column {
-    /// Filesystem path this column is rooted at.
+    /// Filesystem or remote path this column is rooted at.
     pub path: PathBuf,
     /// Live-updating view model for the directory.
-    pub location: Arc<InMemoryLocationViewModel>,
+    pub location: Arc<dyn LocationViewModel>,
     /// Sorted, filtered entry snapshot — updated by the subscription thread.
     pub entries: RwLock<Vec<Entry>>,
     /// Focused row index within this column (0-based; `usize::MAX` = none).
@@ -40,7 +44,7 @@ pub struct Column {
 impl Column {
     /// Construct a new column for `path` backed by `location`.
     #[must_use]
-    pub fn new(path: PathBuf, location: Arc<InMemoryLocationViewModel>) -> Arc<Self> {
+    pub fn new(path: PathBuf, location: Arc<dyn LocationViewModel>) -> Arc<Self> {
         Arc::new(Self {
             path,
             location,
