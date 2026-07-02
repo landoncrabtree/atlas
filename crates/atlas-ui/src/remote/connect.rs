@@ -261,10 +261,13 @@ impl ConnectController {
     }
 
     pub fn set_auth(&self, idx: i32) {
-        let mut st = self.state.lock();
-        st.auth = Some(AuthChoice::from_index(idx));
-        st.status_text.clear();
-        st.status_is_error = false;
+        {
+            let mut st = self.state.lock();
+            st.auth = Some(AuthChoice::from_index(idx));
+            st.status_text.clear();
+            st.status_is_error = false;
+        }
+        self.push_to_ui();
     }
 
     /// Freeform-connection-string edit. Attempts to reparse and echo the
@@ -367,10 +370,19 @@ impl ConnectController {
     }
 
     pub fn set_password(&self, s: String) {
-        let mut st = self.state.lock();
-        st.password = s;
-        st.status_text.clear();
-        st.status_is_error = false;
+        let clear_status;
+        {
+            let mut st = self.state.lock();
+            st.password = s;
+            clear_status = st.status_is_error;
+            if clear_status {
+                st.status_text.clear();
+                st.status_is_error = false;
+            }
+        }
+        if clear_status {
+            self.push_to_ui();
+        }
     }
 
     pub fn set_ssh_key_path(&self, s: String) {
