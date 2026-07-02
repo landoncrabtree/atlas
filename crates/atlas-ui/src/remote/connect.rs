@@ -33,7 +33,11 @@ use atlas_core::{BackendKind, Location, LocationParseError};
 use atlas_fs::{OpenOptions, ViewModelEvent};
 use atlas_remote::{
     backend::{BackendError, Credentials},
-    secrets, RemoteLocationViewModel,
+    host_key::{HostKeyDecision, HostKeyRequest, HostKeyResolver, KnownHostsMode},
+    known_hosts::HostKeyStatus,
+    secrets,
+    vm::sftp::SftpOptions,
+    RemoteLocationViewModel,
 };
 use parking_lot::Mutex;
 
@@ -158,6 +162,28 @@ struct State {
     /// callers must call [`ConnectController::refresh_saved_servers`]
     /// after any add / delete to keep it in sync.
     saved_servers: Vec<SavedServerRow>,
+    /// TOFU state — Some when the SFTP handshake is currently paused
+    /// waiting for a Trust decision. See
+    /// [`ConnectController::start_host_key_prompt`].
+    host_key_prompt: Option<HostKeyPrompt>,
+}
+
+/// Slint-side view of a single outstanding TOFU decision.
+///
+/// The [`HostKeyResolver`] hands us a [`HostKeyRequest`] from the SFTP
+/// handshake thread; we stash a `HostKeyPrompt` here, push the banner
+/// state to Slint, and complete the `oneshot::Sender` when the user
+/// clicks Trust / Cancel.
+struct HostKeyPrompt {
+    /// Reply channel back to the SFTP handshake.
+    reply: tokio::sync::oneshot::Sender<HostKeyDecision>,
+    /// Host string being connected to (for banner display).
+    host: String,
+    /// Offered fingerprint, formatted `SHA256:<b64>`.
+    offered_fingerprint: String,
+    /// When the current status is [`HostKeyStatus::Mismatch`], the
+    /// previously-known fingerprint; empty otherwise.
+    known_fingerprint: String,
 }
 
 /// A single saved-server row rendered in the modal's list. Kept
@@ -451,6 +477,92 @@ impl ConnectController {
         tracing::info!("connect: browse SSH key requested (no-op stub — phase 2.5)");
     }
 
+    // ── TOFU host-key handling (Phase 2.6) ─────────────────────────────────
+
+    /// Build a [`HostKeyResolver`] whose prompter dispatches into this
+    /// controller's state. The returned resolver is cheap to clone —
+    /// internally it wraps an `Arc<dyn Fn>` — so each connect worker
+    /// grabs a fresh copy via this helper.
+    ///
+    /// Prompt semantics:
+    /// * The resolver's closure is called from inside the tokio runtime
+    ///   driving the SFTP handshake. It captures a `Weak<Self>` so it
+    ///   never keeps the controller alive past window teardown.
+    /// * The closure installs a `HostKeyPrompt` into
+    ///   [`State::host_key_prompt`] and pushes the banner state to
+    ///   Slint via [`Self::push_to_ui`]. It returns a fresh
+    ///   `oneshot::Receiver` which the Trust / Cancel callbacks
+    ///   complete on the UI thread.
+    /// * Only one prompt can be in flight at a time (the modal is
+    ///   modal). A second prompt arriving while one is queued gets an
+    ///   immediate Cancel — the user can retry from the modal.
+    fn host_key_resolver(self: &Arc<Self>) -> HostKeyResolver {
+        let weak = Arc::downgrade(self);
+        HostKeyResolver::new(move |req: HostKeyRequest| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let Some(this) = weak.upgrade() else {
+                // Controller went away; fail closed.
+                let _ = tx.send(HostKeyDecision::Cancel);
+                return rx;
+            };
+            let known_fp = match &req.current_status {
+                HostKeyStatus::Mismatch { known_fingerprint } => known_fingerprint.clone(),
+                _ => String::new(),
+            };
+            let mut st = this.state.lock();
+            if st.host_key_prompt.is_some() {
+                // Another prompt is already displayed — reject the new
+                // request rather than losing it silently.
+                let _ = tx.send(HostKeyDecision::Cancel);
+                return rx;
+            }
+            st.host_key_prompt = Some(HostKeyPrompt {
+                reply: tx,
+                host: req.host.clone(),
+                offered_fingerprint: req.offered_fingerprint.clone(),
+                known_fingerprint: known_fp,
+            });
+            drop(st);
+            this.push_to_ui();
+            rx
+        })
+    }
+
+    /// User clicked **Trust once** on the TOFU banner. Complete the
+    /// resolver's reply channel with [`HostKeyDecision::TrustOnce`] so
+    /// the SFTP handshake resumes without persisting anything.
+    pub fn host_key_trust_once(&self) {
+        self.finish_host_key_prompt(HostKeyDecision::TrustOnce);
+    }
+
+    /// User clicked **Trust always** (or **Replace and continue** on a
+    /// mismatch). Complete the reply channel with
+    /// [`HostKeyDecision::TrustAlways`] — the SFTP handler writes the
+    /// key into `~/.config/atlas/known_hosts`.
+    pub fn host_key_trust_always(&self) {
+        self.finish_host_key_prompt(HostKeyDecision::TrustAlways);
+    }
+
+    /// User clicked **Cancel** (or hit Escape / Enter). Complete the
+    /// reply channel with [`HostKeyDecision::Cancel`] — the SFTP
+    /// handshake aborts and the modal surfaces a "Timed out" style
+    /// error banner.
+    pub fn cancel_host_key(&self) {
+        self.finish_host_key_prompt(HostKeyDecision::Cancel);
+    }
+
+    /// Common tail for all three Trust / Cancel callbacks.
+    fn finish_host_key_prompt(&self, decision: HostKeyDecision) {
+        let prompt = self.state.lock().host_key_prompt.take();
+        if let Some(prompt) = prompt {
+            // Best-effort send — if the receiver was dropped (handshake
+            // aborted from the other side) the resolver already handed
+            // back Cancel via its timeout path.
+            let _ = prompt.reply.send(decision);
+        }
+        self.push_to_ui();
+    }
+
     // ── Saved-servers list ──────────────────────────────────────────────────
 
     /// Rebuild the saved-servers list from `servers.toml` and push to
@@ -727,12 +839,24 @@ impl ConnectController {
                 return;
             }
         };
-        let concrete = match RemoteLocationViewModel::open_live(
-            remote_uri.clone(),
-            backend_kind,
-            credentials.clone(),
-            OpenOptions::default(),
-        ) {
+        let concrete = match backend_kind {
+            BackendKind::Sftp => RemoteLocationViewModel::open_live_sftp_with_options(
+                remote_uri.clone(),
+                credentials.clone(),
+                OpenOptions::default(),
+                SftpOptions {
+                    known_hosts_mode: KnownHostsMode::Prompt,
+                    resolver: Some(self.host_key_resolver()),
+                },
+            ),
+            _ => RemoteLocationViewModel::open_live(
+                remote_uri.clone(),
+                backend_kind,
+                credentials.clone(),
+                OpenOptions::default(),
+            ),
+        };
+        let concrete = match concrete {
             Ok(vm) => vm,
             Err(err) => {
                 self.report_error(err_from_backend(&err), format!("{err}"));
@@ -743,17 +867,38 @@ impl ConnectController {
 
         // Step 2 — probe the connection by listening for the first
         // `Loaded` or `Error` event. Bounded timeout so a black-hole
-        // server can't hang the modal.
+        // server can't hang the modal. The TOFU prompt (Phase 2.6) can
+        // pause the handshake for up to 60 s while the user reads and
+        // clicks — we detect that state via `host_key_prompt.is_some()`
+        // and skip timeout accounting for those ticks.
         const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
         let events = vm.subscribe();
         let start = Instant::now();
+        let mut prompt_pause = Duration::ZERO;
+        let mut prompt_started: Option<Instant> = None;
         let mut probe_error: Option<String> = None;
         loop {
             if cancel.load(Ordering::SeqCst) {
                 tracing::info!("connect: cancelled");
                 return;
             }
-            let remaining = PROBE_TIMEOUT.saturating_sub(start.elapsed());
+            // Track how long we've spent waiting for the user on a TOFU
+            // prompt; subtract it from the probe budget so the modal
+            // doesn't time-out under the user's fingers.
+            let prompt_active = self.state.lock().host_key_prompt.is_some();
+            match (prompt_active, prompt_started) {
+                (true, None) => prompt_started = Some(Instant::now()),
+                (false, Some(t0)) => {
+                    prompt_pause = prompt_pause.saturating_add(t0.elapsed());
+                    prompt_started = None;
+                }
+                _ => {}
+            }
+            let elapsed = start
+                .elapsed()
+                .saturating_sub(prompt_pause)
+                .saturating_sub(prompt_started.map(|t| t.elapsed()).unwrap_or_default());
+            let remaining = PROBE_TIMEOUT.saturating_sub(elapsed);
             if remaining.is_zero() {
                 self.report_error(
                     ErrorKind::Network,
@@ -897,6 +1042,12 @@ impl ConnectController {
             win.set_connect_connecting(snapshot.connecting);
             win.set_connect_status_text(snapshot.status_text.into());
             win.set_connect_status_is_error(snapshot.status_is_error);
+            win.set_connect_host_key_prompt_visible(snapshot.host_key_prompt_visible);
+            win.set_connect_host_key_host(snapshot.host_key_host.into());
+            win.set_connect_host_key_fingerprint(snapshot.host_key_fingerprint.into());
+            win.set_connect_host_key_mismatch_known_fingerprint(
+                snapshot.host_key_mismatch_known_fingerprint.into(),
+            );
 
             let rows: Vec<crate::SavedServerRow> = snapshot
                 .saved_servers
@@ -945,6 +1096,12 @@ pub(crate) struct StateSnapshot {
     pub status_text: String,
     pub status_is_error: bool,
     pub saved_servers: Vec<SavedServerRow>,
+    /// True while a TOFU host-key banner is being displayed.
+    pub host_key_prompt_visible: bool,
+    pub host_key_host: String,
+    pub host_key_fingerprint: String,
+    /// Empty if the current prompt is Unknown; non-empty ⇒ Mismatch.
+    pub host_key_mismatch_known_fingerprint: String,
 }
 
 impl State {
@@ -970,6 +1127,22 @@ impl State {
             status_text: self.status_text.clone(),
             status_is_error: self.status_is_error,
             saved_servers: self.saved_servers.clone(),
+            host_key_prompt_visible: self.host_key_prompt.is_some(),
+            host_key_host: self
+                .host_key_prompt
+                .as_ref()
+                .map(|p| p.host.clone())
+                .unwrap_or_default(),
+            host_key_fingerprint: self
+                .host_key_prompt
+                .as_ref()
+                .map(|p| p.offered_fingerprint.clone())
+                .unwrap_or_default(),
+            host_key_mismatch_known_fingerprint: self
+                .host_key_prompt
+                .as_ref()
+                .map(|p| p.known_fingerprint.clone())
+                .unwrap_or_default(),
         }
     }
 }

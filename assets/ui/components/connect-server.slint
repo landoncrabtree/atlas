@@ -73,6 +73,19 @@ export component ConnectServerModal inherits Rectangle {
     in property <string> status-text: "";
     in property <bool> status-is-error: false;
 
+    // ── TOFU host-key prompt (Phase 2.6) ─────────────────────────────────
+    //
+    // The banner is inline between the connection-string row and the
+    // host/port/path row so it can't be dismissed just by scrolling. Rust
+    // sets `host-key-prompt-visible = true` after the SFTP handshake yields
+    // an unknown or mismatched key; three callbacks come back the other
+    // way. Non-empty `host-key-mismatch-known-fingerprint` picks the red
+    // "key changed" variant; empty picks the accent "first-time" variant.
+    in property <bool> host-key-prompt-visible: false;
+    in property <string> host-key-host: "";
+    in property <string> host-key-fingerprint: "";
+    in property <string> host-key-mismatch-known-fingerprint: "";
+
     // ── Saved-servers viewer ──────────────────────────────────────────────
     // The list is fully controlled by Rust: the `saved-servers` array is
     // rebuilt on modal open, on successful connect (to bump the recency
@@ -127,6 +140,11 @@ export component ConnectServerModal inherits Rectangle {
     /// The delete-pending state was aborted (Cancel clicked or another
     /// row selected). Rust clears `delete-pending` on all rows.
     callback saved-server-delete-cancelled();
+
+    // ── TOFU host-key callbacks ─────────────────────────────────────────
+    callback host-key-trust-once();
+    callback host-key-trust-always();
+    callback host-key-cancel();
 
     // ── Derived visibility flags ───────────────────────────────────────────
     // Backend indices: 0=SFTP, 1=FTP, 2=WebDAV, 3=S3.
@@ -312,6 +330,204 @@ export component ConnectServerModal inherits Rectangle {
                                 font-size: Theme.font-size;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                }
+
+                // ── TOFU host-key banner (Phase 2.6) ────────────────────────
+                //
+                // Two variants share one Rectangle to keep layout simple:
+                //   * `host-key-mismatch-known-fingerprint == ""`  → first-time
+                //     host: subtle accent-soft banner with three buttons.
+                //   * `host-key-mismatch-known-fingerprint != ""`  → key changed:
+                //     red-tinted banner with an extra "known" fingerprint line
+                //     and an emphatic scary-warning header.
+                //
+                // Fingerprints render in the monospace theme font so the
+                // 43-char SHA-256 body stays aligned when the user compares
+                // two of them. The banner sits between the connection-string
+                // row and the host/port row so a scroll can't hide it.
+                if root.host-key-prompt-visible: Rectangle {
+                    property <bool> is-mismatch: root.host-key-mismatch-known-fingerprint != "";
+                    border-width: 1px;
+                    border-color: is-mismatch ? Theme.error : Theme.accent;
+                    border-radius: Theme.radius-sm;
+                    background: is-mismatch ? #ff6b6b1f : Theme.accent-soft;
+
+                    VerticalLayout {
+                        padding: Theme.space-3;
+                        spacing: Theme.space-2;
+
+                        Text {
+                            text: is-mismatch
+                                ? "⚠ SERVER KEY CHANGED"
+                                : "The authenticity of this host can't be established.";
+                            color: is-mismatch ? Theme.error : Theme.fg;
+                            font-size: 12px;
+                            font-weight: 700;
+                            wrap: word-wrap;
+                        }
+
+                        Text {
+                            text: is-mismatch
+                                ? "Someone may be intercepting your connection, or this server's key legitimately rotated. Verify the new fingerprint before continuing."
+                                : "Verify the fingerprint below matches what the server operator published, then trust it.";
+                            color: Theme.fg-muted;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+
+                        // Compact key/value grid — subject, offered fp, and
+                        // (for mismatch) the previously-known fp.
+                        VerticalLayout {
+                            spacing: Theme.space-1;
+
+                            HorizontalLayout {
+                                spacing: Theme.space-2;
+                                Text {
+                                    text: "host";
+                                    color: Theme.fg-faint;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    width: 60px;
+                                }
+                                Text {
+                                    text: root.host-key-host;
+                                    color: Theme.fg;
+                                    font-family: Theme.monospace;
+                                    font-size: 12px;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: Theme.space-2;
+                                Text {
+                                    text: is-mismatch ? "offered" : "fingerprint";
+                                    color: Theme.fg-faint;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    width: 60px;
+                                }
+                                Text {
+                                    text: root.host-key-fingerprint;
+                                    color: is-mismatch ? Theme.error : Theme.fg;
+                                    font-family: Theme.monospace;
+                                    font-size: 12px;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            if is-mismatch: HorizontalLayout {
+                                spacing: Theme.space-2;
+                                Text {
+                                    text: "known";
+                                    color: Theme.fg-faint;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    width: 60px;
+                                }
+                                Text {
+                                    text: root.host-key-mismatch-known-fingerprint;
+                                    color: Theme.fg;
+                                    font-family: Theme.monospace;
+                                    font-size: 12px;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        // Buttons row. Cancel is visually emphasised via the
+                        // accent-outlined variant so it reads as the default
+                        // action. The FocusScope grabs focus when the banner
+                        // appears so the user can press Enter or Escape without
+                        // touching the mouse.
+                        host-key-focus := FocusScope {
+                            width: 100%;
+                            height: 30px;
+                            key-pressed(event) => {
+                                if event.text == Key.Escape {
+                                    root.host-key-cancel();
+                                    return accept;
+                                }
+                                if event.text == Key.Return {
+                                    // Enter defaults to Cancel — the safest
+                                    // choice per SSH's own prompt convention.
+                                    root.host-key-cancel();
+                                    return accept;
+                                }
+                                reject;
+                            }
+                            init => { self.focus(); }
+
+                            HorizontalLayout {
+                                spacing: Theme.space-2;
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 30px;
+                                    background: Theme.panel-bg;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+                                    border-radius: Theme.radius-sm;
+                                    TouchArea {
+                                        width: 100%; height: 100%;
+                                        clicked => { root.host-key-trust-once(); }
+                                    }
+                                    Text {
+                                        text: "Trust once";
+                                        color: Theme.fg;
+                                        font-size: 12px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 30px;
+                                    background: is-mismatch ? Theme.error : Theme.accent;
+                                    border-width: 1px;
+                                    border-color: is-mismatch ? Theme.error : Theme.accent;
+                                    border-radius: Theme.radius-sm;
+                                    TouchArea {
+                                        width: 100%; height: 100%;
+                                        clicked => { root.host-key-trust-always(); }
+                                    }
+                                    Text {
+                                        text: is-mismatch ? "Replace and continue" : "Trust always";
+                                        color: Theme.accent-fg;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 30px;
+                                    background: Theme.panel-bg;
+                                    border-width: 1px;
+                                    border-color: Theme.accent;
+                                    border-radius: Theme.radius-sm;
+                                    TouchArea {
+                                        width: 100%; height: 100%;
+                                        clicked => { root.host-key-cancel(); }
+                                    }
+                                    Text {
+                                        text: "Cancel";
+                                        color: Theme.accent;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
                             }
                         }
                     }

@@ -254,6 +254,17 @@ export component AtlasWindow inherits Window {
     in property <bool> connect-connecting: false;
     in property <string> connect-status-text: "";
     in property <bool> connect-status-is-error: false;
+    // ── TOFU host-key prompt (Phase 2.6) ──────────────────────────────
+    //
+    // Pushed by `ConnectController::push_to_ui` when the SFTP handshake
+    // hits an unknown or mismatched host key. Non-empty
+    // `host-key-mismatch-known-fingerprint` distinguishes the two:
+    // empty ⇒ first-time host (accent banner);
+    // non-empty ⇒ key changed (red warning banner).
+    in property <bool> connect-host-key-prompt-visible: false;
+    in property <string> connect-host-key-host: "";
+    in property <string> connect-host-key-fingerprint: "";
+    in property <string> connect-host-key-mismatch-known-fingerprint: "";
     /// The saved-servers list rendered inside the modal. Pushed by
     /// `ConnectController::push_saved_servers_to_ui` on modal open and
     /// after any add / delete / connect. Empty ⇒ modal renders the
@@ -335,6 +346,17 @@ export component AtlasWindow inherits Window {
     callback connect-saved-server-delete-confirmed(string /* id */);
     /// Cancel any pending delete arm.
     callback connect-saved-server-delete-cancelled();
+    // ── TOFU host-key prompt (Phase 2.6) ──────────────────────────────
+    /// User clicked "Trust once" — accept this handshake but don't
+    /// persist the key.
+    callback connect-host-key-trust-once();
+    /// User clicked "Trust always" — accept and write the offered key
+    /// to `~/.config/atlas/known_hosts` so future connects skip the
+    /// prompt.
+    callback connect-host-key-trust-always();
+    /// User clicked "Cancel" — reject the offered key; the handshake
+    /// aborts.
+    callback connect-host-key-cancel();
 
     /// Confirm the pending quit. Rust hides the window immediately.
     callback confirm-quit-accept();
@@ -1155,6 +1177,10 @@ export component AtlasWindow inherits Window {
             status-text: root.connect-status-text;
             status-is-error: root.connect-status-is-error;
             saved-servers: root.connect-saved-servers;
+            host-key-prompt-visible: root.connect-host-key-prompt-visible;
+            host-key-host: root.connect-host-key-host;
+            host-key-fingerprint: root.connect-host-key-fingerprint;
+            host-key-mismatch-known-fingerprint: root.connect-host-key-mismatch-known-fingerprint;
 
             backend-changed(i) => { root.connect-backend-changed(i); }
             auth-changed(i) => { root.connect-auth-changed(i); }
@@ -1179,6 +1205,9 @@ export component AtlasWindow inherits Window {
             saved-server-delete-requested(id) => { root.connect-saved-server-delete-requested(id); }
             saved-server-delete-confirmed(id) => { root.connect-saved-server-delete-confirmed(id); }
             saved-server-delete-cancelled => { root.connect-saved-server-delete-cancelled(); }
+            host-key-trust-once => { root.connect-host-key-trust-once(); }
+            host-key-trust-always => { root.connect-host-key-trust-always(); }
+            host-key-cancel => { root.connect-host-key-cancel(); }
 
             // Bubble the child's `input-focused` up so the outer FocusScope's
             // `keymap-bypass-active` gates Cmd+A/C/V past pane bindings.

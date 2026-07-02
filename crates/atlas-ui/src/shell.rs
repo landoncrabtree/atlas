@@ -3502,6 +3502,19 @@ impl AppShell {
                 connect.cancel_delete_saved_server();
             });
         }
+        // ── TOFU host-key prompt callbacks (Phase 2.6) ────────────────────
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_host_key_trust_once(move || connect.host_key_trust_once());
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_host_key_trust_always(move || connect.host_key_trust_always());
+        }
+        {
+            let connect = Arc::clone(&self.connect);
+            window.on_connect_host_key_cancel(move || connect.cancel_host_key());
+        }
 
         // ── Navigation location callbacks ─────────────────────────────────────
         {
