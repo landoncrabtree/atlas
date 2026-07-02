@@ -4044,12 +4044,6 @@ impl AppShell {
         }
         {
             let connect = Arc::clone(&self.connect);
-            window.on_connect_connection_string_changed(move |s| {
-                connect.set_connection_string(s.to_string());
-            });
-        }
-        {
-            let connect = Arc::clone(&self.connect);
             window.on_connect_host_changed(move |s| connect.set_host(s.to_string()));
         }
         {

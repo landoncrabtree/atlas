@@ -251,7 +251,6 @@ export component AtlasWindow inherits Window {
     in property <bool> connect-modal-visible: false;
     in-out property <int> connect-backend-index: 0;
     in-out property <int> connect-auth-index: 0;
-    in-out property <string> connect-connection-string: "";
     in-out property <string> connect-host: "";
     in-out property <string> connect-port: "";
     in-out property <string> connect-path: "";
@@ -334,7 +333,6 @@ export component AtlasWindow inherits Window {
     // ── Connect-to-Server modal callbacks ─────────────────────────────────
     callback connect-backend-changed(int);
     callback connect-auth-changed(int);
-    callback connect-connection-string-changed(string);
     callback connect-host-changed(string);
     callback connect-port-changed(string);
     callback connect-path-changed(string);
@@ -1215,7 +1213,6 @@ export component AtlasWindow inherits Window {
             visible-modal: root.connect-modal-visible;
             backend-index <=> root.connect-backend-index;
             auth-index <=> root.connect-auth-index;
-            connection-string <=> root.connect-connection-string;
             host <=> root.connect-host;
             port <=> root.connect-port;
             path <=> root.connect-path;
@@ -1239,7 +1236,6 @@ export component AtlasWindow inherits Window {
 
             backend-changed(i) => { root.connect-backend-changed(i); }
             auth-changed(i) => { root.connect-auth-changed(i); }
-            connection-string-changed(s) => { root.connect-connection-string-changed(s); }
             host-changed(s) => { root.connect-host-changed(s); }
             port-changed(s) => { root.connect-port-changed(s); }
             path-changed(s) => { root.connect-path-changed(s); }

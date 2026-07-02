@@ -29,7 +29,7 @@ use std::{
 };
 
 use atlas_config::servers::{add_or_replace, delete, list, SavedServer};
-use atlas_core::{BackendKind, Location, LocationParseError};
+use atlas_core::{BackendKind, Location};
 use atlas_fs::{OpenOptions, ViewModelEvent};
 use atlas_remote::{
     backend::{BackendError, Credentials},
@@ -134,7 +134,6 @@ struct State {
     target_pane: Option<PaneId>,
     backend: Option<BackendChoice>,
     auth: Option<AuthChoice>,
-    connection_string: String,
     host: String,
     port: String,
     path: String,
@@ -150,9 +149,11 @@ struct State {
     connecting: bool,
     status_text: String,
     status_is_error: bool,
-    /// Set to `true` when the parser echoes an update BACK into the field
-    /// bindings — prevents an infinite ping-pong (`field-changed` → parse
-    /// → set-field → `field-changed`…).
+    /// Set to `true` when a saved-server selection or similar bulk update
+    /// echoes multiple fields at once. Individual setters skip re-echoing
+    /// UI changes back into the state while this flag is on so a
+    /// select_saved_server → push_to_ui → *-changed → set_* → push_to_ui
+    /// loop never re-enters and clobbers what we just wrote.
     suppress_field_echo: bool,
     /// Cancellation flag for the currently-active worker thread. Setting
     /// this to `true` causes the worker to bail out before mounting.
@@ -323,55 +324,6 @@ impl ConnectController {
         self.push_to_ui();
     }
 
-    /// Freeform-connection-string edit. Attempts to reparse and echo the
-    /// canonical host / port / path / user into the individual fields.
-    /// The `suppress_field_echo` flag is set on the state briefly so the
-    /// resulting host-changed / port-changed callbacks (fired by Slint
-    /// after the property push) don't loop back and clobber what we just
-    /// wrote.
-    pub fn set_connection_string(&self, s: String) {
-        {
-            let mut st = self.state.lock();
-            st.connection_string = s.clone();
-            st.status_text.clear();
-            st.status_is_error = false;
-
-            // Attempt to parse and echo into fields.
-            match Location::parse_freeform(&s) {
-                Ok(Location::Remote(uri, kind)) => {
-                    st.suppress_field_echo = true;
-                    st.backend = Some(match kind {
-                        BackendKind::Sftp | BackendKind::Local => BackendChoice::Sftp,
-                        BackendKind::Ftp => BackendChoice::Ftp,
-                        BackendKind::WebDav => BackendChoice::WebDav,
-                        BackendKind::S3 => BackendChoice::S3,
-                    });
-                    st.host = uri.host.clone().unwrap_or_default();
-                    st.port = uri.port.map(|p| p.to_string()).unwrap_or_default();
-                    st.path = uri.path.clone();
-                    st.username = uri.username.clone().unwrap_or_default();
-                    if st.label.is_empty() {
-                        st.label = default_label(&uri.username, &uri.host);
-                    }
-                }
-                Ok(Location::Local(_)) => {
-                    // Local paths aren't a remote connect target — leave the
-                    // individual fields alone.
-                }
-                Err(_) => {
-                    // Unparseable → keep manual entry live.
-                }
-            }
-        }
-        self.push_to_ui();
-        // Clear the suppression on the next tick so future field edits
-        // still update the connection string.
-        {
-            let mut st = self.state.lock();
-            st.suppress_field_echo = false;
-        }
-    }
-
     pub fn set_host(&self, s: String) {
         {
             let mut st = self.state.lock();
@@ -381,7 +333,6 @@ impl ConnectController {
             st.host = s;
             st.status_text.clear();
             st.status_is_error = false;
-            resync_connection_string(&mut st);
         }
         self.push_to_ui();
     }
@@ -393,7 +344,6 @@ impl ConnectController {
                 return;
             }
             st.port = s;
-            resync_connection_string(&mut st);
         }
         self.push_to_ui();
     }
@@ -405,7 +355,6 @@ impl ConnectController {
                 return;
             }
             st.path = s;
-            resync_connection_string(&mut st);
         }
         self.push_to_ui();
     }
@@ -417,7 +366,6 @@ impl ConnectController {
                 return;
             }
             st.username = s;
-            resync_connection_string(&mut st);
         }
         self.push_to_ui();
     }
@@ -632,7 +580,6 @@ impl ConnectController {
             for row in &mut st.saved_servers {
                 row.delete_pending = false;
             }
-            resync_connection_string(&mut st);
             st.suppress_field_echo = false;
         }
         self.push_to_ui();
@@ -1026,7 +973,6 @@ impl ConnectController {
             win.set_connect_modal_visible(snapshot.visible);
             win.set_connect_backend_index(snapshot.backend_index);
             win.set_connect_auth_index(snapshot.auth_index);
-            win.set_connect_connection_string(snapshot.connection_string.into());
             win.set_connect_host(snapshot.host.into());
             win.set_connect_port(snapshot.port.into());
             win.set_connect_path(snapshot.path.into());
@@ -1079,7 +1025,6 @@ pub(crate) struct StateSnapshot {
     pub visible: bool,
     pub backend_index: i32,
     pub auth_index: i32,
-    pub connection_string: String,
     pub host: String,
     pub port: String,
     pub path: String,
@@ -1110,7 +1055,6 @@ impl State {
             visible: self.visible,
             backend_index: self.backend.map(|b| b as i32).unwrap_or(0),
             auth_index: self.auth.map(|a| a as i32).unwrap_or(0),
-            connection_string: self.connection_string.clone(),
             host: self.host.clone(),
             port: self.port.clone(),
             path: self.path.clone(),
@@ -1147,37 +1091,6 @@ impl State {
     }
 }
 
-/// Rebuild the connection-string from the individual fields. Called
-/// after any host/port/user/path edit that came from the UI (i.e. not
-/// echoed from the freeform parser).
-fn resync_connection_string(st: &mut State) {
-    let backend = st.backend.unwrap_or(BackendChoice::Sftp);
-    let scheme = backend.as_kind().scheme();
-    let mut s = String::new();
-    s.push_str(scheme);
-    s.push_str("://");
-    if !st.username.is_empty() {
-        s.push_str(&st.username);
-        s.push('@');
-    }
-    if !st.host.is_empty() {
-        s.push_str(&st.host);
-    }
-    if !st.port.is_empty() {
-        s.push(':');
-        s.push_str(&st.port);
-    }
-    if st.path.is_empty() {
-        s.push('/');
-    } else if !st.path.starts_with('/') {
-        s.push('/');
-        s.push_str(&st.path);
-    } else {
-        s.push_str(&st.path);
-    }
-    st.connection_string = s;
-}
-
 fn default_label(user: &Option<String>, host: &Option<String>) -> String {
     match (user.as_deref(), host.as_deref()) {
         (Some(u), Some(h)) if !u.is_empty() && !h.is_empty() => format!("{u}@{h}"),
@@ -1189,30 +1102,6 @@ fn default_label(user: &Option<String>, host: &Option<String>) -> String {
 /// Assemble the [`Location`] the worker will hand to
 /// [`atlas_remote::backend::open`] from the current state.
 fn assemble_location(st: &State) -> Result<Location, ErrorKind> {
-    // If the freeform connection string parses cleanly, prefer it — it
-    // already carries every field including path.
-    if !st.connection_string.trim().is_empty() {
-        match Location::parse_freeform(&st.connection_string) {
-            Ok(Location::Remote(mut uri, kind)) => {
-                // Override with backend picker if the user changed it
-                // after typing the URL (e.g. picked WebDAV but typed
-                // sftp://…). Trust the picker.
-                let picked = st.backend.unwrap_or(BackendChoice::Sftp).as_kind();
-                if picked != kind {
-                    uri.scheme = picked.scheme().to_string();
-                    return Ok(Location::Remote(uri, picked));
-                }
-                return Ok(Location::Remote(uri, kind));
-            }
-            Ok(Location::Local(_)) => return Err(ErrorKind::Malformed),
-            Err(LocationParseError::EmptyAuthority) => return Err(ErrorKind::Malformed),
-            Err(LocationParseError::InvalidPort(_)) => return Err(ErrorKind::Malformed),
-            Err(LocationParseError::UnknownScheme(_)) => {
-                // Fall through to per-field assembly.
-            }
-        }
-    }
-
     let backend = st.backend.unwrap_or(BackendChoice::Sftp);
     let kind = backend.as_kind();
     if st.host.trim().is_empty() {
@@ -1684,45 +1573,28 @@ mod tests {
     }
 
     #[test]
-    fn connection_string_populates_fields() {
-        let c = ctrl_with_pane();
-        c.set_connection_string("sftp://alice@example.com:2222/var/log".into());
-        let snap = c.snapshot();
-        assert_eq!(snap.host, "example.com");
-        assert_eq!(snap.port, "2222");
-        assert_eq!(snap.path, "/var/log");
-        assert_eq!(snap.username, "alice");
-        assert_eq!(snap.backend_index, BackendChoice::Sftp as i32);
-    }
-
-    #[test]
-    fn connection_string_freeform_bare_user_host_becomes_sftp() {
-        let c = ctrl_with_pane();
-        c.set_connection_string("landon@myhost.com".into());
-        let snap = c.snapshot();
-        assert_eq!(snap.host, "myhost.com");
-        assert_eq!(snap.username, "landon");
-        assert_eq!(snap.backend_index, BackendChoice::Sftp as i32);
-    }
-
-    #[test]
-    fn field_edits_resync_connection_string() {
+    fn field_edits_populate_state() {
         let c = ctrl_with_pane();
         c.set_host("h.example.com".into());
         c.set_port("22".into());
         c.set_username("bob".into());
         c.set_path("/srv".into());
         let snap = c.snapshot();
-        assert_eq!(snap.connection_string, "sftp://bob@h.example.com:22/srv");
+        assert_eq!(snap.host, "h.example.com");
+        assert_eq!(snap.port, "22");
+        assert_eq!(snap.username, "bob");
+        assert_eq!(snap.path, "/srv");
     }
 
     #[test]
-    fn assemble_location_prefers_connection_string() {
-        let mut st = State {
+    fn assemble_location_uses_structured_fields() {
+        let st = State {
             save_to_keychain: true,
             backend: Some(BackendChoice::Sftp),
             auth: Some(AuthChoice::Password),
-            connection_string: "sftp://alice@host:22/p".into(),
+            host: "h2".into(),
+            port: String::new(),
+            path: "sub".into(),
             ..State::default()
         };
         let loc = assemble_location(&st).unwrap();
@@ -1730,21 +1602,9 @@ mod tests {
             panic!()
         };
         assert_eq!(kind, BackendKind::Sftp);
-        assert_eq!(uri.username.as_deref(), Some("alice"));
-        assert_eq!(uri.host.as_deref(), Some("host"));
-        assert_eq!(uri.port, Some(22));
-
-        // With no connection string, per-field assembly kicks in.
-        st.connection_string.clear();
-        st.host = "h2".into();
-        st.port = "".into();
-        st.path = "sub".into();
-        let loc = assemble_location(&st).unwrap();
-        let Location::Remote(uri, _) = loc else {
-            panic!()
-        };
         assert_eq!(uri.host.as_deref(), Some("h2"));
         assert_eq!(uri.path, "/sub");
+        assert!(uri.port.is_none());
     }
 
     #[test]
