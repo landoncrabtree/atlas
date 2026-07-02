@@ -788,7 +788,11 @@ fn build_dispatcher(
             }
         });
         d.register("goto::Anything", move || {
-            p2.open(1);
+            // Merge saved-server entries into the goto palette so a single
+            // Cmd+P search hits both local paths (source index 1) and remote
+            // mounts (source index 3). Source indices come from
+            // `atlas_ui::shell::build_palette_controller`.
+            p2.open_multi(&[1, 3]);
         });
     }
 
