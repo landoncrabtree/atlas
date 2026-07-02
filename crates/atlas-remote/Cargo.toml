@@ -28,6 +28,7 @@ serde_json.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
 once_cell.workspace = true
+ahash.workspace = true
 
 # SFTP: pure-Rust SSH + SFTP client (no openssh/nix dependency).
 russh = "0.45"

@@ -104,19 +104,38 @@ impl RemoteLocationViewModel {
         opts: OpenOptions,
     ) -> Result<Arc<Self>, crate::backend::BackendError> {
         use crate::backend::BackendError;
-        let client: Arc<dyn BackendClient> = match kind {
-            BackendKind::Local => {
-                return Err(BackendError::UnsupportedBackend(
-                    "local kind on remote location".to_owned(),
-                ));
-            }
-            BackendKind::Sftp => Arc::new(crate::vm::sftp::SftpBackend::new(&uri, credentials)?),
-            BackendKind::Ftp => Arc::new(crate::vm::ftp::FtpBackend::new(&uri, credentials)?),
-            BackendKind::WebDav => {
-                Arc::new(crate::vm::webdav::WebDavBackend::new(&uri, credentials)?)
-            }
-            BackendKind::S3 => Arc::new(crate::vm::s3::S3Backend::new(&uri, credentials)?),
-        };
+        let pool = crate::pool::global();
+        let key = crate::pool::PoolKey::new(
+            kind,
+            uri.host.clone().unwrap_or_default(),
+            uri.port,
+            uri.username.clone(),
+            &credentials,
+        );
+        let client = pool.get_or_open(&key, || {
+            let built: Arc<dyn BackendClient> = match kind {
+                BackendKind::Local => {
+                    return Err(BackendError::UnsupportedBackend(
+                        "local kind on remote location".to_owned(),
+                    ));
+                }
+                BackendKind::Sftp => Arc::new(crate::vm::sftp::SftpBackend::new(
+                    &uri,
+                    credentials.clone(),
+                )?),
+                BackendKind::Ftp => {
+                    Arc::new(crate::vm::ftp::FtpBackend::new(&uri, credentials.clone())?)
+                }
+                BackendKind::WebDav => Arc::new(crate::vm::webdav::WebDavBackend::new(
+                    &uri,
+                    credentials.clone(),
+                )?),
+                BackendKind::S3 => {
+                    Arc::new(crate::vm::s3::S3Backend::new(&uri, credentials.clone())?)
+                }
+            };
+            Ok(built)
+        })?;
         Ok(Self::from_client(uri, kind, client, opts))
     }
 

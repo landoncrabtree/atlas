@@ -43,6 +43,7 @@
 
 pub mod backend;
 pub mod error;
+pub mod pool;
 pub mod secrets;
 pub mod stream;
 pub mod vm;
@@ -50,6 +51,9 @@ pub mod walk;
 
 pub use backend::{open, BackendError, Credentials};
 pub use error::{RemoteError, RemoteErrorKind, RemoteMetadata, RemoteMode};
+pub use pool::{
+    ConnectionPool, PoolConfig, PoolKey, PoolStats, DEFAULT_IDLE_TTL, DEFAULT_MAX_CONNECTIONS,
+};
 pub use secrets::{
     delete as delete_secret, retrieve as retrieve_secret, store as store_secret, SecretError,
 };

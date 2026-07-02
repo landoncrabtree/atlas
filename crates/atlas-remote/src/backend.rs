@@ -95,19 +95,28 @@ fn open_remote(
     credentials: Credentials,
     opts: OpenOptions,
 ) -> Result<Arc<dyn LocationViewModel>, BackendError> {
-    let client: Arc<dyn BackendClient> = match kind {
-        BackendKind::Local => {
-            // A Location::Remote should never carry BackendKind::Local; treat it
-            // as a caller bug rather than silently opening the wrong thing.
-            return Err(BackendError::UnsupportedBackend(
-                "local kind on remote location".to_owned(),
-            ));
-        }
-        BackendKind::Sftp => Arc::new(SftpBackend::new(uri, credentials)?),
-        BackendKind::Ftp => Arc::new(FtpBackend::new(uri, credentials)?),
-        BackendKind::WebDav => Arc::new(WebDavBackend::new(uri, credentials)?),
-        BackendKind::S3 => Arc::new(S3Backend::new(uri, credentials)?),
-    };
+    let pool = crate::pool::global();
+    let key = crate::pool::PoolKey::new(
+        kind,
+        uri.host.clone().unwrap_or_default(),
+        uri.port,
+        uri.username.clone(),
+        &credentials,
+    );
+    let client = pool.get_or_open(&key, || {
+        let built: Arc<dyn BackendClient> = match kind {
+            BackendKind::Local => {
+                return Err(BackendError::UnsupportedBackend(
+                    "local kind on remote location".to_owned(),
+                ));
+            }
+            BackendKind::Sftp => Arc::new(SftpBackend::new(uri, credentials.clone())?),
+            BackendKind::Ftp => Arc::new(FtpBackend::new(uri, credentials.clone())?),
+            BackendKind::WebDav => Arc::new(WebDavBackend::new(uri, credentials.clone())?),
+            BackendKind::S3 => Arc::new(S3Backend::new(uri, credentials.clone())?),
+        };
+        Ok(built)
+    })?;
 
     Ok(RemoteLocationViewModel::from_client(
         uri.clone(),
