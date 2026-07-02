@@ -30,14 +30,19 @@ Atlas is a cross-platform, performance-focused file explorer for developers and 
 | Logging | `tracing` + `tracing-subscriber` |
 | Thumbnail cache | `rusqlite` (WAL mode) |
 | Concurrency primitives | `parking_lot`, `crossbeam-channel`, `arc-swap`, `dashmap`, `rayon` |
+| Remote SFTP | `russh` + `russh-sftp` |
+| Remote FTP/FTPS | `suppaftp` |
+| Remote WebDAV | `reqwest` + `quick-xml` |
+| Remote S3 (and compatibles) | `object_store` |
+| Remote runtime | `tokio` (multi-threaded, shared inside `atlas-remote` + `atlas-ops` only) |
 
-**Do not** introduce a new GUI framework, a new async runtime in library crates (use channels), or a new error library (use `thiserror` + `anyhow`).
+**Do not** introduce a new GUI framework, a new async runtime in library crates outside the remote/ops shared tokio (use channels), or a new error library (use `thiserror` + `anyhow`). **OpenDAL was removed in Phase 2.3.5** — do not re-introduce it or any other unified remote-fs abstraction; every backend has its own dedicated crate under `atlas-remote::vm::<scheme>`.
 
 We already evaluated and rejected **gpui** (requires full Xcode for Metal shaders) for Slint. Do not re-suggest gpui.
 
 ## Workspace layout
 
-13 crates under `crates/atlas-*` — see [`.github/instructions/architecture.instructions.md`](instructions/architecture.instructions.md) for the full inventory, purpose, and key dependencies per crate.
+14 crates under `crates/atlas-*` — see [`.github/instructions/architecture.instructions.md`](instructions/architecture.instructions.md) for the full inventory, purpose, and key dependencies per crate.
 
 Each crate's `Cargo.toml` consumes dependencies via `workspace.dependencies`. Add to the **crate's** `Cargo.toml` from existing workspace deps. **Do not** add new dependencies to the root workspace `Cargo.toml` without explicit approval.
 
@@ -70,9 +75,16 @@ The non-negotiable headline: **no blocking I/O on the UI thread or any thread se
 
 ### Filesystem
 
-- Use `atlas_fs` for any directory listing or walking. Do not call `std::fs::read_dir` directly outside of `atlas-fs` and `atlas-indexd`.
+- Use `atlas_fs` for any local directory listing or walking. Do not call `std::fs::read_dir` directly outside of `atlas-fs` and `atlas-indexd`.
 - Always tilde-expand user-facing paths via `atlas_core::path::expand_tilde`.
 - Be symlink-aware: capture targets, mark broken symlinks, never silently follow.
+- Pane locations are `atlas_core::Location`, an enum of `Local(PathBuf)` and `Remote(RemoteUri, BackendKind)`. **Never assume a location is local.** Use `Location::as_local()` to short-circuit local-only fast paths (thumbnails, native trash, notify watcher, disk-free space); everything else must route through the backend-agnostic `atlas-fs` / `atlas-ops` interfaces.
+
+### Remote filesystems
+
+- Remote work lives in `atlas-remote` with one submodule per scheme: `vm/sftp.rs`, `vm/ftp.rs`, `vm/webdav.rs`, `vm/s3.rs`. Extending remote support (new backend, new capability) follows [`.github/instructions/remote-backend-authoring.instructions.md`](instructions/remote-backend-authoring.instructions.md).
+- All backends share one tokio runtime (`atlas_remote::runtime::handle()`), a connection pool with idle eviction, an exponential-backoff retry envelope, and a TOFU flow for host-key acceptance.
+- Credentials never touch `servers.toml`. Only opaque `credential_ref` handles are persisted; secrets live in the OS keychain (macOS Keychain, libsecret, Windows Credential Manager) under the `com.atlas.credentials` namespace.
 
 ### UI (Slint + Rust glue)
 
@@ -80,6 +92,12 @@ The non-negotiable headline: **no blocking I/O on the UI thread or any thread se
 - Use the `Theme` global for colors/spacing/fonts. No hard-coded colors in components.
 - Rust ↔ Slint state goes through `AppShell` adapter methods in `atlas-ui`; never let arbitrary code touch the `slint::Weak<Window>` directly.
 - Every Slint callback dispatches a typed `UiAction` to the `ActionSink`. Add new variants to `UiAction` rather than calling business logic from the callback.
+- New modals, panels, view modes, or context menus must follow the canonical flow in [`.github/instructions/ui-composition.instructions.md`](instructions/ui-composition.instructions.md). Every UI PR includes a screenshot from the `computer-use-*` MCP tools proving the change looks right.
+
+### Keybinds
+
+- **One action ID per behaviour.** Multiple chords may alias onto the same action, never the other way round. Example: `l`, `right`, `.`, `enter` all bind to `fs::View`.
+- Adding a new keybind follows [`.github/instructions/keybind-authoring.instructions.md`](instructions/keybind-authoring.instructions.md) — register the action metadata in `crates/atlas-keymap/src/defaults.rs`, add per-OS defaults, wire the dispatcher handler in `crates/atlas-app/src/main.rs::build_dispatcher`, regen the TOMLs, and update `docs/keymap.md`.
 
 ### Configuration
 
@@ -126,14 +144,19 @@ The non-negotiable headline: **no blocking I/O on the UI thread or any thread se
 
 ## Documentation
 
-- All documentation is in the `docs/` directory.
+- All documentation is in the `docs/` directory (user-facing) and `.github/instructions/` (contributor / AI conventions).
 - The source-of-truth docs are:
   - `.github/instructions/architecture.instructions.md` — crate layout, process model, threading, storage.
   - `.github/instructions/performance.instructions.md` — performance goals and benchmark methodology.
+  - `.github/instructions/design.instructions.md` — Apple-HIG-inspired UI/UX tokens and component patterns.
   - `.github/instructions/multi-pane-refactor.instructions.md` — N-pane workspace design contract; read before touching `workspace.rs`, `shell.rs`, or any Slint pane/workspace component.
-  - `docs/developer-setup.md` — toolchain, prerequisites, daily commands.
+  - `.github/instructions/ui-composition.instructions.md` — canonical flow for adding a new modal, panel, view mode, or context menu.
+  - `.github/instructions/keybind-authoring.instructions.md` — end-to-end keybind workflow.
+  - `.github/instructions/remote-backend-authoring.instructions.md` — end-to-end remote-backend workflow.
+  - `docs/developer-setup.md` — toolchain, prerequisites, daily commands, mock servers, MCP tooling.
   - `docs/contributing.md` — contributing guidelines.
-  - `docs/multi-pane.md` — user-facing guide to the tiling workspace (concepts, keybinds, config recipes).
+  - `docs/multi-pane.md` — user-facing guide to the tiling workspace (concepts, keybinds, remote panes, config recipes).
   - `docs/keymap.md` — full default keymap reference.
+- Cloud-agent skills live under `.github/skills/<skill-name>/SKILL.md` (per the [GitHub add-skills spec](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/add-skills)). Skills are optional entry points that point Copilot at the relevant instruction file for common tasks.
 - For any significant changes (producer, consumer, API, performance, etc.), update the relevant doc(s) to ensure consistency and clarity.
 - All documentation must be up-to-date and accurately reflect the current state of the repository.

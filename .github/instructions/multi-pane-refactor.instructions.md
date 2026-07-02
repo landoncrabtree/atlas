@@ -59,7 +59,7 @@ pub struct PaneState {
 
 pub struct TabModel {
     pub title: String,
-    pub location: PathBuf,
+    pub location: atlas_core::Location,   // Local(PathBuf) | Remote(RemoteUri, BackendKind)
     pub history: BackForwardStack,     // moved off NavigationController
     pub sort: SortSpec,                // per-tab overrides of the config default
     pub filter: Filter,
@@ -200,13 +200,14 @@ Drag-and-drop between panes maps to a `UiAction::FsCopy { source_pane, target_pa
 
 Each phase lands as a self-contained commit that keeps the app functional.
 
-- **Phase 0 (this commit)** — Immediate keybind wins + design doc. `Ctrl+H/J/K/L` cycle pane focus in the current 2-pane model (Left/Right work today; Up/Down are no-ops until we have a real grid). `Cmd+D` / `Cmd+Shift+D` open the 2nd pane if it isn't open (falls back to `set_dual_pane(true)`) and log a "coming soon" warning for the 3rd+ pane. `Cmd+Shift+E` cycles the focused pane's view mode.
-- **Phase 1** — Introduce `PaneId` + `SplitLayout` in `atlas-ui/src/models/split.rs`. Rewrite `WorkspaceModel` to use it. Ship a compat layer that projects any `SplitLayout` of ≤2 leaves back onto the existing `pane0-*` / `pane1-*` Slint bindings; refuse `split_focused` when it would produce a 3rd leaf. All existing behavior preserved; the model becomes N-capable but the Slint stays 2-pane-capable.
-- **Phase 2** — Move `BackForwardStack` and `SortSpec`/`Filter` onto `TabModel`. `NavigationController` becomes stateless. Tab switch reuses the vm cache; back/forward operates on the active tab's history.
-- **Phase 3** — Rewrite `atlas.slint` + `workspace.slint` + `pane.slint` around the `[PaneSlintData]` model. Delete the `pane0-*` / `pane1-*` compat layer. Split-handle drag lands here.
-- **Phase 4** — Wire true `split_focused` / `close_focused`, split-handle drag ratio adjustment, and drag-drop copy/move between panes.
+- **Phase 0** *(landed)* — Immediate keybind wins + design doc. `Ctrl+H/J/K/L` cycle pane focus in the current 2-pane model (Left/Right work today; Up/Down are no-ops until we have a real grid). `Cmd+D` / `Cmd+Shift+D` open the 2nd pane if it isn't open (falls back to `set_dual_pane(true)`) and log a "coming soon" warning for the 3rd+ pane. `Cmd+Shift+E` cycles the focused pane's view mode.
+- **Phase 1** *(landed)* — Introduced `PaneId` + `SplitLayout` in `atlas-ui/src/models/split.rs`. Rewrote `WorkspaceModel` to use it. Compat layer projects any `SplitLayout` of ≤2 leaves back onto the existing `pane0-*` / `pane1-*` Slint bindings.
+- **Phase 2** *(landed — the "Location + Tab-owned history" refactor)* — Moved `BackForwardStack` and `SortSpec`/`Filter` onto `TabModel`. `TabModel.location` retyped from `PathBuf` to `atlas_core::Location`. `NavigationController` became stateless. Tab switch reuses the vm cache; back/forward operates on the active tab's history. Per-pane status bar with connection chip landed here.
+- **Phase 2.5** *(landed — remote filesystems)* — Added `atlas-remote` with per-scheme submodules (`vm/sftp.rs`, `vm/ftp.rs`, `vm/webdav.rs`, `vm/s3.rs`). Introduced the Connect modal (`Cmd+K` / `Ctrl+Alt+K`), saved-servers store (`servers.toml`), connection pool, retry envelope, and OpenSSH-compatible TOFU host-key store (`known_hosts`). OpenDAL removed; each backend owns its own crate stack.
+- **Phase 3** *(pending)* — Rewrite `atlas.slint` + `workspace.slint` + `pane.slint` around the `[PaneSlintData]` model. Delete the `pane0-*` / `pane1-*` compat layer. Split-handle drag lands here.
+- **Phase 4** *(pending)* — Wire true `split_focused` / `close_focused`, split-handle drag ratio adjustment, and drag-drop copy/move between panes.
 
-Phases 0 and 1 are non-invasive relative to the Slint UI. Phases 2–4 are the deep changes.
+Phases 0–2.5 are non-invasive relative to the Slint UI shape (still ≤2 leaves). Phases 3–4 are the deep Slint changes.
 
 ## Migration hazards
 
@@ -214,6 +215,10 @@ Phases 0 and 1 are non-invasive relative to the Slint UI. Phases 2–4 are the d
 - `atlas-keymap`'s default keymap lists explicit `cmd-1` … `cmd-9` bindings for tab switching but not for pane switching. Extend once Phase 4 lands.
 - Slint struct-of-model nesting is unsupported as of 1.17 — the parallel-arrays trick above is the escape hatch. If a future Slint release adds nested-model support, collapse the parallel arrays into `PaneSlintData`.
 - `atlas-ipc` and `atlas-indexd` don't care about panes — those crates need no changes.
+- **`Location`, not `PathBuf`.** Every pane operation, callback, or view-model that takes a location must take `atlas_core::Location`. Local-only fast paths (thumbnails, `atlas-watch`, native trash, free-space) call `Location::as_local()` and no-op / early-return for remote. Cross-backend transfers route through `atlas-ops::execute_op` → `atlas_remote::stream::stream_copy`.
+- **Cross-pane scroll preservation.** Never replace a per-pane `panes-*` Slint property with a new `VecModel::from(...)` — mutate the existing `Rc<VecModel>` in place. `OuterPaneModels::sync_vec_model` in `crates/atlas-ui/src/shell.rs` is the canonical helper; it iterates and only calls `set_row_data` when values differ, preserving each ListView's scroll offset across tab switches.
+- **Modal chord routing.** Any new modal or focused text input must bubble its `input-focused` bool up to the root `FocusScope`'s `keymap-bypass-active` disjunction in `assets/ui/atlas.slint`. Otherwise Pane keymaps intercept `Cmd+A` / `Cmd+C` / `Cmd+V` and native TextInput shortcuts break. See [`ui-composition.instructions.md`](ui-composition.instructions.md) §5.
+- **Remote fast-path checks.** Any callsite that used to be "compute from `PathBuf`" must be audited for local-only assumptions. Prefer explicit `match location { Local(p) => …, Remote(_, _) => early_return }` over `unwrap()` on `as_local()`.
 
 ## Verification checklist per phase
 
@@ -221,3 +226,5 @@ Phases 0 and 1 are non-invasive relative to the Slint UI. Phases 2–4 are the d
 - `cargo clippy --workspace --all-targets -- -D warnings` clean.
 - Manual smoke: launch, open a folder, switch view modes, split, close, switch tabs, hit palette, run a copy. Nothing should regress.
 - Snapshot the UI in single-pane, 2-pane vertical, 2-pane horizontal, and (post-Phase 3) 4-pane 2×2 layouts.
+- For any change touching remote panes: run the mock-server integration suite (`cargo test -p atlas-remote`) or verify the reason for `MOCK_SERVERS_SKIP=1`.
+- Screenshot the change via `computer-use-*` MCP tools — mandatory on every UI PR.

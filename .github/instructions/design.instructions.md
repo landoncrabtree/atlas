@@ -240,7 +240,38 @@ Do NOT animate scroll position, cursor, or focused-row indicator movement — th
 
 - 24 tall. `panel_bg` fill. 1-px top border in `border`.
 - Text in `caption` style (11px, 400). Segments separated by 16-px whitespace, no dividers.
-- Left: entry count and selection. Right: indexer state, view mode, sort.
+- **Per-pane, not window-level.** Each pane owns its own status bar; there is no shared status row along the bottom of the workspace.
+- Left: entry count and selection.
+- Middle: **connection chip** for remote panes — backend glyph (🔐 SFTP, 📡 FTP, 🌐 WebDAV, ☁️ S3) + host + colour-coded state token (`success` connected, `warning` reconnecting, `error` failed).
+- Right: indexer state (local panes) or backend-specific hint, view mode, sort.
+- The status bar hosts progress previews for background ops that started from this pane; clicking opens the ops panel.
+
+### Address bar chord routing
+
+The address bar accepts native TextInput semantics **only when it has focus**. When a pane's address bar owns focus:
+
+- `Cmd+A` / `Cmd+C` / `Cmd+V` / `Cmd+X` operate on the input's text (native TextInput behaviour), not on the pane selection.
+- `Escape` clears the input and returns focus to the pane.
+- Arrow keys navigate within the input.
+
+This is the same convention used by every modal text input (Connect modal, palette prompt, search field, bulk-rename fields). See the "Modal chord routing" section below.
+
+### Modal chord routing
+
+There is exactly **one** canonical pattern for keyboard routing between modals and the underlying pane. It is documented in [`ui-composition.instructions.md`](ui-composition.instructions.md) §5; the essentials:
+
+- The root `FocusScope` in `assets/ui/atlas.slint` sets `keymap-bypass-active = any-modal-visible || text-focus-pane-id != -1 || connect-modal-input-focused` (extend the disjunction whenever a new modal text input is added).
+- When `keymap-bypass-active` is true, the Rust dispatcher restricts to the `[Global]` context; Pane bindings return `false` and the key falls through to the focused TextInput, where OS-native shortcuts (`Cmd+A`, `Cmd+C`, arrows) work.
+- Modal components must **bubble their `input-focused` state up** to the root as a named property — don't invent parallel state buses.
+
+### Operation-progress modal
+
+For operations whose foreground duration exceeds ~250 ms (`FOREGROUND_DEFER` in `atlas-ui::ops::controller`), we show a small centered progress modal instead of a status-bar toast:
+
+- Panel: `panel_bg_elevated`, `radius_lg`, ~420 wide.
+- Rows: op summary in `body`, per-file progress in `caption` `fg_muted`, primary bar `accent`, secondary spinner while the queue drains.
+- Buttons: **Cancel** (fires the shared `CancellationToken`), **Background** (dismisses the modal but keeps the op running under the ops panel).
+- Under 250 ms: no modal at all — a status toast is enough.
 
 ### Command palette + goto anywhere
 
@@ -250,6 +281,15 @@ Do NOT animate scroll position, cursor, or focused-row indicator movement — th
 - Result row: 40 tall, 16-px padding, hover `hover_bg`, selected `accent_soft` background + `accent` left rail (2 px).
 - Result title in `body`, subtitle in `caption` `fg_muted`.
 - Kbd chips (e.g. `⌘⇧P`): mono font, 11 px, `panel_bg` fill, `radius_xs`, 4-px padding.
+
+### Connect-server modal (Cmd+K)
+
+- Same overlay + panel treatment as palette (`panel_bg_elevated`, `radius_lg`, ~560 wide).
+- Header row with backend selector (SFTP / FTP / WebDAV / S3) as a segmented control; the active pill uses `accent_soft` fill.
+- Body: form inputs share the address-bar treatment; secret fields render as `••••` and never persist to `servers.toml` — they go into the OS keychain under the `com.atlas.credentials` namespace.
+- Footer: **Save & Connect** (primary), **Connect once** (secondary), **Cancel**.
+- On first SFTP connection to an unknown host, the modal transitions to a **host-key prompt** panel showing the fingerprint + comparison hint; Accept persists into `~/.config/atlas/known_hosts` (OpenSSH format), Reject aborts.
+- Every input bubbles focus state to the root chord dispatcher via the `input-focused` bool — see [`ui-composition.instructions.md`](ui-composition.instructions.md) §5.
 
 ### Bulk rename modal
 

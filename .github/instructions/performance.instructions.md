@@ -41,7 +41,7 @@ Lists, grids, trees — only the visible rows mount. We do not render a 100k-ent
 
 ### 4. Cache, but with eviction
 
-Thumbnail cache: SQLite WAL with LRU eviction at a byte cap (default 500 MB). Index: on-disk tantivy with periodic merges. Don't grow unbounded.
+Thumbnail cache: SQLite WAL with LRU eviction at a byte cap (default 500 MB). Index: on-disk tantivy with periodic merges. Remote connection pool: `atlas_remote::pool::ConnectionPool` keys on `(scheme, host, port, user)` and evicts idle connections after a TTL — never grow the pool unbounded. Don't grow anything unbounded.
 
 ### 5. Measure before you optimize
 
@@ -51,13 +51,24 @@ We don't accept micro-optimizations without a benchmark or trace showing they ma
 
 `crossbeam-channel` for producer-consumer. `parking_lot::RwLock` / `Mutex` for shared mutable state. `arc-swap::ArcSwap<T>` for read-mostly snapshots (config, theme). No `Arc<Mutex<HashMap>>` everywhere — pick the right tool.
 
+### 7. Local fast paths short-circuit remote
+
+Every operation that has a native-only implementation (thumbnails, `notify` watcher, native trash, free-space queries, memory-mapped reads) must guard with `Location::as_local()` and either short-circuit for `Remote(_)` or hand off to `atlas-remote`. Do **not** simulate local semantics over the network — return an explicit "unsupported for remote" outcome and let the caller decide.
+
+### 8. Remote search stays bounded and lazy
+
+Search over remote panes debounces every input change (`search.debounce_ms`, default 150), enforces a minimum query length (`search.min_query_length`, default 2), and caps visible results (`search.max_visible_results`, default 100). Never issue a PROPFIND / LIST / recursive SFTP walk on every keystroke; batch and de-duplicate. All remote search runs on the `atlas_remote::runtime` handle, never on the UI thread.
+
 ## Anti-patterns
 
 | Don't | Why |
 |---|---|
 | `std::fs::read_dir` outside `atlas-fs` / `atlas-indexd` | Bypasses our streaming + sort + filter pipeline |
 | `String` keys in hot maps | Use `&str`, interned strings, or hash-prefixed keys |
-| `tokio::main` in library crates | Locks consumers into one runtime |
+| `tokio::main` in library crates | Locks consumers into one runtime; use `atlas_remote::runtime::handle()` |
+| Bringing up a fresh SFTP/HTTP/FTP client per operation | Bypasses the connection pool and the retry envelope |
+| Assuming `Location` is `Local` without `as_local()` | Panics or blocks for remote paths |
+| `.set_panes_details_rows(VecModel::from(rows).into())` on every refresh | Detaches the ListView from its previous model, resets scroll offset; mutate the persistent `Rc<VecModel>` via `OuterPaneModels::sync_vec_model` instead |
 | `Vec<T>` shared with `Arc<Mutex<…>>` for read-mostly state | Use `ArcSwap<Arc<[T]>>` or `Arc<RwLock<Vec<T>>>` |
 | Synchronous JSON / TOML parse on UI thread | Move to worker, push result via event loop |
 | Allocating per item in hot loops | Reuse buffers; pre-size collections |
