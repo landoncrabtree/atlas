@@ -186,6 +186,40 @@ impl RemoteUri {
         }
     }
 
+    /// Return `self` with [`Self::port`] canonicalised to the backend's
+    /// default when it was previously `None`.
+    ///
+    /// This is the single-source-of-truth normaliser that every layer
+    /// which persists, hashes, or dedupes on `port` should route
+    /// through. Callers include:
+    ///
+    /// - `atlas-ui::remote::connect::assemble_location` — before handing
+    ///   the assembled URI to `atlas-remote::backend::open` so the
+    ///   connection pool key and known-hosts fingerprint are stable
+    ///   whether the user typed `sftp://host` or `sftp://host:22`.
+    /// - `Location::from_str` — so `sftp://host/` round-trips through
+    ///   serde and lands in downstream caches with the same key as any
+    ///   assembled URI.
+    /// - `atlas-ui::remote::connect::run_connect_saved` — when
+    ///   re-opening a `SavedServer` whose persisted `port` field may
+    ///   be `None` because it was saved before this normalisation
+    ///   landed (Phase 2.12 fix at the connect controller only).
+    /// - `atlas-ops::remote::cred_key` and other cache-key builders —
+    ///   as a belt-and-suspenders defence against future refactors
+    ///   that bypass the connect controller.
+    ///
+    /// No-op for backends where [`BackendKind::default_port`] returns
+    /// `None` (S3, Local — their addresses are endpoint-driven, not
+    /// port-driven). Also no-op when [`Self::port`] is already set —
+    /// an explicit user-typed port is never overwritten.
+    #[must_use]
+    pub fn with_default_port(mut self, kind: BackendKind) -> Self {
+        if self.port.is_none() {
+            self.port = kind.default_port();
+        }
+        self
+    }
+
     /// Render the canonical URI (without any password material). This is
     /// the form used in address bars, breadcrumbs, and serde round-trips.
     #[must_use]
@@ -605,6 +639,90 @@ mod tests {
         // custom endpoint) so there is no single canonical port.
         assert_eq!(BackendKind::S3.default_port(), None);
         assert_eq!(BackendKind::Local.default_port(), None);
+    }
+
+    #[test]
+    fn with_default_port_fills_missing_port_for_sftp() {
+        let uri = RemoteUri {
+            scheme: "sftp".into(),
+            host: Some("host".into()),
+            port: None,
+            username: Some("u".into()),
+            path: "/".into(),
+            credential_ref: None,
+        };
+        let normalised = uri.with_default_port(BackendKind::Sftp);
+        assert_eq!(normalised.port, Some(22));
+    }
+
+    #[test]
+    fn with_default_port_preserves_explicit_port() {
+        let uri = RemoteUri {
+            scheme: "sftp".into(),
+            host: Some("host".into()),
+            port: Some(2222),
+            username: None,
+            path: "/".into(),
+            credential_ref: None,
+        };
+        let normalised = uri.with_default_port(BackendKind::Sftp);
+        assert_eq!(
+            normalised.port,
+            Some(2222),
+            "explicit user-supplied port must never be overwritten"
+        );
+    }
+
+    #[test]
+    fn with_default_port_is_noop_for_backends_without_default() {
+        // S3 addresses via endpoint URL; there is no single canonical
+        // TCP port to fall back to, so `None` stays `None`.
+        let uri = RemoteUri {
+            scheme: "s3".into(),
+            host: Some("bucket".into()),
+            port: None,
+            username: None,
+            path: "/prefix/key".into(),
+            credential_ref: None,
+        };
+        let normalised = uri.with_default_port(BackendKind::S3);
+        assert!(normalised.port.is_none());
+
+        // Same for a URI carrying `Local` — we never construct one in
+        // practice, but the helper must be a total function.
+        let uri = RemoteUri {
+            scheme: "local".into(),
+            host: None,
+            port: None,
+            username: None,
+            path: "/tmp".into(),
+            credential_ref: None,
+        };
+        let normalised = uri.with_default_port(BackendKind::Local);
+        assert!(normalised.port.is_none());
+    }
+
+    #[test]
+    fn with_default_port_fills_ftp_and_webdav_defaults() {
+        let ftp = RemoteUri {
+            scheme: "ftp".into(),
+            host: Some("ftp.example.com".into()),
+            port: None,
+            username: None,
+            path: "/pub".into(),
+            credential_ref: None,
+        };
+        assert_eq!(ftp.with_default_port(BackendKind::Ftp).port, Some(21));
+
+        let dav = RemoteUri {
+            scheme: "webdav".into(),
+            host: Some("cloud.example.com".into()),
+            port: None,
+            username: Some("u".into()),
+            path: "/dav".into(),
+            credential_ref: None,
+        };
+        assert_eq!(dav.with_default_port(BackendKind::WebDav).port, Some(443));
     }
 
     #[test]
