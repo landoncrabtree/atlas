@@ -128,7 +128,6 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         pa("2", ("Global", "view::Grid")),
         pa("3", ("Global", "view::Gallery")),
         pa("4", ("Global", "view::Miller")),
-        pa("5", ("Global", "view::Tree")),
         ps("e", ("Pane", "view::Cycle")),
         // ── File operations (Finder / Explorer / Nautilus conventions) ───
         //
@@ -248,7 +247,6 @@ pub fn default_actions() -> Vec<ActionMeta> {
         action!("view::Grid", "View: Grid", None, &["Global"]),
         action!("view::Gallery", "View: Gallery", None, &["Global"]),
         action!("view::Miller", "View: Miller Columns", None, &["Global"]),
-        action!("view::Tree", "View: Tree", None, &["Global"]),
         action!(
             "fs::View",
             "Open",

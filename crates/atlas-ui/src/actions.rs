@@ -115,7 +115,7 @@ pub enum UiAction {
     },
     /// Show or hide the file-operations tray (Ctrl/Cmd+J).
     ToggleOpsPanel,
-    /// Open a file (e.g. by double-click or Enter in the Miller/Tree view).
+    /// Open a file (e.g. by double-click or Enter in the Miller view).
     OpenFile {
         /// Pane that contains the entry being opened.
         pane: usize,

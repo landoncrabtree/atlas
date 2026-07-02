@@ -46,7 +46,6 @@ use crate::{
     views::gallery::GalleryController,
     views::grid::GridController,
     views::miller::MillerController,
-    views::tree::TreeController,
     AtlasWindow, EntryRowItem, PaletteEntry, PaneSlintData, ShortcutHint, SplitHandle, TabEntry,
 };
 
@@ -261,8 +260,6 @@ pub struct PaneControllers {
     pub grid: Arc<crate::views::grid::GridController>,
     /// Miller columns view controller for the pane.
     pub miller: Arc<crate::views::miller::MillerController>,
-    /// Tree view controller for the pane.
-    pub tree: Arc<crate::views::tree::TreeController>,
     /// Gallery view controller for the pane.
     pub gallery: Arc<crate::views::gallery::GalleryController>,
 }
@@ -344,14 +341,6 @@ pub struct PaneRenderCache {
     /// Metadata sidebar contents.
     pub gallery_metadata: crate::MetadataFields,
 
-    // ── Tree view ────────────────────────────────────────────────────────
-    /// Currently visible tree rows in DFS order.
-    pub tree_nodes: Vec<crate::TreeNode>,
-    /// Currently focused tree row (`-1` = unset).
-    pub tree_focused_index: i32,
-    /// Currently selected tree row (`-1` = unset).
-    pub tree_selected_index: i32,
-
     // ── Miller view ──────────────────────────────────────────────────────
     /// Column snapshots; rebuilt into `MillerColData` on the UI thread.
     pub miller_columns: Vec<MillerColumnCache>,
@@ -401,7 +390,7 @@ pub struct PaneRenderCache {
     //
     // Monotonically bumped every time a `publish_*` method mutates one of
     // the fields above that shows up in `push_pane_data_to_slint`
-    // (details rows, columns, thumbnails, tree nodes, miller columns,
+    // (details rows, columns, thumbnails, miller columns,
     // gallery images, tabs, breadcrumbs, active-tab, per-pane status).
     //
     // The UI-thread side (`PANE_MODEL_HANDLES` in `shell.rs`) caches the
@@ -440,7 +429,6 @@ struct PaneSlintModelHandles {
     grid_thumbnails: ModelRc<slint::Image>,
     grid_has_thumbs: ModelRc<bool>,
     gallery_strip_thumbs: ModelRc<slint::Image>,
-    tree_nodes: ModelRc<crate::TreeNode>,
     miller_columns: ModelRc<crate::MillerColData>,
 }
 
@@ -476,8 +464,6 @@ impl PaneSlintModelHandles {
             })
             .collect();
         self.gallery_strip_thumbs = ModelRc::new(VecModel::from(strip_images));
-
-        self.tree_nodes = ModelRc::new(VecModel::from(snap.tree_nodes.clone()));
 
         let miller_cols: Vec<crate::MillerColData> = snap
             .miller_columns
@@ -601,9 +587,6 @@ struct OuterPaneModels {
     gallery_preview_fallback_glyph: std::rc::Rc<VecModel<SharedString>>,
     gallery_focused_index: std::rc::Rc<VecModel<i32>>,
     gallery_metadata: std::rc::Rc<VecModel<crate::MetadataFields>>,
-    tree_nodes: std::rc::Rc<VecModel<ModelRc<crate::TreeNode>>>,
-    tree_focused_index: std::rc::Rc<VecModel<i32>>,
-    tree_selected_index: std::rc::Rc<VecModel<i32>>,
     miller_columns: std::rc::Rc<VecModel<ModelRc<crate::MillerColData>>>,
     miller_focused_col: std::rc::Rc<VecModel<i32>>,
 
@@ -644,9 +627,6 @@ impl Default for OuterPaneModels {
             gallery_preview_fallback_glyph: std::rc::Rc::new(VecModel::default()),
             gallery_focused_index: std::rc::Rc::new(VecModel::default()),
             gallery_metadata: std::rc::Rc::new(VecModel::default()),
-            tree_nodes: std::rc::Rc::new(VecModel::default()),
-            tree_focused_index: std::rc::Rc::new(VecModel::default()),
-            tree_selected_index: std::rc::Rc::new(VecModel::default()),
             miller_columns: std::rc::Rc::new(VecModel::default()),
             miller_focused_col: std::rc::Rc::new(VecModel::default()),
             status_folder_count: std::rc::Rc::new(VecModel::default()),
@@ -695,9 +675,6 @@ impl OuterPaneModels {
         ));
         window.set_panes_gallery_focused_index(ModelRc::from(self.gallery_focused_index.clone()));
         window.set_panes_gallery_metadata(ModelRc::from(self.gallery_metadata.clone()));
-        window.set_panes_tree_nodes(ModelRc::from(self.tree_nodes.clone()));
-        window.set_panes_tree_focused_index(ModelRc::from(self.tree_focused_index.clone()));
-        window.set_panes_tree_selected_index(ModelRc::from(self.tree_selected_index.clone()));
         window.set_panes_miller_columns(ModelRc::from(self.miller_columns.clone()));
         window.set_panes_miller_focused_col(ModelRc::from(self.miller_focused_col.clone()));
         window.set_panes_status_folder_count(ModelRc::from(self.status_folder_count.clone()));
@@ -744,8 +721,6 @@ fn build_pane_controllers(
         thumbs_enabled,
         thumb_max_file_bytes,
     );
-    let tree = TreeController::new(pane_id, shell.clone(), Arc::clone(&actions));
-    tree.attach_window(window.as_weak());
     let miller = MillerController::new(pane_id, shell, actions);
     miller.attach_window(window.as_weak());
 
@@ -754,7 +729,6 @@ fn build_pane_controllers(
         details,
         grid,
         miller,
-        tree,
         gallery,
     }
 }
@@ -1046,12 +1020,6 @@ impl AppShell {
         Arc::clone(&self.focused_controllers().gallery)
     }
 
-    /// Return the focused pane's tree controller.
-    #[must_use]
-    pub fn tree_controller(&self) -> Arc<TreeController> {
-        Arc::clone(&self.focused_controllers().tree)
-    }
-
     /// Return the focused pane's miller columns controller.
     #[must_use]
     pub fn miller_controller(&self) -> Arc<MillerController> {
@@ -1208,10 +1176,9 @@ impl AppShell {
     /// as local navigation (breadcrumb, address bar, ops panel).
     ///
     /// Unlike [`Self::on_location_changed_impl`] this does NOT touch
-    /// `ctrl.tree` / `ctrl.miller`: neither the tree view nor the miller
-    /// column view have remote-fs plumbing yet (they are file-tree
-    /// walkers over a native `PathBuf`). Remote-fs support for those is
-    /// scheduled for phase 2.5.
+    /// `ctrl.miller`: the miller column view does not have remote-fs
+    /// plumbing yet (it is a file-tree walker over a native `PathBuf`).
+    /// Remote-fs support for it is scheduled for phase 2.5.
     pub fn open_remote_location(
         self: &Arc<Self>,
         pane_id: PaneId,
@@ -1229,8 +1196,8 @@ impl AppShell {
                 ctrl.details.set_location(Arc::clone(&vm_dyn));
                 ctrl.grid.set_location(Arc::clone(&vm_dyn));
                 ctrl.gallery.set_location(Arc::clone(&vm_dyn));
-                // Note: tree and miller are local-only for now. On
-                // remote mount they retain their previous local root
+                // Note: miller is local-only for now. On
+                // remote mount it retains its previous local root
                 // silently; the pane's details/grid/gallery views are
                 // what the user actually sees for a remote pane in
                 // phase 2.3.
@@ -1796,7 +1763,7 @@ impl AppShell {
         self.project_workspace_to_slint();
     }
 
-    /// Cycle the focused pane's view mode Details→Grid→Gallery→Miller→Tree→…
+    /// Cycle the focused pane's view mode Details→Grid→Gallery→Miller→…
     pub fn cycle_view_mode(self: &Arc<Self>) {
         let id = self.focused_pane_id();
         let cur = self
@@ -1809,8 +1776,7 @@ impl AppShell {
             ViewMode::Details => ViewMode::Grid,
             ViewMode::Grid => ViewMode::Gallery,
             ViewMode::Gallery => ViewMode::Miller,
-            ViewMode::Miller => ViewMode::Tree,
-            ViewMode::Tree => ViewMode::Details,
+            ViewMode::Miller => ViewMode::Details,
         };
         self.set_view_mode(id, next);
     }
@@ -2478,7 +2444,7 @@ impl AppShell {
     /// Common tail: given a resolved [`atlas_fs::Entry`] and its owning
     /// pane, either navigate (directory) or hand off to the platform
     /// / preview-cache open path (file). Public so views with
-    /// non-trivial index → entry resolution (Tree, Miller) can push
+    /// non-trivial index → entry resolution (Miller) can push
     /// the entry directly.
     ///
     /// This is the *only* place where the local `path.is_dir()` fast
@@ -2567,7 +2533,7 @@ impl AppShell {
     }
 
     /// Compatibility shim for view-controllers that push a raw
-    /// [`PathBuf`] (Tree, Miller). Prefers the entry-based route:
+    /// [`PathBuf`] (Miller). Prefers the entry-based route:
     /// the caller-supplied path is looked up in the pane's vm to
     /// recover the full [`atlas_fs::Entry`]; missing entries fall
     /// back to the legacy local-only path so behaviour on
@@ -2584,7 +2550,7 @@ impl AppShell {
             self.view_entry(id, entry);
             return;
         }
-        // Fallback for local-only views (Tree/Miller may push a
+        // Fallback for local-only views (Miller may push a
         // walker-discovered path that is not in the top-level vm).
         // Remote panes have no meaningful `PathBuf` at this level so
         // guard on the pane's location type before touching the local
@@ -2748,7 +2714,7 @@ impl AppShell {
     ///
     /// # Caveats
     ///
-    /// Only the Details view selection is read. Grid/Miller/Tree selection
+    /// Only the Details view selection is read. Grid/Miller selection
     /// reading is a TODO once those views expose a unified selection API.
     #[must_use]
     pub fn selected_paths(&self, id: PaneId) -> Vec<PathBuf> {
@@ -2809,7 +2775,7 @@ impl AppShell {
     ///
     /// # Caveats
     ///
-    /// Currently reads from the Details view focused index only. Grid/Miller/Tree
+    /// Currently reads from the Details view focused index only. Grid/Miller
     /// are a TODO.
     #[must_use]
     pub fn focused_entry(&self, id: PaneId) -> Option<PathBuf> {
@@ -3070,7 +3036,6 @@ impl AppShell {
                 ctrl.details.set_location(Arc::clone(&vm_dyn));
                 ctrl.grid.set_location(Arc::clone(&vm_dyn));
                 ctrl.gallery.set_location(Arc::clone(&vm_dyn));
-                ctrl.tree.set_root(path.clone());
                 ctrl.miller.set_root(path.clone());
             }
         }
@@ -3216,7 +3181,6 @@ impl AppShell {
                     ViewMode::Grid => ctrl.grid.move_focus(delta as isize, 0),
                     ViewMode::Gallery => ctrl.gallery.move_focus(delta as isize),
                     ViewMode::Miller => ctrl.miller.move_focus(delta as isize),
-                    ViewMode::Tree => ctrl.tree.move_focus(delta as isize),
                 }
             });
         }
@@ -3562,52 +3526,6 @@ impl AppShell {
                 if let Some(c) = shell.pane_by_id(id) {
                     c.gallery.next_image();
                 }
-            });
-        }
-
-        // ── Tree callbacks ────────────────────────────────────────────────────
-        {
-            let shell = self.clone();
-            window.on_tree_row_clicked(move |pane_id, index, ctrl, shift| {
-                let id = PaneId(pane_id as u32);
-                shell.set_focused_pane_id(id);
-                if let Some(c) = shell.pane_by_id(id) {
-                    c.tree.select_index(index as usize, ctrl, shift);
-                }
-                shell.bump_refocus_tick();
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_tree_row_double_clicked(move |pane_id, index| {
-                let id = PaneId(pane_id as u32);
-                shell.set_focused_pane_id(id);
-                let path = shell.pane_by_id(id).and_then(|c| {
-                    c.tree.select_index(index as usize, false, false);
-                    let visible = c.tree.build_visible_nodes();
-                    visible
-                        .get(index as usize)
-                        .map(|row| PathBuf::from(row.node_id.as_str()))
-                });
-                if let Some(path) = path {
-                    shell.view_path(id, path);
-                }
-                shell.bump_refocus_tick();
-            });
-        }
-        {
-            let shell = self.clone();
-            window.on_tree_chevron_clicked(move |pane_id, index| {
-                let id = PaneId(pane_id as u32);
-                shell.set_focused_pane_id(id);
-                if let Some(c) = shell.pane_by_id(id) {
-                    let visible = c.tree.build_visible_nodes();
-                    if let Some(row) = visible.get(index as usize) {
-                        let path = std::path::PathBuf::from(row.node_id.as_str());
-                        c.tree.toggle(&path);
-                    }
-                }
-                shell.bump_refocus_tick();
             });
         }
 
@@ -4214,7 +4132,7 @@ impl AppShell {
     /// Builds a [`PaneSlintData`] entry for every leaf pane in DFS order and
     /// pushes it via `set_panes`. Also pushes split-handle descriptors and the
     /// focused-pane id. The pane's per-view heavy data (details rows,
-    /// thumbnails, tree nodes, etc.) is written into the [`PaneRenderCache`]
+    /// thumbnails, etc.) is written into the [`PaneRenderCache`]
     /// by view controllers via `publish_*` methods and re-projected here via
     /// [`Self::push_pane_data_to_slint`] so both light and heavy data reach
     /// Slint in the same DFS-leaf order.
@@ -4552,28 +4470,6 @@ impl AppShell {
         self.push_pane_data_to_slint();
     }
 
-    /// Publish the Tree view visible node list for pane `id`.
-    pub fn publish_tree_nodes(self: &Arc<Self>, id: PaneId, nodes: Vec<crate::TreeNode>) {
-        self.with_cache_data(id, |c| c.tree_nodes = nodes);
-        self.push_pane_data_to_slint();
-    }
-
-    /// Publish the Tree view focused index for pane `id`.
-    ///
-    /// Selection-only push — see [`Self::publish_details_selected_mask`].
-    pub fn publish_tree_focused_index(self: &Arc<Self>, id: PaneId, focus: i32) {
-        self.with_cache(id, |c| c.tree_focused_index = focus);
-        self.push_pane_selection_to_slint();
-    }
-
-    /// Publish the Tree view selected index for pane `id`.
-    ///
-    /// Selection-only push — see [`Self::publish_details_selected_mask`].
-    pub fn publish_tree_selected_index(self: &Arc<Self>, id: PaneId, selected: i32) {
-        self.with_cache(id, |c| c.tree_selected_index = selected);
-        self.push_pane_selection_to_slint();
-    }
-
     /// Publish the Miller columns snapshot for pane `id`.
     pub fn publish_miller_columns(self: &Arc<Self>, id: PaneId, columns: Vec<MillerColumnCache>) {
         self.with_cache_data(id, |c| c.miller_columns = columns);
@@ -4778,17 +4674,6 @@ impl AppShell {
                     .collect();
                 sync_vec_model(&outer.gallery_metadata, &gal_meta);
 
-                // Tree.
-                let t_nodes: Vec<ModelRc<crate::TreeNode>> =
-                    resolved.iter().map(|r| r.tree_nodes.clone()).collect();
-                sync_vec_model(&outer.tree_nodes, &t_nodes);
-
-                let t_focus: Vec<i32> = snapshots.iter().map(|s| s.tree_focused_index).collect();
-                sync_vec_model(&outer.tree_focused_index, &t_focus);
-
-                let t_sel: Vec<i32> = snapshots.iter().map(|s| s.tree_selected_index).collect();
-                sync_vec_model(&outer.tree_selected_index, &t_sel);
-
                 // Miller. The outer per-pane ModelRc<MillerColData> is
                 // cached; inner column entries live inside the cached
                 // MillerColData so they're also identity-preserved when
@@ -4804,11 +4689,11 @@ impl AppShell {
     }
 
     /// Push only the per-pane selection / focused-index arrays to Slint,
-    /// leaving the heavy row / column / thumbnail / tree / miller / gallery
+    /// leaving the heavy row / column / thumbnail / miller / gallery
     /// arrays untouched.
     ///
     /// **Why this matters.** Slint's `ListView` (and, by extension, the
-    /// Grid/Tree/Gallery virtualised containers) key their child instances
+    /// Grid/Gallery virtualised containers) key their child instances
     /// off the *identity* of the row model. Replacing
     /// `panes-details-rows` with a fresh `VecModel` — even if the contents
     /// are identical — destroys every `EntryRow` instance and re-creates
@@ -4876,13 +4761,6 @@ impl AppShell {
                 let gal_focus: Vec<i32> =
                     snapshots.iter().map(|s| s.gallery_focused_index).collect();
                 sync_vec_model(&outer.gallery_focused_index, &gal_focus);
-
-                // Tree focus / selection.
-                let t_focus: Vec<i32> = snapshots.iter().map(|s| s.tree_focused_index).collect();
-                sync_vec_model(&outer.tree_focused_index, &t_focus);
-
-                let t_sel: Vec<i32> = snapshots.iter().map(|s| s.tree_selected_index).collect();
-                sync_vec_model(&outer.tree_selected_index, &t_sel);
 
                 // Miller focused column.
                 let m_focus: Vec<i32> = snapshots.iter().map(|s| s.miller_focused_col).collect();

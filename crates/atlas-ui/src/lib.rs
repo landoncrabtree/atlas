@@ -34,7 +34,6 @@ pub use views::details::{
 pub use views::gallery::GalleryController;
 pub use views::grid::GridController;
 pub use views::miller::MillerController;
-pub use views::tree::TreeController;
 
 pub use navigation::NavigationController;
 

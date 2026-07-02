@@ -1,10 +1,10 @@
 // Per-pane light data and split-handle descriptors for the N-pane workspace.
 //
 // `PaneSlintData` carries the layout geometry and AppShell-managed lightweight
-// fields for each pane.  Heavy per-pane data (details rows, thumbnails, tree
-// nodes, etc.) lives in per-slot top-level properties on `AtlasWindow`
-// (`pane0-*` / `pane1-*`) until Phase 4.1 migrates the view controllers to
-// the N-pane parallel-array model.
+// fields for each pane.  Heavy per-pane data (details rows, thumbnails,
+// miller columns, gallery images, etc.) lives in per-slot top-level
+// properties on `AtlasWindow` (`pane0-*` / `pane1-*`) until Phase 4.1
+// migrates the view controllers to the N-pane parallel-array model.
 
 /// Light data for a single pane; pushed by `project_workspace_to_slint`.
 ///
@@ -27,7 +27,7 @@ export struct PaneSlintData {
     /// Current directory path (display string, not necessarily valid UTF-8).
     path: string,
 
-    /// Active view mode: "Details" | "Grid" | "Gallery" | "Miller" | "Tree".
+    /// Active view mode: "Details" | "Grid" | "Gallery" | "Miller".
     view-mode: string,
 
     /// Index of the active tab within the pane's tab list.

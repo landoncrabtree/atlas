@@ -283,12 +283,6 @@ context = "Global"
 key = "alt-cmd-4"
 action = "view::Miller"
 
-# [Global] View: Tree
-[[bindings]]
-context = "Global"
-key = "alt-cmd-5"
-action = "view::Tree"
-
 # [Pane] Cycle View Mode
 [[bindings]]
 context = "Pane"

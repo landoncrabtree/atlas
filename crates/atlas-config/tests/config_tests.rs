@@ -205,7 +205,6 @@ fn view_mode_case_insensitive() {
         (r#"default_mode = "GRID""#, ViewMode::Grid),
         (r#"default_mode = "gallery""#, ViewMode::Gallery),
         (r#"default_mode = "Miller""#, ViewMode::Miller),
-        (r#"default_mode = "TREE""#, ViewMode::Tree),
     ];
     for (fragment, expected) in cases {
         let toml = format!("[view]\n{fragment}\n");

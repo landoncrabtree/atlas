@@ -163,8 +163,6 @@ pub enum ViewMode {
     Gallery,
     /// Miller columns.
     Miller,
-    /// Recursive tree.
-    Tree,
 }
 
 impl<'de> serde::Deserialize<'de> for ViewMode {
@@ -178,10 +176,9 @@ impl<'de> serde::Deserialize<'de> for ViewMode {
             "grid" => Ok(Self::Grid),
             "gallery" => Ok(Self::Gallery),
             "miller" => Ok(Self::Miller),
-            "tree" => Ok(Self::Tree),
             _ => Err(serde::de::Error::unknown_variant(
                 &s,
-                &["details", "grid", "gallery", "miller", "tree"],
+                &["details", "grid", "gallery", "miller"],
             )),
         }
     }

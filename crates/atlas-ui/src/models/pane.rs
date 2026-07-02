@@ -16,8 +16,6 @@ pub enum ViewMode {
     Gallery,
     /// Miller-columns (macOS Finder-style).
     Miller,
-    /// Expandable tree view.
-    Tree,
 }
 
 impl std::fmt::Display for ViewMode {
@@ -27,7 +25,6 @@ impl std::fmt::Display for ViewMode {
             Self::Grid => f.write_str("Grid"),
             Self::Gallery => f.write_str("Gallery"),
             Self::Miller => f.write_str("Miller"),
-            Self::Tree => f.write_str("Tree"),
         }
     }
 }
@@ -84,7 +81,6 @@ mod tests {
         assert_eq!(ViewMode::Grid.to_string(), "Grid");
         assert_eq!(ViewMode::Gallery.to_string(), "Gallery");
         assert_eq!(ViewMode::Miller.to_string(), "Miller");
-        assert_eq!(ViewMode::Tree.to_string(), "Tree");
     }
 
     #[test]

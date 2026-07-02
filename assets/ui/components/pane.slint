@@ -9,7 +9,6 @@ import { GalleryView } from "../views/gallery/gallery-view.slint";
 import { MillerView } from "../views/miller/miller-view.slint";
 import { MillerColData } from "../views/miller/miller-state.slint";
 import { EntryRowItem, ColumnSpec } from "../views/details/column.slint";
-import { TreeView, TreeNode } from "../views/tree/tree-view.slint";
 import { MetadataFields } from "../views/gallery/gallery-metadata.slint";
 
 // Bottom-of-pane status bar. Shows folder/file counts, cumulative size,
@@ -190,10 +189,6 @@ export component Pane {
         dimensions: "",
     };
 
-    in property <[TreeNode]> tree-nodes: [];
-    in property <int> tree-focused-index: -1;
-    in property <int> tree-selected-index: -1;
-
     in property <[MillerColData]> miller-columns: [];
     in property <int> miller-focused-col: 0;
 
@@ -250,12 +245,9 @@ export component Pane {
     callback gallery-prev-image();
     callback gallery-next-image();
 
-    callback tree-row-clicked(int, bool, bool);
-    callback tree-row-double-clicked(int);
     /// Border thickness for the focused-pane ring. `0px` disables it.
     in property <length> focused-border-px: 2px;
 
-    callback tree-chevron-clicked(int);
     callback miller-row-clicked(int, int);
     callback miller-row-double-clicked(int, int);
 
@@ -377,19 +369,7 @@ export component Pane {
                     drag-start(col, row) => { root.drag-start(row); }
                 }
 
-                if root.view-mode == "Tree" : TreeView {
-                    vertical-stretch: 1;
-                    nodes: root.tree-nodes;
-                    focused-index: root.tree-focused-index;
-                    selected-index: root.tree-selected-index;
-
-                    row-clicked(i, ctrl, shift) => { root.tree-row-clicked(i, ctrl, shift); }
-                    row-double-clicked(i) => { root.tree-row-double-clicked(i); }
-                    chevron-clicked(i) => { root.tree-chevron-clicked(i); }
-                    drag-start(i) => { root.drag-start(i); }
-                }
-
-                if root.view-mode != "Details" && root.view-mode != "Grid" && root.view-mode != "Gallery" && root.view-mode != "Miller" && root.view-mode != "Tree" : EmptyView {
+                if root.view-mode != "Details" && root.view-mode != "Grid" && root.view-mode != "Gallery" && root.view-mode != "Miller" : EmptyView {
                     view-mode: root.view-mode;
                     vertical-stretch: 1;
                 }

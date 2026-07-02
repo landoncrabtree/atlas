@@ -538,7 +538,6 @@ fn config_view_mode(m: atlas_config::ViewMode) -> atlas_ui::models::ViewMode {
         atlas_config::ViewMode::Grid => atlas_ui::models::ViewMode::Grid,
         atlas_config::ViewMode::Gallery => atlas_ui::models::ViewMode::Gallery,
         atlas_config::ViewMode::Miller => atlas_ui::models::ViewMode::Miller,
-        atlas_config::ViewMode::Tree => atlas_ui::models::ViewMode::Tree,
     }
 }
 
@@ -804,7 +803,7 @@ fn build_dispatcher(
     // ── File-list navigation (arrow keys + vim hjkl) ─────────────────────
     //
     // Route by view mode so hjkl / arrows work in every view (details,
-    // grid, gallery, miller, tree). Nav is **focus-only** in every view:
+    // grid, gallery, miller). Nav is **focus-only** in every view:
     // moving the cursor updates the focused-index but leaves the existing
     // selection alone. This is the terminal-file-manager convention
     // (yazi / nnn / ranger / Total Commander) and lets the user build a
@@ -822,7 +821,6 @@ fn build_dispatcher(
                 atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(1_i64),
                 atlas_ui::models::ViewMode::Grid => ctrl.grid.move_focus(1_isize, 0),
                 atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(1_isize),
-                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(1_isize),
                 atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(1_isize),
             }
         });
@@ -837,14 +835,13 @@ fn build_dispatcher(
                 atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(-1_i64),
                 atlas_ui::models::ViewMode::Grid => ctrl.grid.move_focus(-1_isize, 0),
                 atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(-1_isize),
-                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(-1_isize),
                 atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(-1_isize),
             }
         });
     }
     // Shift+Arrow / Shift+j / Shift+k extends the range selection in
     // Details and Grid; degrades to plain move_focus for the
-    // single-focus views (Gallery/Tree/Miller) where range extend has
+    // single-focus views (Gallery/Miller) where range extend has
     // no obvious meaning.
     {
         let s = Arc::clone(shell);
@@ -856,7 +853,6 @@ fn build_dispatcher(
                 atlas_ui::models::ViewMode::Details => ctrl.details.extend_selection(1_i64),
                 atlas_ui::models::ViewMode::Grid => ctrl.grid.extend_selection(1_isize, 0),
                 atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(1_isize),
-                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(1_isize),
                 atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(1_isize),
             }
         });
@@ -871,7 +867,6 @@ fn build_dispatcher(
                 atlas_ui::models::ViewMode::Details => ctrl.details.extend_selection(-1_i64),
                 atlas_ui::models::ViewMode::Grid => ctrl.grid.extend_selection(-1_isize, 0),
                 atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(-1_isize),
-                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(-1_isize),
                 atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(-1_isize),
             }
         });
@@ -882,7 +877,7 @@ fn build_dispatcher(
     // from Total Commander / nnn / ranger / yazi. Cmd+A / Ctrl+A selects
     // every entry in the pane's directory; Shift+Cmd+A clears the
     // selection. These are only defined for Details/Grid — the
-    // single-focus views (Gallery/Tree/Miller) have no concept of a
+    // single-focus views (Gallery/Miller) have no concept of a
     // multi-selection.
     {
         let s = Arc::clone(shell);
@@ -941,7 +936,6 @@ fn build_dispatcher(
                 atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(i64::MIN),
                 atlas_ui::models::ViewMode::Grid => ctrl.grid.move_focus(isize::MIN, 0),
                 atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(isize::MIN),
-                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(isize::MIN),
                 atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(isize::MIN),
             }
         });
@@ -956,7 +950,6 @@ fn build_dispatcher(
                 atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(i64::MAX),
                 atlas_ui::models::ViewMode::Grid => ctrl.grid.move_focus(isize::MAX, 0),
                 atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(isize::MAX),
-                atlas_ui::models::ViewMode::Tree => ctrl.tree.move_focus(isize::MAX),
                 atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(isize::MAX),
             }
         });
@@ -990,13 +983,12 @@ fn build_dispatcher(
         });
     }
 
-    // ── View mode switching (Cmd+Alt+1..5 by default) ────────────────────
+    // ── View mode switching (Cmd+Alt+1..4 by default) ────────────────────
     for (id, mode) in [
         ("view::Details", atlas_ui::models::ViewMode::Details),
         ("view::Grid", atlas_ui::models::ViewMode::Grid),
         ("view::Gallery", atlas_ui::models::ViewMode::Gallery),
         ("view::Miller", atlas_ui::models::ViewMode::Miller),
-        ("view::Tree", atlas_ui::models::ViewMode::Tree),
     ] {
         let s = Arc::clone(shell);
         d.register(id, move || {

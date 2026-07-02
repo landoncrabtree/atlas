@@ -13,7 +13,6 @@ import { ConnectServerModal, SavedServerRow } from "components/connect-server.sl
 import { TabEntry } from "components/tab-bar.slint";
 import { EntryRowItem, ColumnSpec } from "views/details/column.slint";
 import { MillerColData } from "views/miller/miller-state.slint";
-import { TreeNode } from "views/tree/tree-view.slint";
 import { MetadataFields } from "views/gallery/gallery-metadata.slint";
 import { PaneSlintData, SplitHandle } from "pane-data.slint";
 
@@ -137,10 +136,6 @@ export component AtlasWindow inherits Window {
     in property <[string]> panes-gallery-preview-fallback-glyph: [];
     in property <[int]> panes-gallery-focused-index: [];
     in property <[MetadataFields]> panes-gallery-metadata: [];
-
-    in property <[[TreeNode]]> panes-tree-nodes: [];
-    in property <[int]> panes-tree-focused-index: [];
-    in property <[int]> panes-tree-selected-index: [];
 
     in property <[[MillerColData]]> panes-miller-columns: [];
     in property <[int]> panes-miller-focused-col: [];
@@ -450,10 +445,6 @@ export component AtlasWindow inherits Window {
     callback gallery-preview-visible(int /*pane-id*/, int);
     callback gallery-prev-image(int /*pane-id*/);
     callback gallery-next-image(int /*pane-id*/);
-
-    callback tree-row-clicked(int /*pane-id*/, int, bool, bool);
-    callback tree-row-double-clicked(int /*pane-id*/, int);
-    callback tree-chevron-clicked(int /*pane-id*/, int);
 
     callback miller-row-clicked(int /*pane-id*/, int /*col*/, int /*row*/);
     callback miller-row-double-clicked(int /*pane-id*/, int /*col*/, int /*row*/);
@@ -974,10 +965,6 @@ export component AtlasWindow inherits Window {
                     gallery-focused-index: panes-gallery-focused-index[i];
                     gallery-metadata: panes-gallery-metadata[i];
 
-                    tree-nodes: panes-tree-nodes[i];
-                    tree-focused-index: panes-tree-focused-index[i];
-                    tree-selected-index: panes-tree-selected-index[i];
-
                     miller-columns: panes-miller-columns[i];
                     miller-focused-col: panes-miller-focused-col[i];
 
@@ -1024,10 +1011,6 @@ export component AtlasWindow inherits Window {
                     gallery-preview-visible(idx) => { root.gallery-preview-visible(pane.id, idx); }
                     gallery-prev-image => { root.gallery-prev-image(pane.id); }
                     gallery-next-image => { root.gallery-next-image(pane.id); }
-
-                    tree-row-clicked(idx, ctrl, shift) => { root.tree-row-clicked(pane.id, idx, ctrl, shift); }
-                    tree-row-double-clicked(idx) => { root.tree-row-double-clicked(pane.id, idx); }
-                    tree-chevron-clicked(idx) => { root.tree-chevron-clicked(pane.id, idx); }
 
                     miller-row-clicked(col, row) => { root.miller-row-clicked(pane.id, col, row); }
                     miller-row-double-clicked(col, row) => { root.miller-row-double-clicked(pane.id, col, row); }
