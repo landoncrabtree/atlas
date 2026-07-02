@@ -1,0 +1,49 @@
+---
+name: fix-flaky-test
+description: Protocol for handling a test that appears flaky. Use before investing debugging time in what may already be a known flaky, to distinguish "your PR broke it" from "this has always been racy on this box."
+---
+
+Atlas has a small but non-zero set of tests that flake under specific conditions (parallel test load, FSEvents timing, macOS I/O bursts). Before spending an hour root-causing a failure, run this protocol.
+
+## Known flakies (retry-clean, do not treat as regressions)
+
+- `atlas_config::watcher_reload_and_error` — FSEvents debouncer timing on macOS under load.
+- `atlas-watch::test_created_event` — FSEvents Create-event drop under parallel test load.
+
+Both re-run clean on the next `cargo test` invocation. If you hit one of these, retry once. If it fails twice, treat it as a real bug.
+
+## Protocol
+
+1. **Confirm the failure is not in the docs / not in your PR.** If your change did not touch the failing crate's code paths, jump to step 2. If it did, root-cause it — do not blame the flakies list.
+
+2. **Reproduce on the parent commit** to prove it's pre-existing:
+
+   ```bash
+   # From the repo root, create a temporary worktree at HEAD~1
+   git worktree add ../atlas-parent HEAD~1
+   cd ../atlas-parent
+   cargo test -p <failing-crate> -- --test-threads=1 <failing-test-name>
+   ```
+
+   - Test **passes** on parent → your PR introduced the regression. Root-cause and fix.
+   - Test **fails** on parent → it's pre-existing. Note the failure in the PR description ("pre-existing flaky, tracked separately"), retry once to confirm it re-runs green, and continue.
+
+3. **Cleanup the worktree** when done:
+
+   ```bash
+   cd - && git worktree remove ../atlas-parent
+   ```
+
+4. **If it re-runs green once**, treat it as a known flaky. If it fails a second time in a row on the parent commit, escalate: it may have flipped from "flaky" to "always failing", which is a new bug worth investigating.
+
+5. **Reduce parallelism as a diagnostic**. `cargo test -p <crate> -- --test-threads=1` often stabilizes FSEvents-timing failures. If the test passes serial but fails parallel, that confirms the flaky classification.
+
+## Anti-patterns
+
+- **Do not "fix" a flaky by adding `sleep(…)`.** That masks the timing issue and slows every CI run. Fix the underlying race, or add an explicit `wait_until` helper that polls for the expected state.
+- **Do not delete or `#[ignore]` a flaky test** unless you have a replacement covering the same behaviour.
+- **Do not blame the sibling agent's WIP or other branches** for the flaky — the git-worktree parent-commit check is definitive.
+
+## When it isn't in the known-flakies list
+
+Treat it as a real bug. Root-cause via `RUST_LOG=<crate>=debug cargo test -p <crate> -- --nocapture <test-name>` and follow the trace. Do not add to the flakies list without a maintainer's OK.
