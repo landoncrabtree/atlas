@@ -80,18 +80,23 @@ export component BulkRenameModal inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: Theme.panel-bg-elevated;
 
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => { find-input.focus(); }
+                        }
+
                         HorizontalLayout {
                             padding-left: Theme.space-3;
                             padding-right: Theme.space-3;
                             alignment: center;
 
-                            TextInput {
+                            find-input := TextInput {
                                 // Auto-focus the Find field every time the
                                 // modal opens (the `if visible-modal`
                                 // subtree is recreated per-open, so `init`
                                 // fires per-open).
                                 init => { self.focus(); }
-                                text <=> root.pattern;
                                 color: Theme.fg;
                                 font-size: Theme.font-size;
                                 vertical-alignment: center;
@@ -123,12 +128,18 @@ export component BulkRenameModal inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: Theme.panel-bg-elevated;
 
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => { replace-input.focus(); }
+                        }
+
                         HorizontalLayout {
                             padding-left: Theme.space-3;
                             padding-right: Theme.space-3;
                             alignment: center;
 
-                            TextInput {
+                            replace-input := TextInput {
                                 text <=> root.replacement;
                                 color: Theme.fg;
                                 font-size: Theme.font-size;

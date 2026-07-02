@@ -77,11 +77,17 @@ export component SearchPanel inherits Rectangle {
                 border-radius: Theme.radius-sm;
                 background: Theme.panel-bg-elevated;
 
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => { search-input.focus(); }
+                }
+
                 HorizontalLayout {
                     padding-left: Theme.space-3;
                     padding-right: Theme.space-3;
 
-                    TextInput {
+                    search-input := TextInput {
                         // Auto-focus the input every time the panel becomes
                         // visible so users can start typing immediately.
                         // `if visible-panel` recreates this subtree on each

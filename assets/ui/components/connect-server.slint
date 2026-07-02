@@ -489,6 +489,16 @@ export component ConnectServerModal inherits Rectangle {
                             border-radius: Theme.radius-sm;
                             background: Theme.panel-bg;
 
+                            // Whole cell (padding + placeholder area) delegates
+                            // clicks to the TextInput. Sits below the
+                            // HorizontalLayout so glyph-hits still land on the
+                            // input directly (TextInput is topmost).
+                            TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                clicked => { host-input.focus(); }
+                            }
+
                             HorizontalLayout {
                                 padding-left: Theme.space-3;
                                 padding-right: Theme.space-3;
@@ -549,6 +559,12 @@ export component ConnectServerModal inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: Theme.panel-bg;
 
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => { path-input.focus(); }
+                        }
+
                         HorizontalLayout {
                             padding-left: Theme.space-3;
                             padding-right: Theme.space-3;
@@ -601,6 +617,12 @@ export component ConnectServerModal inherits Rectangle {
                         border-color: s3ep-input.has-focus ? Theme.accent : Theme.border;
                         border-radius: Theme.radius-sm;
                         background: Theme.panel-bg;
+
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => { s3ep-input.focus(); }
+                        }
 
                         HorizontalLayout {
                             padding-left: Theme.space-3;
@@ -764,6 +786,12 @@ export component ConnectServerModal inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: Theme.panel-bg;
 
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => { user-input.focus(); }
+                        }
+
                         HorizontalLayout {
                             padding-left: Theme.space-3;
                             padding-right: Theme.space-3;
@@ -808,6 +836,12 @@ export component ConnectServerModal inherits Rectangle {
                         border-color: pw-input.has-focus ? Theme.accent : Theme.border;
                         border-radius: Theme.radius-sm;
                         background: Theme.panel-bg;
+
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => { pw-input.focus(); }
+                        }
 
                         HorizontalLayout {
                             padding-left: Theme.space-3;
@@ -867,6 +901,12 @@ export component ConnectServerModal inherits Rectangle {
                             border-color: ssh-input.has-focus ? Theme.accent : Theme.border;
                             border-radius: Theme.radius-sm;
                             background: Theme.panel-bg;
+
+                            TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                clicked => { ssh-input.focus(); }
+                            }
 
                             HorizontalLayout {
                                 padding-left: Theme.space-3;
@@ -945,6 +985,12 @@ export component ConnectServerModal inherits Rectangle {
                             border-radius: Theme.radius-sm;
                             background: Theme.panel-bg;
 
+                            TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                clicked => { iam-key.focus(); }
+                            }
+
                             HorizontalLayout {
                                 padding-left: Theme.space-3;
                                 padding-right: Theme.space-3;
@@ -979,6 +1025,12 @@ export component ConnectServerModal inherits Rectangle {
                             border-color: iam-sec.has-focus ? Theme.accent : Theme.border;
                             border-radius: Theme.radius-sm;
                             background: Theme.panel-bg;
+
+                            TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                clicked => { iam-sec.focus(); }
+                            }
 
                             HorizontalLayout {
                                 padding-left: Theme.space-3;
@@ -1015,6 +1067,12 @@ export component ConnectServerModal inherits Rectangle {
                             border-color: iam-tok.has-focus ? Theme.accent : Theme.border;
                             border-radius: Theme.radius-sm;
                             background: Theme.panel-bg;
+
+                            TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                clicked => { iam-tok.focus(); }
+                            }
 
                             HorizontalLayout {
                                 padding-left: Theme.space-3;
@@ -1081,6 +1139,12 @@ export component ConnectServerModal inherits Rectangle {
                         border-color: label-input.has-focus ? Theme.accent : Theme.border;
                         border-radius: Theme.radius-sm;
                         background: Theme.panel-bg;
+
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => { label-input.focus(); }
+                        }
 
                         HorizontalLayout {
                             padding-left: Theme.space-3;

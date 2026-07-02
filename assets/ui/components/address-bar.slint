@@ -35,6 +35,15 @@ export component AddressBar {
 
         animate border-color { duration: Theme.motion-quick; easing: ease-out; }
 
+        // Whole cell delegates clicks to the TextInput so the padding
+        // + glyph-icon column focus the input rather than swallowing
+        // the click.
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => { input.focus(); }
+        }
+
         HorizontalLayout {
             padding-left: Theme.space-3;
             padding-right: Theme.space-3;
