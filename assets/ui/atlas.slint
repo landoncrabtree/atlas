@@ -1,4 +1,9 @@
 import { Theme } from "theme.slint";
+// Embed Symbols Nerd Font Mono for filetype icons. Registered process-wide
+// by the Slint compiler; family name is "Symbols Nerd Font Mono". Consumers
+// bind `font-family: Theme.icon-font-family` on Text elements displaying
+// PUA icon glyphs. See assets/fonts/README.md for attribution.
+import "../fonts/SymbolsNerdFontMono-Regular.ttf";
 import { Titlebar } from "components/titlebar.slint";
 import { Pane } from "components/pane.slint";
 // StatusBar was moved per-pane (see components/pane.slint → PaneStatusBar).

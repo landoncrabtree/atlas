@@ -37,6 +37,16 @@ export global Theme {
     in-out property <length> font-size: 13px;
     in-out property <string> monospace: "";
 
+    // Icon font: the bundled Symbols Nerd Font Mono TTF (import in
+    // atlas.slint) registers this family process-wide. Bind Text
+    // elements displaying PUA icon glyphs to `Theme.icon-font-family`
+    // so they render Nerd Font icons instead of the user's text font's
+    // fallback tofu. Since Slint's font-family is a single family and
+    // does NOT accept a CSS-style fallback list, this MUST point at
+    // the bundled family alone. Any user override would defeat the
+    // fallback for icon glyphs.
+    in-out property <string> icon-font-family: "Symbols Nerd Font Mono";
+
     // ── Radii ─────────────────────────────────────────────────────────────────
     in-out property <length> radius-xs: 4px;
     in-out property <length> radius-sm: 6px;
