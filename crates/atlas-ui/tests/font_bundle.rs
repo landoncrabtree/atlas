@@ -52,45 +52,17 @@
 //!
 //! # Cross-platform coverage
 //!
-//! - macOS: this test runs `cargo build --release --bin atlas`
-//!   natively and byte-scans the resulting Mach-O binary. Runs
-//!   unconditionally on macOS.
-//! - Linux: the same `cargo build --release --bin atlas` would work
-//!   under a Linux CI runner. This test is `cfg`-gated to macOS +
-//!   Linux (which share the Unix-side symbol-name conventions the
-//!   scan relies on); the scan itself is platform-agnostic since it
-//!   looks for raw TTF bytes.
-//! - Windows: `cargo build --target x86_64-pc-windows-gnu` produces
-//!   a PE binary that also embeds the TTF via the same Slint
-//!   mechanism. The byte-scan would work identically because the
-//!   family name and table tags survive linking unchanged. See
-//!   `TODO(ci)` below — actual cross-compile is deferred to CI; the
-//!   assertion holds by construction (Slint embeds the same bytes
-//!   into every target).
+//! The byte-scan is platform-agnostic — it looks for raw TTF bytes
+//! that survive linking on Mach-O (macOS), ELF (Linux), and PE
+//! (Windows). CI runs `cargo test --workspace` on all three OSes via
+//! `.github/workflows/ci.yml`'s matrix; the test fires on each.
 //!
-//! # TODO(ci): Windows + Linux native verification
-//!
-//! Attempted `cargo build --target x86_64-pc-windows-gnu -p atlas-ui`
-//! on macOS with `brew install mingw-w64` — the mingw toolchain
-//! installs fine but Skia's build script (pulled in transitively by
-//! Slint's software renderer, `skia-safe`) asserts on a missing VC
-//! install regardless of the C compiler (`assert(win_vc != "")` in
-//! `gn/BUILDCONFIG.gn`). That's a heavy toolchain problem beyond a
-//! font-round-trip test's scope. Once atlas's CI matrix has a native
-//! Windows runner, extend this file with a `#[cfg(target_os = "windows")]`
-//! copy of `release_binary_embeds_the_bundled_ttf` that scans
-//! `target/release/atlas.exe`. Same for a native Linux runner
-//! scanning ELF.
-//!
-//! Until then, the invariant we rely on is: **Slint embeds `import
-//! "…ttf"` resources as raw byte slices into the generated code, so
-//! the family name and TrueType table tags survive linking on every
-//! target the crate compiles for.** The macOS byte-scan below is
-//! sufficient evidence that Slint's asset-embed mechanism itself is
-//! working; a Windows-specific check would only catch a regression
-//! where Windows-only compilation stops embedding, which would
-//! require Slint to ship a target-specific asset pipeline — no such
-//! feature exists in 1.17.
+//! Locally you'll only exercise the OS you're running on, but the
+//! Slint asset-embed mechanism has no target-specific pipeline —
+//! `import "…ttf"` produces the same static byte slice regardless of
+//! target, so the assertion holds by construction across all three.
+//! The CI matrix is defence in depth against a future Slint version
+//! silently changing that.
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -167,7 +139,6 @@ fn ttf_on_disk_has_pinned_sha256() {
 // Windows this would require the MSVC toolchain — deferred to CI
 // per the module-level `TODO(ci)`.
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn release_binary_embeds_the_bundled_ttf() {
     let root = workspace_root();
@@ -222,7 +193,6 @@ fn release_binary_embeds_the_bundled_ttf() {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }

@@ -14,7 +14,7 @@ env:
 jobs:
   fmt:
     name: fmt
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -23,30 +23,117 @@ jobs:
       - run: cargo fmt --all -- --check
 
   clippy:
-    name: clippy
-    runs-on: macos-latest
+    name: clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfontconfig1-dev \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            libxcb1-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-render0-dev \
+            libxcb-icccm4-dev \
+            libxcb-image0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-render-util0-dev \
+            libxcb-xkb-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
-    name: test
-    runs-on: macos-latest
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfontconfig1-dev \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            libxcb1-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-render0-dev \
+            libxcb-icccm4-dev \
+            libxcb-image0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-render-util0-dev \
+            libxcb-xkb-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+      - name: Set MOCK_SERVERS_SKIP on non-Linux
+        # Python mock servers (paramiko / pyftpdlib / wsgidav / moto)
+        # depend on host Python + `uv` which our CI matrix doesn't
+        # provision on macOS / Windows runners. Setting this env var
+        # short-circuits the remote-fs integration tests with an
+        # explicit "skipped" outcome per crates/atlas-remote/tests/common/mock.rs.
+        if: runner.os != 'Linux'
+        run: echo "MOCK_SERVERS_SKIP=1" >> $GITHUB_ENV
+        shell: bash
+      - name: Install uv (Linux only, for remote-fs mock servers)
+        if: runner.os == 'Linux'
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - run: cargo test --workspace --locked
 
   build:
-    name: build (macos)
-    runs-on: macos-latest
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfontconfig1-dev \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            libxcb1-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-render0-dev \
+            libxcb-icccm4-dev \
+            libxcb-image0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-render-util0-dev \
+            libxcb-xkb-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
       - run: cargo build --workspace --locked
