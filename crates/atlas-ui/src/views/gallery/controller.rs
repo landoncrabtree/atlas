@@ -18,6 +18,7 @@ use crate::{
     actions::ActionSink,
     models::split::PaneId,
     shell::AppShell,
+    theming::icons::icon_for,
     views::{
         details::{format_relative_time, format_size},
         gallery::{
@@ -345,7 +346,7 @@ impl GalleryController {
         let Some(entry) = self.entries.read().get(index).cloned() else {
             return;
         };
-        let fallback = fallback_glyph(&entry.kind);
+        let fallback = fallback_glyph(&entry);
         if entry.kind.is_dir() || !can_thumbnail(&entry.path) {
             *self.preview.write() = None;
             *self.preview_path.write() = None;
@@ -485,7 +486,7 @@ impl GalleryController {
                             *self.preview.write() = None;
                             *self.preview_fallback_glyph.write() = self
                                 .current_focused_entry()
-                                .map(|entry| fallback_glyph(&entry.kind).to_owned())
+                                .map(|entry| fallback_glyph(&entry).to_owned())
                                 .unwrap_or_default();
                             self.preview_loading.store(false, Ordering::Relaxed);
                             push_preview = true;
@@ -574,14 +575,8 @@ impl Drop for GalleryController {
     }
 }
 
-fn fallback_glyph(kind: &EntryKind) -> &'static str {
-    match kind {
-        EntryKind::Dir => "▸",
-        EntryKind::File => "·",
-        EntryKind::Symlink { broken: true, .. } => "⚠",
-        EntryKind::Symlink { .. } => "↪",
-        EntryKind::Other => "⚙️",
-    }
+fn fallback_glyph(entry: &Entry) -> &'static str {
+    icon_for(entry).glyph
 }
 
 fn metadata_placeholder(entry: &Entry) -> UiMetadataFields {

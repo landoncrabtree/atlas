@@ -60,6 +60,14 @@ animations = true
 # currently-focused pane. Use `0.0` to disable. Clamped to [0.0, 6.0].
 active_pane_border_px = 2.0
 
+# ── Icon glyphs ───────────────────────────────────────────────────────────────
+# Controls how filetype icons render across Details / Grid / Miller / Gallery.
+[ui.icons]
+# When `true` (default), use Unicode emoji glyphs (📁, 🦀, 📝, …).
+# When `false`, fall back to bracketed ASCII (`[D]`, `[F]`, `[L]`, `[X]`,
+# `[!]`, `[?]`) for terminals, low-graphics setups, or accessibility.
+use_emoji = true
+
 [view]
 # Default view mode: "details", "grid", "gallery", "miller", or "tree".
 default_mode = "details"

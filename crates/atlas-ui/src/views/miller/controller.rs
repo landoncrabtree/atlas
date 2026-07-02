@@ -32,6 +32,7 @@ use crate::{
     actions::{ActionSink, UiAction},
     models::split::PaneId,
     shell::{AppShell, MillerColumnCache},
+    theming::icons::icon_for,
     views::{
         details::{format_relative_time, format_size},
         miller::column::Column,
@@ -711,17 +712,13 @@ pub fn compute_miller_viewport_x(
 
 /// Convert an [`atlas_fs::Entry`] to the Slint [`EntryRowItem`] struct.
 fn entry_to_row_item(entry: &atlas_fs::Entry) -> EntryRowItem {
-    let (is_dir, is_symlink, is_broken_symlink, kind_icon) = match &entry.kind {
-        EntryKind::Dir => (true, false, false, "▸"),
-        EntryKind::File => (false, false, false, "·"),
-        EntryKind::Symlink { broken, .. } => (
-            false,
-            true,
-            *broken,
-            if *broken { "⚠" } else { "↪" },
-        ),
-        EntryKind::Other => (false, false, false, "⚙️"),
+    let (is_dir, is_symlink, is_broken_symlink) = match &entry.kind {
+        EntryKind::Dir => (true, false, false),
+        EntryKind::File => (false, false, false),
+        EntryKind::Symlink { broken, .. } => (false, true, *broken),
+        EntryKind::Other => (false, false, false),
     };
+    let kind_icon = icon_for(entry).glyph;
 
     let size_text = if is_dir {
         String::new()
