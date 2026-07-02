@@ -56,7 +56,6 @@ export component ConnectServerModal inherits Rectangle {
     in-out property <int> auth-index: 0;
 
     in-out property <string> host: "";
-    in-out property <string> port: "";
     in-out property <string> path: "";
     in-out property <string> username: "";
     in-out property <string> password: "";
@@ -74,7 +73,7 @@ export component ConnectServerModal inherits Rectangle {
 
     // ── TOFU host-key prompt (Phase 2.6) ─────────────────────────────────
     //
-    // The banner is inline above the host/port/path row so it can't be
+    // The banner is inline above the host/path row so it can't be
     // dismissed just by scrolling. Rust sets `host-key-prompt-visible = true`
     // after the SFTP handshake yields an unknown or mismatched key; three
     // callbacks come back the other way. Non-empty
@@ -98,7 +97,7 @@ export component ConnectServerModal inherits Rectangle {
     // window's FocusScope so Cmd+A / Cmd+C / Cmd+V land in the input, not
     // the pane's keymap dispatcher. Matches the address-bar mechanism from
     // 269ab5a.
-    out property <bool> input-focused: host-focus || port-focus || path-focus
+    out property <bool> input-focused: host-focus || path-focus
         || username-focus || password-focus
         || ssh-key-focus || iam-access-focus
         || iam-secret-focus || iam-session-focus
@@ -109,7 +108,6 @@ export component ConnectServerModal inherits Rectangle {
     callback backend-changed(int);
     callback auth-changed(int);
     callback host-changed(string);
-    callback port-changed(string);
     callback path-changed(string);
     callback username-changed(string);
     callback password-changed(string);
@@ -157,23 +155,21 @@ export component ConnectServerModal inherits Rectangle {
     property <bool> auth-iam: auth-index == 2;
     property <bool> auth-anon: auth-index == 3;
 
-    property <bool> show-port: !is-s3;
     property <bool> show-username: !auth-anon && !auth-iam;
     property <bool> show-password: auth-password;
     property <bool> show-ssh-key: auth-ssh-key;
     property <bool> show-iam: auth-iam;
     property <bool> show-s3-endpoint: is-s3;
 
-    property <string> port-placeholder: is-sftp
-        ? "22"
-        : is-ftp ? "21"
-            : is-webdav ? "443"
-                : "";
+    // Hint appended to the placeholder to show the merged `host:port`
+    // syntax. Empty for S3 which uses a bucket name + endpoint URL.
+    property <string> host-placeholder: is-s3
+        ? "my-bucket"
+        : "host.example.com or host.example.com:2222";
 
     // ── Per-input focus mirrors (used by `input-focused` above) ───────────
 
     property <bool> host-focus: false;
-    property <bool> port-focus: false;
     property <bool> path-focus: false;
     property <bool> username-focus: false;
     property <bool> password-focus: false;
@@ -279,7 +275,7 @@ export component ConnectServerModal inherits Rectangle {
                 //
                 // Fingerprints render in the monospace theme font so the
                 // 43-char SHA-256 body stays aligned when the user compares
-                // two of them. The banner sits above the host/port row so a
+                // two of them. The banner sits above the host row so a
                 // scroll can't hide it.
                 if root.host-key-prompt-visible: Rectangle {
                     property <bool> is-mismatch: root.host-key-mismatch-known-fingerprint != "";
@@ -466,11 +462,14 @@ export component ConnectServerModal inherits Rectangle {
                     }
                 }
 
-                // ── Host / Port / Path row ───────────────────────────────────
+                // ── Host / Path row ──────────────────────────────────────────
                 HorizontalLayout {
                     spacing: Theme.space-2;
 
-                    // Host
+                    // Host — accepts either `host.example.com` or
+                    // `host.example.com:2222`. The Rust controller
+                    // splits any `:PORT` suffix off into the internal
+                    // `port` state field on edit (see `set_host`).
                     VerticalLayout {
                         horizontal-stretch: 3;
                         spacing: Theme.space-1;
@@ -516,55 +515,9 @@ export component ConnectServerModal inherits Rectangle {
                                         reject;
                                     }
                                 }
-                            }
-                        }
-                    }
 
-                    // Port (hidden for S3)
-                    if show-port: VerticalLayout {
-                        horizontal-stretch: 1;
-                        spacing: Theme.space-1;
-
-                        Text {
-                            text: "PORT";
-                            color: Theme.fg-muted;
-                            font-size: 10px;
-                            font-weight: 600;
-                            
-                        }
-
-                        Rectangle {
-                            height: 30px;
-                            border-width: 1px;
-                            border-color: port-input.has-focus ? Theme.accent : Theme.border;
-                            border-radius: Theme.radius-sm;
-                            background: Theme.panel-bg;
-
-                            HorizontalLayout {
-                                padding-left: Theme.space-3;
-                                padding-right: Theme.space-3;
-                                alignment: center;
-
-                                port-input := TextInput {
-                                    text <=> root.port;
-                                    color: Theme.fg;
-                                    font-size: Theme.font-size;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                    horizontal-stretch: 1;
-                                    edited => { root.port-changed(self.text); }
-                                    changed has-focus => { port-focus = self.has-focus; }
-                                    key-pressed(event) => {
-                                        if event.text == Key.Escape {
-                                            root.cancel();
-                                            return accept;
-                                        }
-                                        reject;
-                                    }
-                                }
-
-                                if root.port == "": Text {
-                                    text: port-placeholder;
+                                if root.host == "": Text {
+                                    text: host-placeholder;
                                     color: Theme.fg-faint;
                                     font-size: Theme.font-size;
                                     vertical-alignment: center;
@@ -573,6 +526,8 @@ export component ConnectServerModal inherits Rectangle {
                             }
                         }
                     }
+
+
                 }
 
                 // ── Path (own row so it can be wide) ─────────────────────────

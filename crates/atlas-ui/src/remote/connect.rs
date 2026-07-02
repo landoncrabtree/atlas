@@ -72,15 +72,6 @@ impl BackendChoice {
             Self::S3 => BackendKind::S3,
         }
     }
-
-    #[allow(dead_code)] // used by test module + reserved for the port-placeholder logic
-    fn default_port(self) -> u16 {
-        match self {
-            Self::Sftp => 22,
-            Self::Ftp => 21,
-            Self::WebDav | Self::S3 => 443,
-        }
-    }
 }
 
 /// Enum mirror of the Slint auth-method-picker index. Kept in sync with
@@ -324,13 +315,31 @@ impl ConnectController {
         self.push_to_ui();
     }
 
+    /// Setter for the merged host input in the modal.
+    ///
+    /// Accepts either `host.example.com` or `host.example.com:2222`.
+    /// If a `:PORT` suffix is present, split it off into the port
+    /// field. IPv6 literals in brackets (`[::1]:22`) are respected —
+    /// only the trailing `:PORT` (after the closing `]`) is treated as
+    /// a port separator. This keeps the modal a single input while
+    /// still populating the structured `port` state field that
+    /// [`assemble_location`] consumes.
     pub fn set_host(&self, s: String) {
         {
             let mut st = self.state.lock();
             if st.suppress_field_echo {
                 return;
             }
-            st.host = s;
+            let trimmed = s.trim();
+            match split_host_port(trimmed) {
+                Some((host, port_str)) => {
+                    st.host = host;
+                    st.port = port_str;
+                }
+                None => {
+                    st.host = s;
+                }
+            }
             st.status_text.clear();
             st.status_is_error = false;
         }
@@ -569,7 +578,22 @@ impl ConnectController {
             };
             st.backend = Some(backend);
             st.auth = Some(AuthChoice::Password);
-            st.host = server.address.clone();
+            // Render the merged host field: `host` when the port is
+            // the backend default (or unset), `host:port` when the
+            // user picked a non-default port. The structured `port`
+            // state field mirrors the underlying value so
+            // `assemble_location` still emits a well-formed URI.
+            let default_port = server.backend.default_port();
+            let show_port = match (server.port, default_port) {
+                (Some(p), Some(dp)) if p == dp => false,
+                (Some(_), _) => true,
+                (None, _) => false,
+            };
+            st.host = if show_port {
+                format!("{}:{}", server.address, server.port.unwrap())
+            } else {
+                server.address.clone()
+            };
             st.port = server.port.map(|p| p.to_string()).unwrap_or_default();
             st.path = server.path.clone();
             st.username = server.username.clone().unwrap_or_default();
@@ -974,7 +998,6 @@ impl ConnectController {
             win.set_connect_backend_index(snapshot.backend_index);
             win.set_connect_auth_index(snapshot.auth_index);
             win.set_connect_host(snapshot.host.into());
-            win.set_connect_port(snapshot.port.into());
             win.set_connect_path(snapshot.path.into());
             win.set_connect_username(snapshot.username.into());
             win.set_connect_password(snapshot.password.into());
@@ -1026,6 +1049,9 @@ pub(crate) struct StateSnapshot {
     pub backend_index: i32,
     pub auth_index: i32,
     pub host: String,
+    /// Not surfaced to Slint (Host input now accepts `host:port`) but
+    /// still readable via [`ConnectController::snapshot`] and tests.
+    #[allow(dead_code)]
     pub port: String,
     pub path: String,
     pub username: String,
@@ -1099,6 +1125,40 @@ fn default_label(user: &Option<String>, host: &Option<String>) -> String {
     }
 }
 
+/// Split a `host` or `host:port` literal into `(host, port_string)`.
+///
+/// * Returns `Some((host, port_str))` when the input contains a valid
+///   `u16` port suffix after a `:` (respecting IPv6 bracket literals so
+///   `[::1]:22` yields host = `[::1]`, port = `22`).
+/// * Returns `None` when there is no explicit port suffix — the caller
+///   should treat the whole input as the host and leave the port
+///   unchanged (or default from the backend).
+fn split_host_port(s: &str) -> Option<(String, String)> {
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(rest) = s.strip_prefix('[') {
+        let close = rest.find(']')?;
+        let host = format!("[{}]", &rest[..close]);
+        let after = &rest[close + 1..];
+        let port = after.strip_prefix(':')?;
+        if port.parse::<u16>().is_ok() {
+            return Some((host, port.to_owned()));
+        }
+        return None;
+    }
+    let colon = s.rfind(':')?;
+    if s[..colon].contains(':') {
+        return None;
+    }
+    let port = &s[colon + 1..];
+    if port.parse::<u16>().is_ok() {
+        Some((s[..colon].to_owned(), port.to_owned()))
+    } else {
+        None
+    }
+}
+
 /// Assemble the [`Location`] the worker will hand to
 /// [`atlas_remote::backend::open`] from the current state.
 fn assemble_location(st: &State) -> Result<Location, ErrorKind> {
@@ -1107,7 +1167,7 @@ fn assemble_location(st: &State) -> Result<Location, ErrorKind> {
     if st.host.trim().is_empty() {
         return Err(ErrorKind::Malformed);
     }
-    let port = if st.port.trim().is_empty() {
+    let explicit_port = if st.port.trim().is_empty() {
         None
     } else {
         Some(
@@ -1117,6 +1177,16 @@ fn assemble_location(st: &State) -> Result<Location, ErrorKind> {
                 .map_err(|_| ErrorKind::Malformed)?,
         )
     };
+    // Normalise the port to the backend default when the user omitted
+    // it. All downstream layers (connection pool key, credentials
+    // cache key, known-hosts store, servers.toml dedup, keychain
+    // account) see the same value regardless of whether the user
+    // typed `test.rebex.net` or `test.rebex.net:22`. This is the
+    // canonical fix for the reported bug where `sftp://user@host`
+    // failed but `sftp://user@host:22` succeeded — cache and pool
+    // lookups were keyed on `port: None` and could not reuse entries
+    // stored under `port: Some(22)`.
+    let port = explicit_port.or_else(|| kind.default_port());
     let path = if st.path.is_empty() {
         "/".to_owned()
     } else if st.path.starts_with('/') {
@@ -1604,7 +1674,51 @@ mod tests {
         assert_eq!(kind, BackendKind::Sftp);
         assert_eq!(uri.host.as_deref(), Some("h2"));
         assert_eq!(uri.path, "/sub");
-        assert!(uri.port.is_none());
+        // Empty port defaults to SFTP's IANA port so downstream
+        // pool / cred / known-hosts layers agree on the effective
+        // port with the sftp VM (which also defaults to 22).
+        assert_eq!(uri.port, Some(22));
+    }
+
+    #[test]
+    fn assemble_location_normalises_port_per_backend() {
+        for (backend, expected) in [
+            (BackendChoice::Sftp, Some(22)),
+            (BackendChoice::Ftp, Some(21)),
+            (BackendChoice::WebDav, Some(443)),
+            (BackendChoice::S3, None),
+        ] {
+            let st = State {
+                save_to_keychain: true,
+                backend: Some(backend),
+                auth: Some(AuthChoice::Anonymous),
+                host: "h".into(),
+                ..State::default()
+            };
+            let Location::Remote(uri, _) = assemble_location(&st).unwrap() else {
+                panic!()
+            };
+            assert_eq!(
+                uri.port, expected,
+                "backend {backend:?} port must default to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn assemble_location_explicit_port_wins_over_default() {
+        let st = State {
+            save_to_keychain: true,
+            backend: Some(BackendChoice::Sftp),
+            auth: Some(AuthChoice::Anonymous),
+            host: "h".into(),
+            port: "2222".into(),
+            ..State::default()
+        };
+        let Location::Remote(uri, _) = assemble_location(&st).unwrap() else {
+            panic!()
+        };
+        assert_eq!(uri.port, Some(2222));
     }
 
     #[test]
@@ -1692,11 +1806,40 @@ mod tests {
     }
 
     #[test]
-    fn default_backend_port_matches_scheme() {
-        assert_eq!(BackendChoice::Sftp.default_port(), 22);
-        assert_eq!(BackendChoice::Ftp.default_port(), 21);
-        assert_eq!(BackendChoice::WebDav.default_port(), 443);
-        assert_eq!(BackendChoice::S3.default_port(), 443);
+    fn split_host_port_parses_variants() {
+        assert_eq!(
+            split_host_port("test.rebex.net:22"),
+            Some(("test.rebex.net".into(), "22".into()))
+        );
+        assert_eq!(
+            split_host_port("[::1]:2222"),
+            Some(("[::1]".into(), "2222".into()))
+        );
+        assert_eq!(split_host_port("test.rebex.net"), None);
+        assert_eq!(split_host_port(""), None);
+        // Non-numeric port suffix — treat whole string as host.
+        assert_eq!(split_host_port("host:abc"), None);
+        // Bare IPv6 without port stays a host.
+        assert_eq!(split_host_port("[::1]"), None);
+    }
+
+    #[test]
+    fn set_host_splits_host_and_port() {
+        let c = ctrl_with_pane();
+        c.set_host("test.rebex.net:2222".into());
+        let snap = c.snapshot();
+        assert_eq!(snap.host, "test.rebex.net");
+        assert_eq!(snap.port, "2222");
+    }
+
+    #[test]
+    fn set_host_without_port_leaves_port_field_alone() {
+        let c = ctrl_with_pane();
+        c.set_port("2200".into());
+        c.set_host("test.rebex.net".into());
+        let snap = c.snapshot();
+        assert_eq!(snap.host, "test.rebex.net");
+        assert_eq!(snap.port, "2200");
     }
 
     #[test]

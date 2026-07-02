@@ -4048,10 +4048,6 @@ impl AppShell {
         }
         {
             let connect = Arc::clone(&self.connect);
-            window.on_connect_port_changed(move |s| connect.set_port(s.to_string()));
-        }
-        {
-            let connect = Arc::clone(&self.connect);
             window.on_connect_path_changed(move |s| connect.set_path(s.to_string()));
         }
         {

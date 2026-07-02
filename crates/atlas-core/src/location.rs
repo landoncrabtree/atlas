@@ -75,6 +75,37 @@ impl BackendKind {
         }
     }
 
+    /// The IANA-registered default TCP port for this backend, when
+    /// applicable. Returns `None` for backends whose network address is
+    /// fully determined by the URL / endpoint (S3, Local) rather than a
+    /// separate port field.
+    ///
+    /// Kept on [`BackendKind`] itself so any layer that owns a
+    /// [`RemoteUri`] can canonicalise `uri.port = None` to
+    /// `uri.port = Some(kind.default_port().unwrap())` before handing
+    /// the URI to the connection pool, credentials cache, or
+    /// known-hosts store. Previously each of those layers unwrapped
+    /// separately, which meant `port: None` and `port: Some(22)` were
+    /// treated as distinct pool keys / cache entries / keychain
+    /// accounts and the cache never hit on a bare `sftp://user@host`.
+    ///
+    /// | Kind    | Default port |
+    /// |---------|--------------|
+    /// | Local   | None         |
+    /// | Sftp    | Some(22)     |
+    /// | Ftp     | Some(21)     |
+    /// | WebDav  | Some(443)    |
+    /// | S3      | None         |
+    #[must_use]
+    pub fn default_port(self) -> Option<u16> {
+        match self {
+            Self::Sftp => Some(22),
+            Self::Ftp => Some(21),
+            Self::WebDav => Some(443),
+            Self::S3 | Self::Local => None,
+        }
+    }
+
     /// Parse a scheme string into a [`BackendKind`], case-insensitively.
     #[must_use]
     pub fn from_scheme(scheme: &str) -> Option<Self> {
@@ -564,6 +595,17 @@ impl<'de> Deserialize<'de> for Location {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_kind_default_port_matches_iana() {
+        assert_eq!(BackendKind::Sftp.default_port(), Some(22));
+        assert_eq!(BackendKind::Ftp.default_port(), Some(21));
+        assert_eq!(BackendKind::WebDav.default_port(), Some(443));
+        // S3 addresses are endpoint-driven (region host + optional
+        // custom endpoint) so there is no single canonical port.
+        assert_eq!(BackendKind::S3.default_port(), None);
+        assert_eq!(BackendKind::Local.default_port(), None);
+    }
 
     #[test]
     fn local_from_bare_path_roundtrips() {

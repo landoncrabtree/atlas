@@ -292,6 +292,13 @@ impl SftpBackend {
             })?
             .to_owned();
         let port = uri.port.unwrap_or(22);
+        tracing::debug!(
+            uri_scheme = %uri.scheme,
+            uri_host = ?uri.host,
+            uri_port = ?uri.port,
+            effective_port = port,
+            "sftp: with_options — normalising URI to backend params",
+        );
         let user = uri
             .username
             .as_deref()
