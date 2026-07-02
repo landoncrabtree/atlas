@@ -480,6 +480,40 @@ fn col_title(path: &std::path::Path) -> SharedString {
         .unwrap_or_else(|| SharedString::from(path.to_string_lossy().as_ref()))
 }
 
+/// Compute the desired horizontal scroll offset (`viewport-x`) for the Miller
+/// columns view so the newest column's right edge sits at the visible-area's
+/// right edge.
+///
+/// This mirrors the Slint-side math in `assets/ui/views/miller/miller-view.slint`;
+/// keep them in lock-step.  Returned value is negative (Slint `viewport-x`
+/// convention: negative = content shifted left = scrolled right) or zero.
+///
+/// Behaviour:
+///   * `col_count == 0` → `0`.
+///   * total content width ≤ visible width → `0` (everything fits).
+///   * otherwise → `visible − content_width` (a negative value).
+///
+/// The caller only applies this value when the focused column is the
+/// rightmost one, so navigating back to an earlier column does not jerk the
+/// viewport.
+#[must_use]
+pub fn compute_miller_viewport_x(
+    col_count: usize,
+    col_width: f32,
+    col_sep: f32,
+    visible: f32,
+) -> f32 {
+    if col_count == 0 {
+        return 0.0;
+    }
+    let content = (col_count as f32) * (col_width + col_sep);
+    if content <= visible {
+        0.0
+    } else {
+        visible - content
+    }
+}
+
 // ── Entry conversion ──────────────────────────────────────────────────────────
 
 /// Convert an [`atlas_fs::Entry`] to the Slint [`EntryRowItem`] struct.
@@ -693,5 +727,39 @@ mod tests {
         ctrl.move_column(-1);
         assert_eq!(ctrl.column_count(), 1, "move_column(-1) should close col 1");
         assert_eq!(ctrl.focused_col(), 0);
+    }
+
+    // ── compute_miller_viewport_x ─────────────────────────────────────────────
+
+    #[test]
+    fn viewport_x_zero_when_no_columns() {
+        assert_eq!(compute_miller_viewport_x(0, 240.0, 1.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn viewport_x_zero_when_content_fits() {
+        // 3 columns × 241 px = 723 px content, 800 px visible → fits.
+        assert_eq!(compute_miller_viewport_x(3, 240.0, 1.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn viewport_x_shifts_left_when_content_overflows() {
+        // 5 columns × 241 px = 1205 px content, 800 px visible → shift by
+        // -(1205 - 800) = -405.
+        let got = compute_miller_viewport_x(5, 240.0, 1.0, 800.0);
+        assert!((got - -405.0).abs() < f32::EPSILON, "got {got}");
+    }
+
+    #[test]
+    fn viewport_x_exactly_at_boundary_returns_zero() {
+        // 4 cols × 200 px = 800 px content, 800 px visible → exactly fits.
+        assert_eq!(compute_miller_viewport_x(4, 199.0, 1.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn viewport_x_uses_col_sep() {
+        // 2 cols × (100 + 10) = 220 content, 200 visible → -20.
+        let got = compute_miller_viewport_x(2, 100.0, 10.0, 200.0);
+        assert!((got - -20.0).abs() < f32::EPSILON, "got {got}");
     }
 }

@@ -8,16 +8,29 @@ import { MillerColumnView } from "miller-column.slint";
 // Columns are supplied by `MillerController` via `AtlasWindow.pane0-miller-columns`.
 // Up to 8 side-by-side columns are rendered in a horizontally scrollable
 // viewport.  Selecting a directory in column N opens column N+1 automatically.
+//
+// Autoscroll (item 2 in Phase 2.9):
+//   When the focused column is the rightmost one (i.e. a new column was just
+//   pushed by descending into a directory), we programmatically shift the
+//   scroll viewport so the rightmost column's right edge sits at the visible
+//   right edge.  If the user manually clicks / focuses an earlier column, we
+//   do NOT jerk the viewport back — that path leaves `viewport-x` alone.
+//
+//   The viewport-x math mirrors the Rust helper
+//   `atlas_ui::views::miller::controller::compute_miller_viewport_x`, which
+//   carries the unit tests for the formula.
 export component MillerView inherits Rectangle {
     background: Theme.bg;
 
     // Columns to display (built by MillerController on the Rust side).
     in property <[MillerColData]> columns: [];
-    // Index of the column that holds keyboard focus.
+    // Index of the column that currently holds keyboard focus.
     in property <int> focused-col: 0;
 
     // Uniform column width in logical pixels.
     private property <length> col-width: 240px;
+    // Inter-column separator (matches HorizontalLayout.spacing below).
+    private property <length> col-sep: 1px;
 
     // Fired when the user single-clicks a row (column-index, row-index).
     callback row-clicked(int, int);
@@ -27,15 +40,38 @@ export component MillerView inherits Rectangle {
     /// Arguments: column-index, row-index.
     callback drag-start(int, int);
 
-    ScrollView {
+    // Desired viewport-x for auto-scrolling to keep the newest column in
+    // view.  Only applied when the focused column is the rightmost one.
+    private property <length> auto-scroll-x: (columns.length <= 0)
+        ? 0px
+        : ((columns.length * (root.col-width + root.col-sep)) <= scroll.width
+            ? 0px
+            : scroll.width - columns.length * (root.col-width + root.col-sep));
+
+    // Autoscroll: when a new column is appended, `columns.length` grows and
+    // focused-col becomes the new rightmost.  Only then do we push the
+    // viewport rightwards.  Backing out (fewer columns) leaves the viewport
+    // where it was so the user's context isn't jerked backwards.
+    changed columns => {
+        if (root.focused-col >= root.columns.length - 1) {
+            scroll.viewport-x = root.auto-scroll-x;
+        }
+    }
+    changed focused-col => {
+        if (root.focused-col >= root.columns.length - 1) {
+            scroll.viewport-x = root.auto-scroll-x;
+        }
+    }
+
+    scroll := ScrollView {
         viewport-width: max(
             self.width,
-            columns.length * (root.col-width + 1px)
+            columns.length * (root.col-width + root.col-sep)
         );
         viewport-height: self.height;
 
         HorizontalLayout {
-            spacing: 1px;
+            spacing: root.col-sep;
 
             // ── Column 0 ──────────────────────────────────────────────────────
             if columns.length > 0 : MillerColumnView {
