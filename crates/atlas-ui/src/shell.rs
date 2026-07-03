@@ -3666,18 +3666,48 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_ctx_open_with(move || {
-                let Some((_, path)) = shell.context_menu_target() else {
+                let Some((_, target)) = shell.context_menu_target_full() else {
                     return;
                 };
-                // MVP: no picker UI yet. Fall through to the OS "open" so
-                // the user at least sees the default handler; the "Open
-                // With…" picker is a v0.3 follow-up.
-                tracing::info!(
-                    ?path,
-                    "ctx: Open With — no picker yet (v0.3); using OS default"
-                );
-                if let Err(err) = open::that(&path) {
-                    tracing::warn!(?path, %err, "ctx: open::that failed");
+                // Native picker is Launch-Services / Shell / DE-driven and
+                // needs a filesystem path the OS can resolve. Remote entries
+                // would first have to be materialised through the preview
+                // cache (see `crate::remote::preview`) — until that flow is
+                // exposed to the picker, refuse remote targets with a warn.
+                // The capability resolver already gates `can_open_with =
+                // is_local`, so this branch is a defence-in-depth.
+                let path = match target.location {
+                    atlas_core::Location::Local(p) => p,
+                    atlas_core::Location::Remote(uri, _) => {
+                        tracing::warn!(
+                            uri = %uri,
+                            "ctx: Open With… requires a local file (materialise via preview cache first)"
+                        );
+                        return;
+                    }
+                };
+                // `open_with_picker` blocks the calling thread for as long
+                // as the OS dialog is on screen (seconds, potentially). We
+                // hand it off to a worker so the Slint event loop keeps
+                // ticking; the picker itself is a modal Launch-Services /
+                // Shell / DE dialog, so no additional Atlas-side modal is
+                // needed.
+                tracing::info!(?path, "ctx: Open With — spawning native picker");
+                if let Err(err) = std::thread::Builder::new()
+                    .name("atlas-open-with-picker".to_owned())
+                    .spawn(move || match crate::platform::open_with::open_with_picker(&path) {
+                        Ok(()) => {
+                            tracing::debug!(?path, "ctx: Open With — picker completed");
+                        }
+                        Err(crate::platform::open_with::OpenWithError::UserCancelled) => {
+                            tracing::debug!(?path, "ctx: Open With — user cancelled");
+                        }
+                        Err(err) => {
+                            tracing::warn!(?path, %err, "ctx: Open With — picker failed");
+                        }
+                    })
+                {
+                    tracing::warn!(%err, "ctx: Open With — failed to spawn picker worker");
                 }
             });
         }

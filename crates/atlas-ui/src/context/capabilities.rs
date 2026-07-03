@@ -63,7 +63,12 @@ pub struct ContextCapabilities {
     /// "Open" — activate the entry (file → OS default handler /
     /// preview; directory → navigate).
     pub can_open: bool,
-    /// "Open With…" — MVP local only (no picker UI for remote yet).
+    /// "Open With…" — spawns the platform-native application picker
+    /// (macOS *Choose Application*, Windows *Open With* shell dialog,
+    /// Linux `mimeopen -a` / `xdg-open`). Local only; remote entries
+    /// have to be materialised via the preview cache first before the
+    /// OS can hand them to Launch Services / Shell (see
+    /// [`crate::platform::open_with`]).
     pub can_open_with: bool,
     /// "Copy" — copy the selection into the internal clipboard.
     pub can_copy: bool,
