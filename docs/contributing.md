@@ -1,48 +1,42 @@
 # Contributing
 
-Thanks for your interest in Atlas. This document covers how to set up, build, and submit changes.
+Thanks for your interest in Atlas. This document is the source of truth for
+contribution workflow, commit format, PR standards, and the quality bar.
 
 ## Before you start
 
-- Atlas is **proprietary**. External contributions are accepted at the maintainer's discretion under the terms of the LICENSE.
-- Read [`.github/instructions/architecture.instructions.md`](../.github/instructions/architecture.instructions.md) to understand the crate layout and design principles.
-- Read [`.github/copilot-instructions.md`](../.github/copilot-instructions.md) — those rules apply to human contributors too.
-
-## Setup
-
-See [`docs/developer-setup.md`](developer-setup.md) for toolchain prerequisites and platform notes.
-
-```bash
-git clone https://github.com/landoncrabtree/atlas.git
-cd atlas
-cargo build              # first build downloads + compiles Skia, ~5 min
-cargo run -p atlas-app
-```
+- Atlas is **proprietary**. External contributions are accepted at the
+  maintainer's discretion under the terms of the LICENSE.
+- Read [the architecture overview](../.github/instructions/architecture.instructions.md)
+  before moving code across crates or adding a new subsystem.
+- Read [the repository-wide Copilot instructions](../.github/copilot-instructions.md);
+  those conventions apply to human contributors too.
+- Use [developer setup](developer-setup.md) for toolchain installation and daily
+  command lines.
 
 ## Workflow
 
-1. **Branch** off `main` with a descriptive name: `feat/grid-view`, `fix/walker-symlink-loop`.
-2. **Make focused commits** following the Conventional Commits format below.
-3. **Run the local check suite** before pushing:
-   ```bash
-   cargo fmt --all
-   cargo clippy --workspace --all-targets -- -D warnings
-   cargo nextest run --workspace --retries 3   # tests
-   cargo test --doc --workspace                # doctests (nextest doesn't run them yet)
-   ```
-4. **Open a PR** with a clear description of motivation, what changed, how you tested it, and any user-visible impact.
+1. Branch from `main` with a descriptive name, e.g. `feat/grid-view` or
+   `fix/walker-symlink-loop`.
+2. Make focused commits. One concern per commit.
+3. Add tests for new behavior. The testing source of truth is
+   [`.github/skills/testing/SKILL.md`](../.github/skills/testing/SKILL.md).
+4. For hot-path performance changes, include benchmark evidence. The benchmark
+   source of truth is
+   [`.github/skills/write-benches/SKILL.md`](../.github/skills/write-benches/SKILL.md).
+5. Run the local gates from [developer setup](developer-setup.md#daily-commands)
+   before pushing.
+6. Open a PR with motivation, what changed, test evidence, and user-visible
+   impact.
 
 ## Commit message format
 
-We follow **Conventional Commits**:
+Atlas uses Conventional Commits:
 
-```
+```text
 <type>(<scope>): <short summary in imperative mood>
 
-<optional longer body explaining why — wrap at ~80 cols>
-
-- bulleted what-changed when there are multiple things
-- keep each bullet to one line
+<optional body explaining why; wrap at about 80 columns>
 ```
 
 | Type | Use for |
@@ -55,71 +49,72 @@ We follow **Conventional Commits**:
 | `docs` | Documentation only |
 | `test` | Tests only |
 
-`<scope>` is the crate name without the `atlas-` prefix (`feat(fs): ...`, `fix(keymap): ...`) or `ui`, `app`, `docs`, `ci`.
+`<scope>` is usually the crate name without the `atlas-` prefix (`feat(fs):`,
+`fix(keymap):`) or a repository area such as `ui`, `app`, `docs`, or `ci`.
+Keep subjects at or below 72 characters, use imperative mood, and explain the
+why in the body when context matters.
 
-## Code style and quality bar
+Performance commits follow the measured subject/body format in the
+[write-benches skill](../.github/skills/write-benches/SKILL.md#commit-format-for-perf-changes).
+
+When a change was drafted or assisted by Copilot, append:
+
+```text
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+```
+
+## Quality bar
 
 Hard requirements:
 
-- `cargo fmt --all` clean.
-- `cargo clippy --workspace --all-targets -- -D warnings` clean.
-- Tests added for new behavior.
-- No `println!` / `eprintln!` / `dbg!` / bare `unwrap` outside tests.
-- rustdoc on every `pub` item.
+- Formatting, clippy, nextest, doctests, and build gates are clean.
+- New behavior includes tests at the right layer.
+- Hot-path changes include before/after benchmark evidence.
+- No `println!`, `eprintln!`, `dbg!`, or bare `unwrap()` outside tests.
+- Public APIs have useful rustdoc.
+- UI changes follow
+  [UI composition](../.github/instructions/ui-composition.instructions.md) and
+  include live visual verification when a Slint surface changes.
 
-Performance is a feature — design for streaming and async; don't block the UI thread or any thread serving the UI. See the principles in [`.github/instructions/architecture.instructions.md`](../.github/instructions/architecture.instructions.md) and [`.github/instructions/performance.instructions.md`](../.github/instructions/performance.instructions.md).
+## Dependencies
 
-## Adding a dependency
+- Prefer existing workspace dependencies from the root `Cargo.toml`.
+- Adding a new workspace dependency requires PR justification and maintainer
+  review. Cover binary size, compile time, license, and maintenance status.
+- Crate-local dev-dependencies do not need special approval.
 
-- Prefer existing workspace dependencies (declared in the root `Cargo.toml` under `[workspace.dependencies]`). Reach for crate-local `Cargo.toml` entries that reference them.
-- Adding a **new** workspace dependency requires a justification in the PR description and maintainer review. Weigh: binary size impact, compile time, license, maintenance status.
-- Crate-local dev-dependencies don't need approval.
+## PR standards
 
-## Tests
+A PR description should include:
 
-- Use `tempfile::TempDir` for filesystem tests; never read or write outside the workspace.
-- Tests must not depend on each other or on global state. Use `serial_test` if you must mutate env vars (`ATLAS_CONFIG_DIR`, `ATLAS_THEMES_DIR`).
-- Integration tests live in `crates/<crate>/tests/`; unit tests live in `#[cfg(test)] mod tests` blocks.
-- Remote integration tests spawn Python mock servers via `crates/atlas-remote/tests/common/mock.rs` (see `tools/mock-servers/`). Skip them all with `MOCK_SERVERS_SKIP=1 cargo nextest run --workspace` when offline or CI-restricted.
-- If you edit `crates/atlas-keymap/src/defaults.rs`, regenerate the per-OS TOMLs under `assets/keymaps/` with `cargo test -p atlas-keymap regen_default_keymap -- --ignored`. A companion test fails if the checked-in files drift.
+- Motivation / problem statement.
+- Summary of changes.
+- Test summary, including the exact commands run.
+- Benchmark summary for hot-path changes, or `cold path — no measurement` when
+  the [write-benches](../.github/skills/write-benches/SKILL.md) classification
+  applies.
+- UI screenshots for visible Slint changes.
+- User-visible impact and migration notes, if any.
 
-See [`docs/developer-setup.md`](developer-setup.md) for the full test + mock-server + MCP tooling walkthrough.
-
-## UI changes (`.slint`)
-
-- New components go under `assets/ui/components/` or `assets/ui/views/`.
-- Use the `Theme` global for colors, spacing, fonts. No hard-coded colors.
-- Rust ↔ Slint state changes go through `AppShell` adapter methods in `atlas-ui`.
-- Every callback dispatches a typed `UiAction`. Add new variants — don't bypass.
-- New modals, panels, view modes, or context menus must follow the canonical flow in [`.github/instructions/ui-composition.instructions.md`](../.github/instructions/ui-composition.instructions.md) — read that first.
-- Live-verify a UI change with the `computer-use-*` MCP tools before shipping. See `docs/developer-setup.md`.
+Keep PRs focused. Large refactors, behavior changes, and follow-up cleanups
+belong in separate PRs unless they are inseparable.
 
 ## Documentation
 
-Source-of-truth docs:
+Update the authoritative source for the concept you changed, then link to it
+from callers. Do not copy how-to details into multiple docs. Current owners:
 
-- `README.md` — product-facing: what Atlas is, install, features, quick start.
-- `docs/developer-setup.md` — toolchain, prerequisites, daily commands, mock servers, MCP tooling.
-- `docs/contributing.md` — this file.
-- `docs/keymap.md` — full default keymap reference.
-- `docs/multi-pane.md` — user guide to the tiling workspace, remote panes, chord routing.
-- `.github/copilot-instructions.md` — always-on conventions for Copilot and contributors.
-- `.github/instructions/architecture.instructions.md` — crate layout, process model, threading, storage (deep dive).
-- `.github/instructions/performance.instructions.md` — performance goals, principles, anti-patterns, benchmark methodology.
-- `.github/instructions/design.instructions.md` — Apple-HIG-inspired UI/UX tokens and component patterns.
-- `.github/instructions/ui-composition.instructions.md` — canonical modal/panel/keybind/backend flow when adding a new UI surface.
-- `.github/instructions/keybind-authoring.instructions.md` — end-to-end keybind authoring workflow.
-- `.github/instructions/remote-backend-authoring.instructions.md` — end-to-end remote-backend authoring workflow.
-- `.github/skills/*/SKILL.md` — cloud-agent skill files (see [add-skills docs](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/add-skills)).
-
-Update the relevant doc with your change. Keep `README.md` short and product-focused.
+- Product overview: [`README.md`](../README.md).
+- Contribution workflow and PR standards: this file.
+- Machine setup and daily command lines: [`docs/developer-setup.md`](developer-setup.md).
+- Testing lifecycle: [`.github/skills/testing/SKILL.md`](../.github/skills/testing/SKILL.md).
+- Benchmark lifecycle: [`.github/skills/write-benches/SKILL.md`](../.github/skills/write-benches/SKILL.md).
+- Keymap reference: [`docs/keymap.md`](keymap.md).
+- Multi-pane user guide: [`docs/multi-pane.md`](multi-pane.md).
+- Architecture, UI, keybind, and remote-backend authoring details:
+  [`.github/instructions/`](../.github/instructions/).
 
 ## Reporting bugs
 
-When opening an issue, include:
-
-- OS + version + architecture (e.g. `macOS 15.4 arm64`)
-- Atlas version (`atlas --version`) and commit SHA if building from source
-- Steps to reproduce
-- Expected vs actual behavior
-- Relevant log output (`RUST_LOG=atlas=debug cargo run -p atlas-app 2>&1 | tee atlas.log`)
+When opening an issue, include OS/version/architecture, Atlas version or commit
+SHA, steps to reproduce, expected vs actual behavior, and relevant logs.
