@@ -146,37 +146,82 @@ The single-modifier convention in these tables:
 
 ### Pane navigation
 
+Atlas has **converged navigation semantics**: `hjkl`, `wasd`, and the
+arrow keys ALL bind to the same four directional actions
+(`pane::MoveLeft`, `pane::MoveRight`, `pane::MoveUp`, `pane::MoveDown`)
+regardless of user config. There is **no** vim-mode switch to enable —
+keyboard-first navigation is Atlas's north star. When a modal or text
+input (address bar, search box, command palette) has focus, the
+dispatcher restricts to `[Global]` context, so vim / wasd letters fall
+through to the input natively — typing in the address bar never
+collides with navigation.
+
+Each directional action resolves to a per-view meaning via a single
+lookup table (`crates/atlas-ui/src/views/navigation.rs`). See the
+**Navigation semantics** table below.
+
 `fs::View` is the single action for **"open the focused entry"** — it
 `cd`s into folders and hands files off to the OS default handler.
-Multiple chords bind to it (`l`, `right`, `.`, `enter`); there is no
-separate `activate` action. This is the canonical pattern: **one
-action per behaviour, N chords aliased onto that action**, never the
-other way round.
+Multiple chords bind to it (`.`, `enter`); on Details / Miller `Right`
+also resolves to it via `pane::MoveRight` + the ViewNavigation table.
+There is no separate `activate` action. This is the canonical pattern:
+**one action per behaviour, N chords aliased onto that action**, never
+the other way round.
 
 | Action ID | macOS | Linux | Windows | Context |
 |---|---|---|---|---|
-| `pane::MoveDown` | `j`, `down` | `j`, `down` | `j`, `down` | Pane |
-| `pane::MoveUp` | `k`, `up` | `k`, `up` | `k`, `up` | Pane |
-| `pane::GoUp` (parent) | `h`, `left`, `,`, `backspace` | `h`, `left`, `,`, `backspace` | `h`, `left`, `,`, `backspace` | Pane |
-| `fs::View` (cd / open) | `l`, `right`, `.`, `enter` | `l`, `right`, `.`, `enter` | `l`, `right`, `.`, `enter` | Pane |
+| `pane::MoveUp` | `k`, `w`, `up` | `k`, `w`, `up` | `k`, `w`, `up` | Pane |
+| `pane::MoveDown` | `j`, `s`, `down` | `j`, `s`, `down` | `j`, `s`, `down` | Pane |
+| `pane::MoveLeft` | `h`, `a`, `left` | `h`, `a`, `left` | `h`, `a`, `left` | Pane |
+| `pane::MoveRight` | `l`, `d`, `right` | `l`, `d`, `right` | `l`, `d`, `right` | Pane |
+| `pane::GoUp` (parent) | `,`, `backspace` | `,`, `backspace` | `,`, `backspace` | Pane |
+| `fs::View` (cd / open) | `.`, `enter` | `.`, `enter` | `.`, `enter` | Pane |
 | `pane::MoveToTop` | `g g` | `g g` | `g g` | Pane |
 | `pane::MoveToBottom` | `shift-g` | `shift-g` | `shift-g` | Pane |
 | `pane::SearchInPlace` | `/` | `/` | `/` | Pane |
 | `pane::Back` | `alt-left` | `alt-left` | `alt-left` | Pane |
 | `pane::Forward` | `alt-right` | `alt-right` | `alt-right` | Pane |
 
+#### Navigation semantics per view
+
+`pane::MoveLeft` / `pane::MoveRight` / `pane::MoveUp` / `pane::MoveDown`
+resolve per view via a shared `ViewNavAction` dispatch table. Adding a
+new view means adding one arm to `ViewNavAction::for_mode` —
+nothing else changes.
+
+| View    | Left            | Right          | Up          | Down        | Enter / dbl-click |
+|---------|-----------------|----------------|-------------|-------------|-------------------|
+| Details | `pane::GoUp`    | `fs::View`     | focus−1     | focus+1     | `fs::View`        |
+| Miller  | `pane::GoUp`    | `fs::View`     | focus−1     | focus+1     | `fs::View`        |
+| Grid    | col−1 (wraps)   | col+1 (wraps)  | row−1       | row+1       | `fs::View`        |
+| Gallery | prev item       | next item      | no-op       | no-op       | `fs::View`        |
+
+Grid Left/Right **wrap across rows** like text-editor caret motion —
+pressing Right at the end of a row lands on col 0 of the next row.
+Grid Up/Down clamp at grid edges (no wrap).
+
+Miller single-click on a folder opens the child column immediately —
+this mirrors macOS Finder's Column View and is intentional. Files still
+require Enter / double-click to open.
+
 ### Selection
 
 Space toggles the focused row's selected state (yazi / nnn / ranger mark
-idiom); arrow / `j` / `k` navigation is **focus-only** and never
-disturbs the selection, so multi-select is built up by focus-and-toggle.
-Shift+arrow / Shift+`j` / Shift+`k` extends a range from the anchor.
+idiom); arrow / `j` / `k` / `w` / `s` navigation is **focus-only** and
+never disturbs the selection, so multi-select is built up by focus-and-
+toggle. Shift+arrow / Shift+`j` / Shift+`k` / Shift+`w` / Shift+`s`
+extends a range from the anchor.
+
+Selection is currently supported in Details and Grid. Miller has a
+hierarchical column-stack model where cross-column multi-select is not
+a well-defined operation; Gallery is single-focus. Extending multi-
+select to those views is deferred to v0.3.
 
 | Action ID | macOS | Linux | Windows | Context |
 |---|---|---|---|---|
 | `pane::ToggleSelection` | `space` | `space` | `space` | Pane |
-| `pane::ExtendDown` | `shift-down`, `shift-j` | `shift-down`, `shift-j` | `shift-down`, `shift-j` | Pane |
-| `pane::ExtendUp` | `shift-up`, `shift-k` | `shift-up`, `shift-k` | `shift-up`, `shift-k` | Pane |
+| `pane::ExtendDown` | `shift-down`, `shift-j`, `shift-s` | `shift-down`, `shift-j`, `shift-s` | `shift-down`, `shift-j`, `shift-s` | Pane |
+| `pane::ExtendUp` | `shift-up`, `shift-k`, `shift-w` | `shift-up`, `shift-k`, `shift-w` | `shift-up`, `shift-k`, `shift-w` | Pane |
 | `pane::SelectAll` | `cmd-a` | `ctrl-a` | `ctrl-a` | Pane |
 | `pane::DeselectAll` | `cmd-shift-a` | `ctrl-shift-a` | `ctrl-shift-a` | Pane |
 

@@ -848,10 +848,19 @@ fn build_dispatcher(
     // Miller => … }` block. Adding a new view mode now means adding one
     // arm to `ViewNavAction::for_mode` — no dispatcher edits.
     for (action_id, direction) in [
-        ("pane::MoveLeft", atlas_ui::views::navigation::Direction::Left),
-        ("pane::MoveRight", atlas_ui::views::navigation::Direction::Right),
+        (
+            "pane::MoveLeft",
+            atlas_ui::views::navigation::Direction::Left,
+        ),
+        (
+            "pane::MoveRight",
+            atlas_ui::views::navigation::Direction::Right,
+        ),
         ("pane::MoveUp", atlas_ui::views::navigation::Direction::Up),
-        ("pane::MoveDown", atlas_ui::views::navigation::Direction::Down),
+        (
+            "pane::MoveDown",
+            atlas_ui::views::navigation::Direction::Down,
+        ),
     ] {
         let s = Arc::clone(shell);
         d.register(action_id, move || {
@@ -871,7 +880,9 @@ fn build_dispatcher(
                 atlas_ui::views::navigation::ViewNavAction::MoveIndex { delta } => {
                     let Some(ctrl) = s.pane_by_id(id) else { return };
                     match mode {
-                        atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(delta as i64),
+                        atlas_ui::models::ViewMode::Details => {
+                            ctrl.details.move_focus(delta as i64)
+                        }
                         atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(delta),
                         atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(delta),
                         atlas_ui::models::ViewMode::Grid => {

@@ -146,7 +146,12 @@ mod tests {
 
     #[test]
     fn miller_matches_details_semantics() {
-        for dir in [Direction::Left, Direction::Right, Direction::Up, Direction::Down] {
+        for dir in [
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
             assert_eq!(
                 ViewNavAction::for_mode(ViewMode::Miller, dir),
                 ViewNavAction::for_mode(ViewMode::Details, dir),
