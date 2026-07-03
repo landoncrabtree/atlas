@@ -2584,12 +2584,23 @@ impl AppShell {
         self.navigate_pane_to_location(id, parent);
     }
 
-    /// Open the focused entry in pane `id`: `cd` into directories, hand
-    /// files off to the OS default handler (`open` on macOS,
-    /// `xdg-open` on Linux, `ShellExecute` on Windows via the `open`
-    /// crate). Called by the `fs::View` action handler and by every
-    /// view's double-click callback so folder-vs-file dispatch is
+    /// Open the currently-focused entry of pane `id` — the keyboard
+    /// counterpart of a double-click. Directories navigate the pane in
+    /// place; files are handed off to the OS default handler (`open` on
+    /// macOS, `xdg-open` on Linux, `ShellExecute` on Windows via the
+    /// `open` crate). Called by the `fs::View` action handler and by
+    /// every view's double-click callback so folder-vs-file dispatch is
     /// centralised.
+    ///
+    /// This method is **view-mode aware**: each view maintains its own
+    /// focused-index cache (`details_focused_index`, `grid_focused_index`,
+    /// `gallery_focused_index`) or a hierarchical selection state
+    /// (Miller's `focused_column` + per-column focused row). The correct
+    /// entry to open therefore depends on the pane's active view mode,
+    /// not a single shared index. Prior to the nav-convergence refactor
+    /// this method read `details_focused_index` unconditionally — a
+    /// silent bug that made keyboard Enter open the wrong entry in
+    /// Grid / Miller / Gallery.
     ///
     /// On a [`Location::Remote`] pane the local-open fast path is
     /// unsafe — the entry's `path` is a bare filename fragment and
@@ -2598,11 +2609,54 @@ impl AppShell {
     /// [`Self::navigate_pane_to_location`] (directories) or
     /// [`Self::preview`] (files).
     pub fn view_focused_entry(self: &Arc<Self>, id: PaneId) {
-        let Some(entry) = self.focused_entry_full(id) else {
-            tracing::debug!(?id, "fs::View: no focused entry");
-            return;
-        };
-        self.view_entry(id, entry);
+        match self.pane_view_mode(id) {
+            ViewMode::Details => {
+                if let Some(entry) = self.focused_entry_full(id) {
+                    self.view_entry(id, entry);
+                } else {
+                    tracing::debug!(?id, "fs::View: Details has no focused entry");
+                }
+            }
+            ViewMode::Grid => {
+                let idx = self
+                    .pane_cache
+                    .read()
+                    .get(&id)
+                    .map_or(-1, |c| c.grid_focused_index);
+                if idx < 0 {
+                    tracing::debug!(?id, "fs::View: Grid has no focused entry");
+                    return;
+                }
+                if let Some(entry) = self.entry_at_index(id, idx as usize) {
+                    self.view_entry(id, entry);
+                }
+            }
+            ViewMode::Gallery => {
+                let idx = self
+                    .pane_cache
+                    .read()
+                    .get(&id)
+                    .map_or(-1, |c| c.gallery_focused_index);
+                if idx < 0 {
+                    tracing::debug!(?id, "fs::View: Gallery has no focused entry");
+                    return;
+                }
+                if let Some(entry) = self.entry_at_index(id, idx as usize) {
+                    self.view_entry(id, entry);
+                }
+            }
+            ViewMode::Miller => {
+                // Miller keeps its own hierarchical focus state
+                // (focused_column + per-column focused row) so delegate
+                // to the controller. `activate_focused` dispatches the
+                // same UiAction::Navigate / UiAction::OpenFile flow.
+                if let Some(ctrl) = self.pane_by_id(id) {
+                    ctrl.miller.activate_focused();
+                } else {
+                    tracing::debug!(?id, "fs::View: Miller pane has no controller");
+                }
+            }
+        }
     }
 
     /// Open a specific entry `index` within pane `id`, bypassing the
