@@ -355,7 +355,7 @@ fn copy_file(
         writer.write_all(&buf[..read]).map_err(|source_err| {
             atlas_core::AtlasError::io(Some(final_dest.clone()), source_err)
         })?;
-        add_bytes_progress(op_arc, read as u64, source);
+        add_bytes_progress(op_arc, read as u64);
         emit_progress(id, op_arc, event_tx, last_emit, progress_interval, false);
     }
 
@@ -510,14 +510,17 @@ fn finish_item_progress(
     emit_progress(id, op_arc, event_tx, last_emit, progress_interval, false);
 }
 
-fn add_bytes_progress(
-    op_arc: &Arc<parking_lot::Mutex<Operation>>,
-    bytes: u64,
-    current_path: &Path,
-) {
+/// Increment the bytes-transferred counter on the shared operation.
+///
+/// Does **not** touch `progress.current_path` — that is set once per
+/// file by the surrounding `update_current_path` call before the
+/// byte-copy loop starts. Cloning a `PathBuf` on every 1 MiB read
+/// (which the previous version did) was wasted work: a 1 GB copy
+/// paid for 1 024 `PathBuf::to_path_buf` allocations and just as many
+/// races with the queue's status thread reading `current_path`.
+fn add_bytes_progress(op_arc: &Arc<parking_lot::Mutex<Operation>>, bytes: u64) {
     let mut op = op_arc.lock();
     op.progress.bytes_done = op.progress.bytes_done.saturating_add(bytes);
-    op.progress.current_path = Some(current_path.to_path_buf());
 }
 
 fn update_current_path(op_arc: &Arc<parking_lot::Mutex<Operation>>, current_path: &Path) {
