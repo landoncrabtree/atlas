@@ -195,7 +195,7 @@ impl PreviewCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PreviewError::TooLarge`] when the file exceeds the
+    /// Returns [`PreviewOutcome::TooLarge`] when the file exceeds the
     /// configured cap; all other failures (network, disk) are
     /// surfaced via `tracing::warn` from the spawned task rather than
     /// bubbling synchronously, because the caller (a Slint callback)
@@ -205,6 +205,35 @@ impl PreviewCache {
         uri: RemoteUri,
         kind: BackendKind,
         entry: Entry,
+    ) -> PreviewOutcome {
+        let opener = Arc::clone(&self.inner.opener);
+        let completion: PreviewCompletion =
+            Box::new(move |path: &Path| -> io::Result<()> { opener.open(path) });
+        self.open_remote_file_with(uri, kind, entry, completion)
+    }
+
+    /// Same materialisation pipeline as [`Self::open_remote_file`] but
+    /// hands the local cache path off to a caller-supplied
+    /// completion callback instead of invoking the OS default
+    /// handler. Used by remote **Open With…** to route the cached
+    /// path into the native application picker, and by any future
+    /// caller that needs to act on the materialised file (e.g. copy
+    /// out of the cache, hash it for an external tool).
+    ///
+    /// The write-back registry is still attached on completion so
+    /// downstream edits by the chosen application flow back to the
+    /// remote via [`super::preview_watch`], matching the OS-handler
+    /// path.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::open_remote_file`].
+    pub fn open_remote_file_with(
+        &self,
+        uri: RemoteUri,
+        kind: BackendKind,
+        entry: Entry,
+        completion: PreviewCompletion,
     ) -> PreviewOutcome {
         let cfg = self.config();
         if entry.metadata.size > cfg.max_open_bytes {
@@ -227,7 +256,7 @@ impl PreviewCache {
         // Cache hit fast path.
         if cached_file.exists() && !is_stale(&cached_file, cfg.max_age_secs) {
             tracing::debug!(?cached_file, "preview: cache hit");
-            match self.inner.opener.open(&cached_file) {
+            match completion(&cached_file) {
                 Ok(()) => {
                     if let Err(err) =
                         self.inner
@@ -239,7 +268,7 @@ impl PreviewCache {
                     return PreviewOutcome::CachedOpen(cached_file);
                 }
                 Err(err) => {
-                    tracing::warn!(?cached_file, %err, "preview: OS open failed on cached file");
+                    tracing::warn!(?cached_file, %err, "preview: completion failed on cached file");
                     return PreviewOutcome::OpenFailed(err.to_string());
                 }
             }
@@ -251,10 +280,19 @@ impl PreviewCache {
         let uri_for_watch = uri.clone();
         let kind_for_watch = kind;
         handle.spawn(async move {
-            match download_and_open(&inner, uri, kind, entry, cache_line.clone(), cached_file).await
+            match download_and_finish(
+                &inner,
+                uri,
+                kind,
+                entry,
+                cache_line.clone(),
+                cached_file,
+                completion,
+            )
+            .await
             {
                 Ok(path) => {
-                    tracing::info!(?path, "preview: download + open complete");
+                    tracing::info!(?path, "preview: download + completion complete");
                     if let Err(err) =
                         inner
                             .watch_registry
@@ -315,6 +353,20 @@ impl PreviewCache {
     }
 }
 
+/// Type alias for the completion callback used by
+/// [`PreviewCache::open_remote_file_with`].
+///
+/// * Runs on the caller thread on a cache hit (synchronous).
+/// * Runs on the shared tokio worker
+///   (`atlas_remote::runtime::handle()`) on a cache miss, after the
+///   `.part` staging file has been atomically renamed to the cache
+///   line.
+///
+/// The callback receives the local cache path; anything it returns
+/// as an `io::Error` is logged via `tracing::warn` and — on the
+/// synchronous path — surfaced through [`PreviewOutcome::OpenFailed`].
+pub type PreviewCompletion = Box<dyn FnOnce(&Path) -> io::Result<()> + Send + 'static>;
+
 /// Result of a preview attempt.
 #[derive(Debug)]
 pub enum PreviewOutcome {
@@ -355,13 +407,14 @@ pub enum PreviewError {
     NoFilename(String),
 }
 
-async fn download_and_open(
+async fn download_and_finish(
     inner: &Arc<Inner>,
     uri: RemoteUri,
     kind: BackendKind,
     entry: Entry,
     cache_line: PathBuf,
     cached_file: PathBuf,
+    completion: PreviewCompletion,
 ) -> Result<PathBuf, PreviewError> {
     let credentials = atlas_ops::credentials_for(&uri)
         .map_err(|err| PreviewError::Remote(format!("credentials: {err}")))?;
@@ -509,7 +562,7 @@ async fn download_and_open(
         tracing::warn!(%err, "preview: LRU eviction failed");
     }
 
-    inner.opener.open(&cached_file).map_err(PreviewError::Io)?;
+    completion(&cached_file).map_err(PreviewError::Io)?;
 
     Ok(cached_file)
 }
@@ -847,5 +900,144 @@ mod tests {
         let a = cache_key(&uri, older.metadata.modified, older.metadata.size);
         let b = cache_key(&uri, newer.metadata.modified, newer.metadata.size);
         assert_ne!(a, b, "changing mtime must invalidate the cache line",);
+    }
+
+    /// The `open_remote_file_with` API drops the caller-supplied
+    /// completion in place of the OS-handler opener when a cache hit
+    /// is available. This is the code path remote Open With uses:
+    /// materialise → hand the cached path off to the native picker.
+    ///
+    /// Verifies both:
+    /// * The completion callback fires exactly once with the cached
+    ///   path.
+    /// * The cache-hit fast path does not re-download.
+    #[test]
+    fn open_remote_file_with_cache_hit_invokes_completion_not_opener() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cfg = RemotePreview {
+            cache_dir: Some(tmp.path().to_path_buf()),
+            max_bytes: 10_000_000,
+            max_age_secs: 86_400,
+            max_open_bytes: 10_000_000,
+            stream_threshold_bytes: 4_194_304,
+            stream_chunk_bytes: 262_144,
+            write_back_enabled: false,
+            write_back_debounce_ms: 500,
+        };
+        let opener = Arc::new(RecordingOpener::default());
+        let cache = PreviewCache::with_opener(cfg, opener.clone());
+
+        let uri = sample_uri("/pub/report.pdf");
+        let entry = sample_entry("report.pdf", 32);
+
+        // Pre-populate the cache line (simulates a completed
+        // download from a prior session).
+        let cache_path = cache.cache_path_for(&uri, &entry);
+        std::fs::create_dir_all(cache_path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&cache_path, b"stub pdf contents").expect("write");
+
+        // Completion receives the cached path.
+        let seen = Arc::new(parking_lot::Mutex::new(None::<PathBuf>));
+        let seen_for_completion = Arc::clone(&seen);
+        let completion: PreviewCompletion = Box::new(move |path: &Path| {
+            *seen_for_completion.lock() = Some(path.to_path_buf());
+            Ok(())
+        });
+
+        let outcome = cache.open_remote_file_with(uri, BackendKind::Sftp, entry, completion);
+        assert!(
+            matches!(outcome, PreviewOutcome::CachedOpen(_)),
+            "expected CachedOpen, got {outcome:?}"
+        );
+        assert_eq!(
+            seen.lock().as_deref(),
+            Some(cache_path.as_path()),
+            "completion must receive the cached path"
+        );
+        assert_eq!(
+            opener.calls.load(Ordering::SeqCst),
+            0,
+            "opener is NOT called when the caller supplies a completion — that's the point of _with"
+        );
+        assert_eq!(
+            cache.download_count(),
+            0,
+            "cache hit must not increment the download counter"
+        );
+    }
+
+    /// Failures from the caller-supplied completion (e.g. the Open
+    /// With… picker refused to spawn) are surfaced on the synchronous
+    /// path via [`PreviewOutcome::OpenFailed`].
+    #[test]
+    fn open_remote_file_with_cache_hit_surfaces_completion_error() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cfg = RemotePreview {
+            cache_dir: Some(tmp.path().to_path_buf()),
+            max_bytes: 10_000_000,
+            max_age_secs: 86_400,
+            max_open_bytes: 10_000_000,
+            stream_threshold_bytes: 4_194_304,
+            stream_chunk_bytes: 262_144,
+            write_back_enabled: false,
+            write_back_debounce_ms: 500,
+        };
+        let opener = Arc::new(RecordingOpener::default());
+        let cache = PreviewCache::with_opener(cfg, opener);
+
+        let uri = sample_uri("/pub/report.pdf");
+        let entry = sample_entry("report.pdf", 32);
+        let cache_path = cache.cache_path_for(&uri, &entry);
+        std::fs::create_dir_all(cache_path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&cache_path, b"payload").expect("write");
+
+        let completion: PreviewCompletion = Box::new(|_| {
+            Err(io::Error::other("picker spawn failed"))
+        });
+
+        let outcome = cache.open_remote_file_with(uri, BackendKind::Sftp, entry, completion);
+        assert!(
+            matches!(outcome, PreviewOutcome::OpenFailed(_)),
+            "expected OpenFailed, got {outcome:?}"
+        );
+    }
+
+    /// `open_remote_file_with` refuses over-cap files without ever
+    /// invoking the completion — same short-circuit as the legacy
+    /// [`PreviewCache::open_remote_file`] API. Confirms the "Open
+    /// With… on a huge remote file" path degrades cleanly.
+    #[test]
+    fn open_remote_file_with_refuses_too_large_without_completion() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cfg = RemotePreview {
+            cache_dir: Some(tmp.path().to_path_buf()),
+            max_bytes: 10_000_000,
+            max_age_secs: 86_400,
+            max_open_bytes: 10, // deliberately tiny
+            stream_threshold_bytes: 4_194_304,
+            stream_chunk_bytes: 262_144,
+            write_back_enabled: false,
+            write_back_debounce_ms: 500,
+        };
+        let cache = PreviewCache::with_opener(cfg, Arc::new(RecordingOpener::default()));
+
+        let called = Arc::new(AtomicU64::new(0));
+        let called_for_completion = Arc::clone(&called);
+        let completion: PreviewCompletion = Box::new(move |_| {
+            called_for_completion.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+
+        let outcome = cache.open_remote_file_with(
+            sample_uri("/pub/big.iso"),
+            BackendKind::Sftp,
+            sample_entry("big.iso", 1_000),
+            completion,
+        );
+        assert!(
+            matches!(outcome, PreviewOutcome::TooLarge { .. }),
+            "expected TooLarge, got {outcome:?}"
+        );
+        assert_eq!(called.load(Ordering::SeqCst), 0);
     }
 }
