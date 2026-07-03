@@ -108,7 +108,7 @@ A separate daemon lets us:
 
 ### Decoupled view models
 
-Every view (Details/Grid/Miller/Tree/Gallery/Dual-pane) consumes the same `LocationViewModel` trait from `atlas-fs`. Switching view modes never re-reads the directory.
+Every view (Details/Grid/Miller/Gallery/Dual-pane) consumes the same `LocationViewModel` trait from `atlas-fs`. Switching view modes never re-reads the directory.
 
 ### Locations, not paths
 

@@ -154,7 +154,7 @@ Update:
 
 - `cargo test -p atlas-remote your_scheme::…` — mock-backed integration tests green.
 - `cargo test -p atlas-remote cross_backend_stream` — every cross-backend permutation green.
-- `MOCK_SERVERS_SKIP=1 cargo test --workspace` — the rest of the workspace still passes without a Python environment.
+- `MOCK_SERVERS_SKIP=1 cargo nextest run --workspace` — the rest of the workspace still passes without a Python environment.
 - Live smoke: launch the app, `Cmd+K` → pick the new backend → connect to a real (non-mock) server → list, read, copy, delete, rename.
 - Screenshot the Connect modal + the pane with a remote listing via `computer-use-*` MCP; attach to the PR.
 

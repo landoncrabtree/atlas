@@ -30,7 +30,7 @@ Slint components live under `assets/ui/`:
 - `assets/ui/theme.slint` — the global `Theme` singleton.
 - `assets/ui/pane-data.slint` — shared per-pane structs.
 - `assets/ui/components/` — reusable widgets **and modals**. Modals live here (bulk-rename, command-palette, connect-server, operation-progress, search-panel are all in `components/`). Despite historical prose that talked about an `assets/ui/panels/` directory, that directory does not exist — everything goes under `components/`.
-- `assets/ui/views/{details,grid,gallery,miller,tree}/` — per-view-mode rendering; each has its own subdirectory.
+- `assets/ui/views/{details,grid,gallery,miller}/` — per-view-mode rendering; each has its own subdirectory.
 
 Rust-side controllers live under `crates/atlas-ui/src/<feature>/`:
 
@@ -168,7 +168,7 @@ Read [`keybind-authoring.instructions.md`](keybind-authoring.instructions.md) fo
 
 ### The correct pattern
 
-- Every `panes-*` array on `AtlasWindow` (e.g. `panes-details-rows`, `panes-grid-thumbnails`, `panes-tree-nodes`, `panes-path-segments`) is backed by a **persistent** `Rc<VecModel<T>>` on the Rust side.
+- Every `panes-*` array on `AtlasWindow` (e.g. `panes-details-rows`, `panes-grid-thumbnails`, `panes-miller-columns`, `panes-path-segments`) is backed by a **persistent** `Rc<VecModel<T>>` on the Rust side.
 - The struct `OuterPaneModels` in `crates/atlas-ui/src/shell.rs` owns each of these `Rc<VecModel>`s. It calls `ensure_bound()` once at startup to bind them to the Slint properties.
 - On every subsequent update, call `OuterPaneModels::sync_vec_model` (~`shell.rs:538`) which iterates through the current entries and only calls `set_row_data` on rows that actually changed. It does not swap the model.
 
@@ -225,5 +225,5 @@ Any op that could exceed 250 ms **must** integrate the cancellation token from t
 - [ ] Any operation that could exceed 250 ms uses the `FOREGROUND_DEFER` op-modal path with a `CancellationToken`.
 - [ ] Cross-pane scroll preserved: every `panes-*` update goes through `OuterPaneModels::sync_vec_model`.
 - [ ] Any new action ID lives in `atlas-keymap::defaults::default_actions()` and has a handler in `build_dispatcher`.
-- [ ] `cargo fmt --all` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` pass.
+- [ ] `cargo fmt --all` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo nextest run --workspace --retries 3` pass.
 - [ ] Live MCP screenshot attached to the PR.

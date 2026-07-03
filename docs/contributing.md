@@ -27,7 +27,8 @@ cargo run -p atlas-app
    ```bash
    cargo fmt --all
    cargo clippy --workspace --all-targets -- -D warnings
-   cargo test --workspace
+   cargo nextest run --workspace --retries 3   # tests
+   cargo test --doc --workspace                # doctests (nextest doesn't run them yet)
    ```
 4. **Open a PR** with a clear description of motivation, what changed, how you tested it, and any user-visible impact.
 
@@ -79,7 +80,7 @@ Performance is a feature — design for streaming and async; don't block the UI 
 - Use `tempfile::TempDir` for filesystem tests; never read or write outside the workspace.
 - Tests must not depend on each other or on global state. Use `serial_test` if you must mutate env vars (`ATLAS_CONFIG_DIR`, `ATLAS_THEMES_DIR`).
 - Integration tests live in `crates/<crate>/tests/`; unit tests live in `#[cfg(test)] mod tests` blocks.
-- Remote integration tests spawn Python mock servers via `crates/atlas-remote/tests/common/mock.rs` (see `tools/mock-servers/`). Skip them all with `MOCK_SERVERS_SKIP=1 cargo test --workspace` when offline or CI-restricted.
+- Remote integration tests spawn Python mock servers via `crates/atlas-remote/tests/common/mock.rs` (see `tools/mock-servers/`). Skip them all with `MOCK_SERVERS_SKIP=1 cargo nextest run --workspace` when offline or CI-restricted.
 - If you edit `crates/atlas-keymap/src/defaults.rs`, regenerate the per-OS TOMLs under `assets/keymaps/` with `cargo test -p atlas-keymap regen_default_keymap -- --ignored`. A companion test fails if the checked-in files drift.
 
 See [`docs/developer-setup.md`](developer-setup.md) for the full test + mock-server + MCP tooling walkthrough.
