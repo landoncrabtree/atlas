@@ -1,34 +1,14 @@
 // Connect-to-Server modal — remote-fs backend picker (SFTP / FTP / WebDAV / S3).
-// Mirrors the visual grammar of `bulk-rename.slint` and `command-palette.slint`:
-// dim scrim backdrop → centered elevated panel → theme tokens for every
-// colour, radius, and space. All field values live as `in-out` properties on
-// the root component so Rust owns the state and pushes changes back via the
-// per-field `*-changed` callbacks (see rename-modal for the same pattern).
-//
-// # Visibility gating
-//
-// Fields fade in and out based on the currently-selected backend and auth
-// method. The rules match the phase-2.3 spec:
-//
-// | Backend | Ports              | Auth methods                       |
-// |---------|--------------------|------------------------------------|
-// | SFTP    | 22 (default)       | Password, SSH Key, Anonymous       |
-// | FTP     | 21 (default)       | Password, Anonymous                |
-// | WebDAV  | 443 (default)      | Password, Anonymous                |
-// | S3      | endpoint URL       | IAM, Anonymous                     |
-//
-// The `auth-index` values are stable across backends (0=Password, 1=SSH Key,
-// 2=IAM, 3=Anonymous). Rust re-normalises `auth-index` on backend change so a
-// user swapping SFTP → S3 with "SSH Key" selected snaps to a valid choice.
-//
-// # Chord routing
-//
-// `input-focused` is exported as an `out` property so the outer atlas.slint
-// FocusScope can gate its keymap dispatcher on it. Same mechanism as the
-// address-bar TextInput chord bypass introduced in `269ab5a`.
+// Keeps Rust-owned state and callbacks intact while composing macOS-style
+// controls from atlas-controls.slint: compact fields, contiguous segmented
+// controls, subtle lists, and a single accent primary action.
 
 import { Theme } from "../theme.slint";
 import { ScrollView } from "std-widgets.slint";
+import {
+    AtlasFieldGroup, AtlasList, AtlasListRow, AtlasModal, AtlasPrimaryButton,
+    AtlasSecondaryButton, AtlasSegmentedControl, AtlasTextField, SectionLabel,
+} from "atlas-controls.slint";
 
 // A single row in the saved-servers list rendered beneath the modal's
 // connection form. Populated by Rust (`ConnectController`) from
@@ -72,31 +52,17 @@ export component ConnectServerModal inherits Rectangle {
     in property <bool> status-is-error: false;
 
     // ── TOFU host-key prompt (Phase 2.6) ─────────────────────────────────
-    //
-    // The banner is inline above the host/path row so it can't be
-    // dismissed just by scrolling. Rust sets `host-key-prompt-visible = true`
-    // after the SFTP handshake yields an unknown or mismatched key; three
-    // callbacks come back the other way. Non-empty
-    // `host-key-mismatch-known-fingerprint` picks the red "key changed"
-    // variant; empty picks the accent "first-time" variant.
     in property <bool> host-key-prompt-visible: false;
     in property <string> host-key-host: "";
     in property <string> host-key-fingerprint: "";
     in property <string> host-key-mismatch-known-fingerprint: "";
 
     // ── Saved-servers viewer ──────────────────────────────────────────────
-    // The list is fully controlled by Rust: the `saved-servers` array is
-    // rebuilt on modal open, on successful connect (to bump the recency
-    // sort), and after a delete confirms. Rows fire either
-    // `saved-server-selected` (populate the fields) or the pair
-    // `saved-server-delete-requested` / `saved-server-delete-confirmed`
-    // depending on which button the user hits.
     in property <[SavedServerRow]> saved-servers: [];
 
     // Reflects "any TextInput in this modal has focus". Bubbles up to the
     // window's FocusScope so Cmd+A / Cmd+C / Cmd+V land in the input, not
-    // the pane's keymap dispatcher. Matches the address-bar mechanism from
-    // 269ab5a.
+    // the pane's keymap dispatcher.
     out property <bool> input-focused: host-focus || path-focus
         || username-focus || password-focus
         || ssh-key-focus || iam-access-focus
@@ -124,16 +90,9 @@ export component ConnectServerModal inherits Rectangle {
     callback save-and-connect();
 
     // ── Saved-servers callbacks ───────────────────────────────────────────
-    /// A row was single-clicked. Rust populates the connection form.
     callback saved-server-selected(string /* id */);
-    /// The row's Delete button was clicked once. Rust flips
-    /// `delete-pending` on that row so the confirm chip renders.
     callback saved-server-delete-requested(string /* id */);
-    /// The inline "Confirm delete?" chip was clicked. Rust removes the
-    /// entry from servers.toml + purges the keychain secret.
     callback saved-server-delete-confirmed(string /* id */);
-    /// The delete-pending state was aborted (Cancel clicked or another
-    /// row selected). Rust clears `delete-pending` on all rows.
     callback saved-server-delete-cancelled();
 
     // ── TOFU host-key callbacks ─────────────────────────────────────────
@@ -161,11 +120,20 @@ export component ConnectServerModal inherits Rectangle {
     property <bool> show-iam: auth-iam;
     property <bool> show-s3-endpoint: is-s3;
 
-    // Hint appended to the placeholder to show the merged `host:port`
-    // syntax. Empty for S3 which uses a bucket name + endpoint URL.
-    property <string> host-placeholder: is-s3
-        ? "my-bucket"
-        : "host.example.com or host.example.com:2222";
+    property <string> host-placeholder: is-s3 ? "my-bucket" : "files.example.com";
+    property <int> sftp-auth-selected: auth-index == 0 ? 0 : (auth-index == 1 ? 1 : 2);
+    property <int> password-anon-auth-selected: auth-index == 0 ? 0 : 1;
+    property <int> s3-auth-selected: auth-index == 2 ? 0 : 1;
+    property <length> field-group-h: Theme.control-height + 18px;
+    property <length> credentials-h: show-iam
+        ? field-group-h * 3 + Theme.space-3 * 2
+        : ((show-username && (show-password || show-ssh-key))
+            ? field-group-h * 2 + Theme.space-3
+            : field-group-h);
+    property <length> saved-list-h: saved-servers.length == 0
+        ? 44px
+        : min(5 * Theme.list-row-height, saved-servers.length * Theme.list-row-height);
+    property <length> saved-block-h: 24px + saved-list-h;
 
     // ── Per-input focus mirrors (used by `input-focused` above) ───────────
 
@@ -180,1314 +148,584 @@ export component ConnectServerModal inherits Rectangle {
     property <bool> s3-endpoint-focus: false;
     property <bool> label-focus: false;
 
-    if visible-modal: Rectangle {
+    width: 100%;
+    height: 100%;
+
+    AtlasModal {
         width: 100%;
         height: 100%;
-        background: #00000066;
+        visible-modal: root.visible-modal;
+        title: "Connect to Server";
+        modal-width: 560px;
+        modal-height: min((root.show-s3-endpoint && root.show-iam) ? 720px : (root.saved-servers.length > 0 ? 620px : 540px), root.height - Theme.space-8 * 2);
+        dismissed => { root.cancel(); }
 
-        // Backdrop click dismisses; matches bulk-rename.
-        TouchArea {
-            width: 100%;
-            height: 100%;
-            clicked => { root.cancel(); }
+        // ── Backend picker (segmented control) ───────────────────────────
+        AtlasFieldGroup {
+            SectionLabel { label: "Backend"; }
+
+            AtlasSegmentedControl {
+                segments: ["SFTP", "FTP", "WebDAV", "S3"];
+                selected-index: root.backend-index;
+                selected(index) => { root.backend-changed(index); }
+            }
+        }
+
+        // ── TOFU host-key banner (Phase 2.6) ────────────────────────────
+        if root.host-key-prompt-visible: Rectangle {
+            property <bool> is-mismatch: root.host-key-mismatch-known-fingerprint != "";
+            border-width: 1px;
+            border-color: is-mismatch ? Theme.error : Theme.warning;
+            border-radius: Theme.list-radius;
+            background: is-mismatch ? Theme.error.with-alpha(0.12) : Theme.warning.with-alpha(0.12);
+
+            VerticalLayout {
+                padding: Theme.space-3;
+                spacing: Theme.space-2;
+
+                Text {
+                    text: is-mismatch
+                        ? "Server key changed"
+                        : "The authenticity of this host can't be established.";
+                    color: is-mismatch ? Theme.error : Theme.fg;
+                    font-size: 12px;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    text: is-mismatch
+                        ? "Someone may be intercepting your connection, or this server's key legitimately rotated. Verify the new fingerprint before continuing."
+                        : "Verify the fingerprint below matches what the server operator published, then trust it.";
+                    color: Theme.fg-muted;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+
+                VerticalLayout {
+                    spacing: Theme.space-1;
+
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+                        Text {
+                            text: "Host";
+                            color: Theme.fg-faint;
+                            font-size: 10px;
+                            font-weight: 600;
+                            width: 60px;
+                        }
+                        Text {
+                            text: root.host-key-host;
+                            color: Theme.fg;
+                            font-family: Theme.monospace;
+                            font-size: 12px;
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+                        Text {
+                            text: is-mismatch ? "Offered" : "Fingerprint";
+                            color: Theme.fg-faint;
+                            font-size: 10px;
+                            font-weight: 600;
+                            width: 60px;
+                        }
+                        Text {
+                            text: root.host-key-fingerprint;
+                            color: is-mismatch ? Theme.error : Theme.fg;
+                            font-family: Theme.monospace;
+                            font-size: 12px;
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    if is-mismatch: HorizontalLayout {
+                        spacing: Theme.space-2;
+                        Text {
+                            text: "Known";
+                            color: Theme.fg-faint;
+                            font-size: 10px;
+                            font-weight: 600;
+                            width: 60px;
+                        }
+                        Text {
+                            text: root.host-key-mismatch-known-fingerprint;
+                            color: Theme.fg;
+                            font-family: Theme.monospace;
+                            font-size: 12px;
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                host-key-focus := FocusScope {
+                    width: 100%;
+                    height: Theme.control-height;
+                    key-pressed(event) => {
+                        if event.text == Key.Escape {
+                            root.host-key-cancel();
+                            return accept;
+                        }
+                        if event.text == Key.Return {
+                            root.host-key-cancel();
+                            return accept;
+                        }
+                        reject;
+                    }
+                    init => { self.focus(); }
+
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+
+                        AtlasSecondaryButton {
+                            horizontal-stretch: 1;
+                            text: "Trust once";
+                            clicked => { root.host-key-trust-once(); }
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            height: Theme.control-height;
+                            background: is-mismatch ? Theme.error : Theme.secondary-button-bg-hover;
+                            border-width: 1px;
+                            border-color: is-mismatch ? Theme.error : Theme.secondary-button-border-hover;
+                            border-radius: Theme.button-radius;
+                            TouchArea {
+                                width: 100%; height: 100%;
+                                clicked => { root.host-key-trust-always(); }
+                            }
+                            Text {
+                                text: is-mismatch ? "Replace and continue" : "Trust always";
+                                color: is-mismatch ? Theme.accent-fg : Theme.fg;
+                                font-size: Theme.button-font-size;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        AtlasSecondaryButton {
+                            horizontal-stretch: 1;
+                            text: "Cancel";
+                            clicked => { root.host-key-cancel(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Host / Path row ──────────────────────────────────────────────
+        HorizontalLayout {
+            height: root.field-group-h;
+            spacing: Theme.space-3;
+
+            AtlasFieldGroup {
+                horizontal-stretch: 3;
+
+                SectionLabel { label: is-s3 ? "Bucket" : "Host"; }
+
+                host-field := AtlasTextField {
+                    auto-focus: true;
+                    text <=> root.host;
+                    placeholder: host-placeholder;
+                    edited(value) => { root.host-changed(value); }
+                    accepted => {
+                        if !root.connecting { root.connect(); }
+                    }
+                    escape-pressed => { root.cancel(); }
+                    changed focused => { host-focus = self.focused; }
+                }
+            }
+
+            AtlasFieldGroup {
+                horizontal-stretch: 2;
+
+                SectionLabel { label: is-s3 ? "Prefix" : "Path"; }
+
+                path-field := AtlasTextField {
+                    text <=> root.path;
+                    placeholder: is-s3 ? "prefix/optional" : "/home/user";
+                    edited(value) => { root.path-changed(value); }
+                    escape-pressed => { root.cancel(); }
+                    changed focused => { path-focus = self.focused; }
+                }
+            }
+        }
+
+        // ── S3 endpoint (non-standard S3 buckets — minio, LocalStack) ────
+        if show-s3-endpoint: AtlasFieldGroup {
+            SectionLabel { label: "Endpoint URL"; }
+
+            s3ep-field := AtlasTextField {
+                text <=> root.s3-endpoint;
+                placeholder: "https://s3.example.com";
+                edited(value) => { root.s3-endpoint-changed(value); }
+                escape-pressed => { root.cancel(); }
+                changed focused => { s3-endpoint-focus = self.focused; }
+            }
+        }
+
+        // ── Auth method picker (filtered per backend) ────────────────────
+        AtlasFieldGroup {
+            SectionLabel { label: "Authentication"; }
+
+            if is-sftp: AtlasSegmentedControl {
+                segments: ["Password", "SSH Key", "Anonymous"];
+                selected-index: root.sftp-auth-selected;
+                selected(index) => {
+                    root.auth-changed(index == 0 ? 0 : (index == 1 ? 1 : 3));
+                }
+            }
+
+            if is-ftp || is-webdav: AtlasSegmentedControl {
+                segments: ["Password", "Anonymous"];
+                selected-index: root.password-anon-auth-selected;
+                selected(index) => { root.auth-changed(index == 0 ? 0 : 3); }
+            }
+
+            if is-s3: AtlasSegmentedControl {
+                segments: ["IAM", "Anonymous"];
+                selected-index: root.s3-auth-selected;
+                selected(index) => { root.auth-changed(index == 0 ? 2 : 3); }
+            }
+        }
+
+        // ── Credentials ──────────────────────────────────────────────────
+        if show-username || show-password || show-ssh-key || show-iam: VerticalLayout {
+            height: root.credentials-h;
+            spacing: Theme.space-3;
+
+            if show-username: AtlasFieldGroup {
+                SectionLabel { label: "Username"; }
+
+                user-field := AtlasTextField {
+                    text <=> root.username;
+                    placeholder: "user@example.com";
+                    edited(value) => { root.username-changed(value); }
+                    escape-pressed => { root.cancel(); }
+                    changed focused => { username-focus = self.focused; }
+                }
+            }
+
+            if show-password: AtlasFieldGroup {
+                SectionLabel { label: "Password"; }
+
+                pw-field := AtlasTextField {
+                    text <=> root.password;
+                    password: true;
+                    placeholder: "Password";
+                    edited(value) => { root.password-changed(value); }
+                    accepted => {
+                        if !root.connecting {
+                            if root.save-to-keychain {
+                                root.save-and-connect();
+                            } else {
+                                root.connect();
+                            }
+                        }
+                    }
+                    escape-pressed => { root.cancel(); }
+                    changed focused => { password-focus = self.focused; }
+                }
+            }
+
+            if show-ssh-key: AtlasFieldGroup {
+                SectionLabel { label: "SSH private key"; }
+
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+
+                    ssh-field := AtlasTextField {
+                        horizontal-stretch: 1;
+                        text <=> root.ssh-key-path;
+                        placeholder: "~/.ssh/id_ed25519";
+                        edited(value) => { root.ssh-key-path-changed(value); }
+                        escape-pressed => { root.cancel(); }
+                        changed focused => { ssh-key-focus = self.focused; }
+                    }
+
+                    AtlasSecondaryButton {
+                        button-width: 78px;
+                        text: "Browse…";
+                        clicked => { root.browse-ssh-key(); }
+                    }
+                }
+            }
+
+            if show-iam: VerticalLayout {
+                height: root.credentials-h;
+                spacing: Theme.space-3;
+
+                AtlasFieldGroup {
+                    SectionLabel { label: "Access key ID"; }
+                    iam-key-field := AtlasTextField {
+                        text <=> root.iam-access-key;
+                        placeholder: "AKIA…";
+                        edited(value) => { root.iam-access-key-changed(value); }
+                        changed focused => { iam-access-focus = self.focused; }
+                    }
+                }
+
+                AtlasFieldGroup {
+                    SectionLabel { label: "Secret key"; }
+                    iam-secret-field := AtlasTextField {
+                        text <=> root.iam-secret-key;
+                        password: true;
+                        placeholder: "Secret key";
+                        edited(value) => { root.iam-secret-key-changed(value); }
+                        changed focused => { iam-secret-focus = self.focused; }
+                    }
+                }
+
+                AtlasFieldGroup {
+                    SectionLabel { label: "Session token"; }
+                    iam-session-field := AtlasTextField {
+                        text <=> root.iam-session-token;
+                        placeholder: "Optional";
+                        edited(value) => { root.iam-session-token-changed(value); }
+                        changed focused => { iam-session-focus = self.focused; }
+                    }
+                }
+            }
+        }
+
+        // ── Save-to-keychain checkbox + Label ────────────────────────────
+        HorizontalLayout {
+            height: Theme.control-height;
+            spacing: Theme.space-3;
+            alignment: center;
+
+            keychain-box := Rectangle {
+                width: 18px;
+                height: 18px;
+                border-width: 1px;
+                border-color: keychain-ta.has-hover ? Theme.secondary-button-border-hover : Theme.field-border;
+                border-radius: Theme.radius-xs;
+                background: root.save-to-keychain ? Theme.segmented-selected-bg : Theme.field-bg;
+
+                keychain-ta := TouchArea {
+                    width: 100%; height: 100%;
+                    clicked => { root.toggle-save-to-keychain(); }
+                }
+
+                if root.save-to-keychain: Text {
+                    text: "✓";
+                    color: Theme.fg;
+                    font-size: 12px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: "Save to keychain";
+                color: Theme.field-label-color;
+                font-size: Theme.field-label-size;
+                vertical-alignment: center;
+            }
+
+            label-field := AtlasTextField {
+                horizontal-stretch: 1;
+                text <=> root.label-text;
+                placeholder: "Label (Production)";
+                edited(value) => { root.label-changed(value); }
+                escape-pressed => { root.cancel(); }
+                changed focused => { label-focus = self.focused; }
+            }
+        }
+
+        // ── Status area (multi-line error / info) ────────────────────────
+        if root.status-text != "": Rectangle {
+            height: 32px;
+            background: root.status-is-error
+                ? Theme.error.with-alpha(0.12)
+                : Theme.list-bg;
+            border-width: 1px;
+            border-color: root.status-is-error ? Theme.error.with-alpha(0.52) : Theme.list-border;
+            border-radius: Theme.list-radius;
+
+            HorizontalLayout {
+                padding-left: Theme.space-3;
+                padding-right: Theme.space-3;
+                alignment: center;
+
+                Text {
+                    text: root.status-text;
+                    color: root.status-is-error ? Theme.error : Theme.fg-muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
+        // ── Saved servers list ───────────────────────────────────────────
+        VerticalLayout {
+            height: root.saved-block-h;
+            spacing: Theme.space-1 + 2px;
+
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                alignment: space-between;
+
+                SectionLabel { label: "Saved Servers"; }
+
+                Text {
+                    text: root.saved-servers.length > 0
+                        ? root.saved-servers.length + " total"
+                        : "";
+                    color: Theme.fg-faint;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+            }
+
+            if root.saved-servers.length == 0 : AtlasList {
+                height: 44px;
+
+                Text {
+                    text: "No saved servers yet. Save a connection to reuse it here.";
+                    color: Theme.placeholder-color;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    width: parent.width - Theme.space-4 * 2;
+                    x: Theme.space-4;
+                }
+            }
+
+            if root.saved-servers.length > 0 : AtlasList {
+                height: min(5 * Theme.list-row-height, root.saved-servers.length * Theme.list-row-height);
+
+                saved-list := ScrollView {
+                    x: 0px; y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    viewport-width: parent.width;
+
+                    VerticalLayout {
+                        width: parent.width;
+                        spacing: 0px;
+                        padding: Theme.space-1;
+
+                        for entry[i] in root.saved-servers : saved-row := AtlasListRow {
+                            highlighted: row-ta.has-hover;
+                            muted: entry.delete-pending;
+
+                            row-ta := TouchArea {
+                                width: 100%; height: 100%;
+                                clicked => { root.saved-server-selected(entry.id); }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: Theme.space-2;
+                                padding-right: Theme.space-2;
+                                spacing: Theme.space-3;
+                                alignment: center;
+
+                                Text {
+                                    text: entry.glyph;
+                                    font-size: 17px;
+                                    vertical-alignment: center;
+                                    width: 22px;
+                                    horizontal-alignment: center;
+                                }
+
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 0px;
+                                    alignment: center;
+
+                                    Text {
+                                        text: entry.label;
+                                        color: Theme.fg;
+                                        font-size: 12px;
+                                        font-weight: 500;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: entry.address;
+                                        color: Theme.fg-muted;
+                                        font-size: 10px;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                Text {
+                                    text: entry.last-connected-relative;
+                                    color: Theme.fg-faint;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                    width: 76px;
+                                    horizontal-alignment: right;
+                                }
+
+                                AtlasSecondaryButton {
+                                    button-width: entry.delete-pending ? 88px : 56px;
+                                    text: entry.delete-pending ? "Confirm" : "Delete";
+                                    clicked => {
+                                        if entry.delete-pending {
+                                            root.saved-server-delete-confirmed(entry.id);
+                                        } else {
+                                            root.saved-server-delete-requested(entry.id);
+                                        }
+                                    }
+                                }
+
+                                if entry.delete-pending : AtlasSecondaryButton {
+                                    button-width: 56px;
+                                    text: "Cancel";
+                                    clicked => { root.saved-server-delete-cancelled(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: min(620px, parent.width - Theme.space-6 * 2);
-            height: min(820px, parent.height - Theme.space-6 * 2);
-            background: Theme.panel-bg-elevated;
-            border-width: 1px;
-            border-color: Theme.border;
-            border-radius: Theme.radius-lg;
+            vertical-stretch: 1;
+            background: transparent;
+        }
 
-            // Swallow clicks on the panel body so they never propagate to the
-            // scrim's dismiss handler.
-            TouchArea {
-                width: 100%;
-                height: 100%;
+        // ── Buttons ──────────────────────────────────────────────────────
+        HorizontalLayout {
+            height: Theme.control-height;
+            spacing: Theme.space-2;
+            alignment: end;
+
+            AtlasSecondaryButton {
+                button-width: 78px;
+                text: "Cancel";
+                enabled: !root.connecting;
+                clicked => { root.cancel(); }
             }
 
-            VerticalLayout {
-                padding: Theme.space-4;
-                spacing: Theme.space-3;
-
-                // ── Title ────────────────────────────────────────────────────
-                Text {
-                    text: "Connect to Server";
-                    color: Theme.fg;
-                    font-size: 17px;
-                    font-weight: 600;
-                    horizontal-alignment: left;
+            AtlasSecondaryButton {
+                button-width: 126px;
+                text: "Save + Connect";
+                enabled: !root.connecting;
+                clicked => {
+                    if !root.connecting { root.save-and-connect(); }
                 }
-
-                Rectangle { height: 1px; background: Theme.border; }
-
-                // ── Backend picker (segmented control) ───────────────────────
-                VerticalLayout {
-                    spacing: Theme.space-1;
-
-                    Text {
-                        text: "BACKEND";
-                        color: Theme.fg-muted;
-                        font-size: 10px;
-                        font-weight: 600;
-                        
-                    }
-
-                    HorizontalLayout {
-                        spacing: Theme.space-1;
-
-                        for label[i] in ["SFTP", "FTP", "WebDAV", "S3"]: Rectangle {
-                            horizontal-stretch: 1;
-                            height: 30px;
-                            border-radius: Theme.radius-sm;
-                            border-width: 1px;
-                            border-color: backend-index == i ? Theme.accent : Theme.border;
-                            background: backend-index == i ? Theme.accent : Theme.panel-bg;
-
-                            TouchArea {
-                                width: 100%; height: 100%;
-                                clicked => { root.backend-changed(i); }
-                            }
-
-                            Text {
-                                text: label;
-                                color: backend-index == i ? Theme.accent-fg : Theme.fg;
-                                font-size: 12px;
-                                font-weight: backend-index == i ? 600 : 400;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-
-                // ── TOFU host-key banner (Phase 2.6) ────────────────────────
-                //
-                // Two variants share one Rectangle to keep layout simple:
-                //   * `host-key-mismatch-known-fingerprint == ""`  → first-time
-                //     host: subtle accent-soft banner with three buttons.
-                //   * `host-key-mismatch-known-fingerprint != ""`  → key changed:
-                //     red-tinted banner with an extra "known" fingerprint line
-                //     and an emphatic scary-warning header.
-                //
-                // Fingerprints render in the monospace theme font so the
-                // 43-char SHA-256 body stays aligned when the user compares
-                // two of them. The banner sits above the host row so a
-                // scroll can't hide it.
-                if root.host-key-prompt-visible: Rectangle {
-                    property <bool> is-mismatch: root.host-key-mismatch-known-fingerprint != "";
-                    border-width: 1px;
-                    border-color: is-mismatch ? Theme.error : Theme.accent;
-                    border-radius: Theme.radius-sm;
-                    background: is-mismatch ? #ff6b6b1f : Theme.accent-soft;
-
-                    VerticalLayout {
-                        padding: Theme.space-3;
-                        spacing: Theme.space-2;
-
-                        Text {
-                            text: is-mismatch
-                                ? "⚠ SERVER KEY CHANGED"
-                                : "The authenticity of this host can't be established.";
-                            color: is-mismatch ? Theme.error : Theme.fg;
-                            font-size: 12px;
-                            font-weight: 700;
-                            wrap: word-wrap;
-                        }
-
-                        Text {
-                            text: is-mismatch
-                                ? "Someone may be intercepting your connection, or this server's key legitimately rotated. Verify the new fingerprint before continuing."
-                                : "Verify the fingerprint below matches what the server operator published, then trust it.";
-                            color: Theme.fg-muted;
-                            font-size: 11px;
-                            wrap: word-wrap;
-                        }
-
-                        // Compact key/value grid — subject, offered fp, and
-                        // (for mismatch) the previously-known fp.
-                        VerticalLayout {
-                            spacing: Theme.space-1;
-
-                            HorizontalLayout {
-                                spacing: Theme.space-2;
-                                Text {
-                                    text: "host";
-                                    color: Theme.fg-faint;
-                                    font-size: 10px;
-                                    font-weight: 600;
-                                    width: 60px;
-                                }
-                                Text {
-                                    text: root.host-key-host;
-                                    color: Theme.fg;
-                                    font-family: Theme.monospace;
-                                    font-size: 12px;
-                                    horizontal-stretch: 1;
-                                    wrap: word-wrap;
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: Theme.space-2;
-                                Text {
-                                    text: is-mismatch ? "offered" : "fingerprint";
-                                    color: Theme.fg-faint;
-                                    font-size: 10px;
-                                    font-weight: 600;
-                                    width: 60px;
-                                }
-                                Text {
-                                    text: root.host-key-fingerprint;
-                                    color: is-mismatch ? Theme.error : Theme.fg;
-                                    font-family: Theme.monospace;
-                                    font-size: 12px;
-                                    horizontal-stretch: 1;
-                                    wrap: word-wrap;
-                                }
-                            }
-
-                            if is-mismatch: HorizontalLayout {
-                                spacing: Theme.space-2;
-                                Text {
-                                    text: "known";
-                                    color: Theme.fg-faint;
-                                    font-size: 10px;
-                                    font-weight: 600;
-                                    width: 60px;
-                                }
-                                Text {
-                                    text: root.host-key-mismatch-known-fingerprint;
-                                    color: Theme.fg;
-                                    font-family: Theme.monospace;
-                                    font-size: 12px;
-                                    horizontal-stretch: 1;
-                                    wrap: word-wrap;
-                                }
-                            }
-                        }
-
-                        // Buttons row. Cancel is visually emphasised via the
-                        // accent-outlined variant so it reads as the default
-                        // action. The FocusScope grabs focus when the banner
-                        // appears so the user can press Enter or Escape without
-                        // touching the mouse.
-                        host-key-focus := FocusScope {
-                            width: 100%;
-                            height: 30px;
-                            key-pressed(event) => {
-                                if event.text == Key.Escape {
-                                    root.host-key-cancel();
-                                    return accept;
-                                }
-                                if event.text == Key.Return {
-                                    // Enter defaults to Cancel — the safest
-                                    // choice per SSH's own prompt convention.
-                                    root.host-key-cancel();
-                                    return accept;
-                                }
-                                reject;
-                            }
-                            init => { self.focus(); }
-
-                            HorizontalLayout {
-                                spacing: Theme.space-2;
-
-                                Rectangle {
-                                    horizontal-stretch: 1;
-                                    height: 30px;
-                                    background: Theme.panel-bg;
-                                    border-width: 1px;
-                                    border-color: Theme.border;
-                                    border-radius: Theme.radius-sm;
-                                    TouchArea {
-                                        width: 100%; height: 100%;
-                                        clicked => { root.host-key-trust-once(); }
-                                    }
-                                    Text {
-                                        text: "Trust once";
-                                        color: Theme.fg;
-                                        font-size: 12px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                Rectangle {
-                                    horizontal-stretch: 1;
-                                    height: 30px;
-                                    background: is-mismatch ? Theme.error : Theme.accent;
-                                    border-width: 1px;
-                                    border-color: is-mismatch ? Theme.error : Theme.accent;
-                                    border-radius: Theme.radius-sm;
-                                    TouchArea {
-                                        width: 100%; height: 100%;
-                                        clicked => { root.host-key-trust-always(); }
-                                    }
-                                    Text {
-                                        text: is-mismatch ? "Replace and continue" : "Trust always";
-                                        color: Theme.accent-fg;
-                                        font-size: 12px;
-                                        font-weight: 600;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                Rectangle {
-                                    horizontal-stretch: 1;
-                                    height: 30px;
-                                    background: Theme.panel-bg;
-                                    border-width: 1px;
-                                    border-color: Theme.accent;
-                                    border-radius: Theme.radius-sm;
-                                    TouchArea {
-                                        width: 100%; height: 100%;
-                                        clicked => { root.host-key-cancel(); }
-                                    }
-                                    Text {
-                                        text: "Cancel";
-                                        color: Theme.accent;
-                                        font-size: 12px;
-                                        font-weight: 600;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // ── Host / Path row ──────────────────────────────────────────
-                HorizontalLayout {
-                    spacing: Theme.space-2;
-
-                    // Host — accepts either `host.example.com` or
-                    // `host.example.com:2222`. The Rust controller
-                    // splits any `:PORT` suffix off into the internal
-                    // `port` state field on edit (see `set_host`).
-                    VerticalLayout {
-                        horizontal-stretch: 3;
-                        spacing: Theme.space-1;
-
-                        Text {
-                            text: is-s3 ? "BUCKET" : "HOST";
-                            color: Theme.fg-muted;
-                            font-size: 10px;
-                            font-weight: 600;
-                            
-                        }
-
-                        Rectangle {
-                            height: 30px;
-                            border-width: 1px;
-                            border-color: host-input.has-focus ? Theme.accent : Theme.border;
-                            border-radius: Theme.radius-sm;
-                            background: Theme.panel-bg;
-
-                            // Whole cell (padding + placeholder area) delegates
-                            // clicks to the TextInput. Sits below the
-                            // HorizontalLayout so glyph-hits still land on the
-                            // input directly (TextInput is topmost).
-                            TouchArea {
-                                width: 100%;
-                                height: 100%;
-                                clicked => { host-input.focus(); }
-                            }
-
-                            HorizontalLayout {
-                                padding-left: Theme.space-3;
-                                padding-right: Theme.space-3;
-                                alignment: center;
-
-                                host-input := TextInput {
-                                    init => { self.focus(); }
-                                    text <=> root.host;
-                                    color: Theme.fg;
-                                    font-size: Theme.font-size;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                    horizontal-stretch: 1;
-                                    edited => { root.host-changed(self.text); }
-                                    changed has-focus => { host-focus = self.has-focus; }
-                                    accepted => {
-                                        if !root.connecting { root.connect(); }
-                                    }
-                                    key-pressed(event) => {
-                                        if event.text == Key.Escape {
-                                            root.cancel();
-                                            return accept;
-                                        }
-                                        reject;
-                                    }
-                                }
-
-                                if root.host == "": Text {
-                                    text: host-placeholder;
-                                    color: Theme.fg-faint;
-                                    font-size: Theme.font-size;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
-                                }
-                            }
-                        }
-                    }
-
-
-                }
-
-                // ── Path (own row so it can be wide) ─────────────────────────
-                VerticalLayout {
-                    spacing: Theme.space-1;
-
-                    Text {
-                        text: is-s3 ? "PREFIX" : "PATH";
-                        color: Theme.fg-muted;
-                        font-size: 10px;
-                        font-weight: 600;
-                        
-                    }
-
-                    Rectangle {
-                        height: 30px;
-                        border-width: 1px;
-                        border-color: path-input.has-focus ? Theme.accent : Theme.border;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.panel-bg;
-
-                        TouchArea {
-                            width: 100%;
-                            height: 100%;
-                            clicked => { path-input.focus(); }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: Theme.space-3;
-                            padding-right: Theme.space-3;
-                            alignment: center;
-
-                            path-input := TextInput {
-                                text <=> root.path;
-                                color: Theme.fg;
-                                font-size: Theme.font-size;
-                                vertical-alignment: center;
-                                single-line: true;
-                                horizontal-stretch: 1;
-                                edited => { root.path-changed(self.text); }
-                                changed has-focus => { path-focus = self.has-focus; }
-                                key-pressed(event) => {
-                                    if event.text == Key.Escape {
-                                        root.cancel();
-                                        return accept;
-                                    }
-                                    reject;
-                                }
-                            }
-
-                            if root.path == "": Text {
-                                text: is-s3 ? "prefix/optional" : "/";
-                                color: Theme.fg-faint;
-                                font-size: Theme.font-size;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                        }
-                    }
-                }
-
-                // ── S3 endpoint (non-standard S3 buckets — minio, LocalStack) ─
-                if show-s3-endpoint: VerticalLayout {
-                    spacing: Theme.space-1;
-
-                    Text {
-                        text: "ENDPOINT URL (leave blank for AWS)";
-                        color: Theme.fg-muted;
-                        font-size: 10px;
-                        font-weight: 600;
-                        
-                    }
-
-                    Rectangle {
-                        height: 30px;
-                        border-width: 1px;
-                        border-color: s3ep-input.has-focus ? Theme.accent : Theme.border;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.panel-bg;
-
-                        TouchArea {
-                            width: 100%;
-                            height: 100%;
-                            clicked => { s3ep-input.focus(); }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: Theme.space-3;
-                            padding-right: Theme.space-3;
-                            alignment: center;
-
-                            s3ep-input := TextInput {
-                                text <=> root.s3-endpoint;
-                                color: Theme.fg;
-                                font-size: Theme.font-size;
-                                vertical-alignment: center;
-                                single-line: true;
-                                horizontal-stretch: 1;
-                                edited => { root.s3-endpoint-changed(self.text); }
-                                changed has-focus => { s3-endpoint-focus = self.has-focus; }
-                                key-pressed(event) => {
-                                    if event.text == Key.Escape {
-                                        root.cancel();
-                                        return accept;
-                                    }
-                                    reject;
-                                }
-                            }
-
-                            if root.s3-endpoint == "": Text {
-                                text: "http://localhost:9000";
-                                color: Theme.fg-faint;
-                                font-size: Theme.font-size;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                        }
-                    }
-                }
-
-                // ── Auth method picker (filtered per backend) ────────────────
-                VerticalLayout {
-                    spacing: Theme.space-1;
-
-                    Text {
-                        text: "AUTHENTICATION";
-                        color: Theme.fg-muted;
-                        font-size: 10px;
-                        font-weight: 600;
-                        
-                    }
-
-                    HorizontalLayout {
-                        spacing: Theme.space-1;
-
-                        // Password chip — SFTP / FTP / WebDAV
-                        if is-sftp || is-ftp || is-webdav: Rectangle {
-                            horizontal-stretch: 1;
-                            height: 28px;
-                            border-radius: Theme.radius-sm;
-                            border-width: 1px;
-                            border-color: auth-index == 0 ? Theme.accent : Theme.border;
-                            background: auth-index == 0 ? Theme.accent : Theme.panel-bg;
-
-                            TouchArea {
-                                width: 100%; height: 100%;
-                                clicked => { root.auth-changed(0); }
-                            }
-
-                            Text {
-                                text: "Password";
-                                color: auth-index == 0 ? Theme.accent-fg : Theme.fg;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-
-                        // SSH Key chip — SFTP only
-                        if is-sftp: Rectangle {
-                            horizontal-stretch: 1;
-                            height: 28px;
-                            border-radius: Theme.radius-sm;
-                            border-width: 1px;
-                            border-color: auth-index == 1 ? Theme.accent : Theme.border;
-                            background: auth-index == 1 ? Theme.accent : Theme.panel-bg;
-
-                            TouchArea {
-                                width: 100%; height: 100%;
-                                clicked => { root.auth-changed(1); }
-                            }
-
-                            Text {
-                                text: "SSH Key";
-                                color: auth-index == 1 ? Theme.accent-fg : Theme.fg;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-
-                        // IAM chip — S3 only
-                        if is-s3: Rectangle {
-                            horizontal-stretch: 1;
-                            height: 28px;
-                            border-radius: Theme.radius-sm;
-                            border-width: 1px;
-                            border-color: auth-index == 2 ? Theme.accent : Theme.border;
-                            background: auth-index == 2 ? Theme.accent : Theme.panel-bg;
-
-                            TouchArea {
-                                width: 100%; height: 100%;
-                                clicked => { root.auth-changed(2); }
-                            }
-
-                            Text {
-                                text: "IAM";
-                                color: auth-index == 2 ? Theme.accent-fg : Theme.fg;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-
-                        // Anonymous chip — every backend
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 28px;
-                            border-radius: Theme.radius-sm;
-                            border-width: 1px;
-                            border-color: auth-index == 3 ? Theme.accent : Theme.border;
-                            background: auth-index == 3 ? Theme.accent : Theme.panel-bg;
-
-                            TouchArea {
-                                width: 100%; height: 100%;
-                                clicked => { root.auth-changed(3); }
-                            }
-
-                            Text {
-                                text: "Anonymous";
-                                color: auth-index == 3 ? Theme.accent-fg : Theme.fg;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-
-                // ── Username (hidden for anon and IAM) ───────────────────────
-                if show-username: VerticalLayout {
-                    spacing: Theme.space-1;
-
-                    Text {
-                        text: "USERNAME";
-                        color: Theme.fg-muted;
-                        font-size: 10px;
-                        font-weight: 600;
-                        
-                    }
-
-                    Rectangle {
-                        height: 30px;
-                        border-width: 1px;
-                        border-color: user-input.has-focus ? Theme.accent : Theme.border;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.panel-bg;
-
-                        TouchArea {
-                            width: 100%;
-                            height: 100%;
-                            clicked => { user-input.focus(); }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: Theme.space-3;
-                            padding-right: Theme.space-3;
-                            alignment: center;
-
-                            user-input := TextInput {
-                                text <=> root.username;
-                                color: Theme.fg;
-                                font-size: Theme.font-size;
-                                vertical-alignment: center;
-                                single-line: true;
-                                horizontal-stretch: 1;
-                                edited => { root.username-changed(self.text); }
-                                changed has-focus => { username-focus = self.has-focus; }
-                                key-pressed(event) => {
-                                    if event.text == Key.Escape {
-                                        root.cancel();
-                                        return accept;
-                                    }
-                                    reject;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // ── Password (Password auth only) ────────────────────────────
-                if show-password: VerticalLayout {
-                    spacing: Theme.space-1;
-
-                    Text {
-                        text: "PASSWORD";
-                        color: Theme.fg-muted;
-                        font-size: 10px;
-                        font-weight: 600;
-                        
-                    }
-
-                    Rectangle {
-                        height: 30px;
-                        border-width: 1px;
-                        border-color: pw-input.has-focus ? Theme.accent : Theme.border;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.panel-bg;
-
-                        TouchArea {
-                            width: 100%;
-                            height: 100%;
-                            clicked => { pw-input.focus(); }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: Theme.space-3;
-                            padding-right: Theme.space-3;
-                            alignment: center;
-
-                            pw-input := TextInput {
-                                text <=> root.password;
-                                color: Theme.fg;
-                                font-size: Theme.font-size;
-                                vertical-alignment: center;
-                                single-line: true;
-                                horizontal-stretch: 1;
-                                input-type: InputType.password;
-                                edited => { root.password-changed(self.text); }
-                                changed has-focus => { password-focus = self.has-focus; }
-                                accepted => {
-                                    if !root.connecting {
-                                        if root.save-to-keychain {
-                                            root.save-and-connect();
-                                        } else {
-                                            root.connect();
-                                        }
-                                    }
-                                }
-                                key-pressed(event) => {
-                                    if event.text == Key.Escape {
-                                        root.cancel();
-                                        return accept;
-                                    }
-                                    reject;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // ── SSH key path + Browse (SSH Key auth only) ────────────────
-                if show-ssh-key: VerticalLayout {
-                    spacing: Theme.space-1;
-
-                    Text {
-                        text: "SSH PRIVATE KEY PATH";
-                        color: Theme.fg-muted;
-                        font-size: 10px;
-                        font-weight: 600;
-                        
-                    }
-
-                    HorizontalLayout {
-                        spacing: Theme.space-2;
-
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 30px;
-                            border-width: 1px;
-                            border-color: ssh-input.has-focus ? Theme.accent : Theme.border;
-                            border-radius: Theme.radius-sm;
-                            background: Theme.panel-bg;
-
-                            TouchArea {
-                                width: 100%;
-                                height: 100%;
-                                clicked => { ssh-input.focus(); }
-                            }
-
-                            HorizontalLayout {
-                                padding-left: Theme.space-3;
-                                padding-right: Theme.space-3;
-                                alignment: center;
-
-                                ssh-input := TextInput {
-                                    text <=> root.ssh-key-path;
-                                    color: Theme.fg;
-                                    font-size: Theme.font-size;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                    horizontal-stretch: 1;
-                                    edited => { root.ssh-key-path-changed(self.text); }
-                                    changed has-focus => { ssh-key-focus = self.has-focus; }
-                                    key-pressed(event) => {
-                                        if event.text == Key.Escape {
-                                            root.cancel();
-                                            return accept;
-                                        }
-                                        reject;
-                                    }
-                                }
-
-                                if root.ssh-key-path == "": Text {
-                                    text: "~/.ssh/id_ed25519";
-                                    color: Theme.fg-faint;
-                                    font-size: Theme.font-size;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            width: 78px;
-                            height: 30px;
-                            border-width: 1px;
-                            border-color: Theme.border;
-                            border-radius: Theme.radius-sm;
-                            background: Theme.panel-bg;
-
-                            TouchArea {
-                                width: 100%; height: 100%;
-                                clicked => { root.browse-ssh-key(); }
-                            }
-
-                            Text {
-                                text: "Browse…";
-                                color: Theme.fg;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-
-                // ── IAM credentials (S3 IAM auth only) ───────────────────────
-                if show-iam: VerticalLayout {
-                    spacing: Theme.space-2;
-
-                    VerticalLayout {
-                        spacing: Theme.space-1;
-                        Text {
-                            text: "ACCESS KEY ID";
-                            color: Theme.fg-muted;
-                            font-size: 10px;
-                            font-weight: 600;
-                            
-                        }
-                        Rectangle {
-                            height: 30px;
-                            border-width: 1px;
-                            border-color: iam-key.has-focus ? Theme.accent : Theme.border;
-                            border-radius: Theme.radius-sm;
-                            background: Theme.panel-bg;
-
-                            TouchArea {
-                                width: 100%;
-                                height: 100%;
-                                clicked => { iam-key.focus(); }
-                            }
-
-                            HorizontalLayout {
-                                padding-left: Theme.space-3;
-                                padding-right: Theme.space-3;
-                                alignment: center;
-
-                                iam-key := TextInput {
-                                    text <=> root.iam-access-key;
-                                    color: Theme.fg;
-                                    font-size: Theme.font-size;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                    horizontal-stretch: 1;
-                                    edited => { root.iam-access-key-changed(self.text); }
-                                    changed has-focus => { iam-access-focus = self.has-focus; }
-                                }
-                            }
-                        }
-                    }
-
-                    VerticalLayout {
-                        spacing: Theme.space-1;
-                        Text {
-                            text: "SECRET KEY";
-                            color: Theme.fg-muted;
-                            font-size: 10px;
-                            font-weight: 600;
-                            
-                        }
-                        Rectangle {
-                            height: 30px;
-                            border-width: 1px;
-                            border-color: iam-sec.has-focus ? Theme.accent : Theme.border;
-                            border-radius: Theme.radius-sm;
-                            background: Theme.panel-bg;
-
-                            TouchArea {
-                                width: 100%;
-                                height: 100%;
-                                clicked => { iam-sec.focus(); }
-                            }
-
-                            HorizontalLayout {
-                                padding-left: Theme.space-3;
-                                padding-right: Theme.space-3;
-                                alignment: center;
-
-                                iam-sec := TextInput {
-                                    text <=> root.iam-secret-key;
-                                    color: Theme.fg;
-                                    font-size: Theme.font-size;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                    horizontal-stretch: 1;
-                                    input-type: InputType.password;
-                                    edited => { root.iam-secret-key-changed(self.text); }
-                                    changed has-focus => { iam-secret-focus = self.has-focus; }
-                                }
-                            }
-                        }
-                    }
-
-                    VerticalLayout {
-                        spacing: Theme.space-1;
-                        Text {
-                            text: "SESSION TOKEN (OPTIONAL)";
-                            color: Theme.fg-muted;
-                            font-size: 10px;
-                            font-weight: 600;
-                            
-                        }
-                        Rectangle {
-                            height: 30px;
-                            border-width: 1px;
-                            border-color: iam-tok.has-focus ? Theme.accent : Theme.border;
-                            border-radius: Theme.radius-sm;
-                            background: Theme.panel-bg;
-
-                            TouchArea {
-                                width: 100%;
-                                height: 100%;
-                                clicked => { iam-tok.focus(); }
-                            }
-
-                            HorizontalLayout {
-                                padding-left: Theme.space-3;
-                                padding-right: Theme.space-3;
-                                alignment: center;
-
-                                iam-tok := TextInput {
-                                    text <=> root.iam-session-token;
-                                    color: Theme.fg;
-                                    font-size: Theme.font-size;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                    horizontal-stretch: 1;
-                                    edited => { root.iam-session-token-changed(self.text); }
-                                    changed has-focus => { iam-session-focus = self.has-focus; }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // ── Save-to-keychain checkbox + Label ────────────────────────
-                HorizontalLayout {
-                    spacing: Theme.space-3;
-                    alignment: stretch;
-
-                    // Custom checkbox chip (defaults ON per phase-2 design).
-                    Rectangle {
-                        width: 20px;
-                        height: 20px;
-                        y: (parent.height - self.height) / 2;
-                        border-width: 1px;
-                        border-color: Theme.border-strong;
-                        border-radius: Theme.radius-xs;
-                        background: root.save-to-keychain ? Theme.accent : Theme.panel-bg;
-
-                        TouchArea {
-                            width: 100%; height: 100%;
-                            clicked => { root.toggle-save-to-keychain(); }
-                        }
-
-                        if root.save-to-keychain: Text {
-                            text: "✓";
-                            color: Theme.accent-fg;
-                            font-size: 13px;
-                            font-weight: 700;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    Text {
-                        y: (parent.height - self.height) / 2;
-                        text: "Save to keychain";
-                        color: Theme.fg;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                    }
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 30px;
-                        border-width: 1px;
-                        border-color: label-input.has-focus ? Theme.accent : Theme.border;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.panel-bg;
-
-                        TouchArea {
-                            width: 100%;
-                            height: 100%;
-                            clicked => { label-input.focus(); }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: Theme.space-3;
-                            padding-right: Theme.space-3;
-                            alignment: center;
-
-                            label-input := TextInput {
-                                text <=> root.label-text;
-                                color: Theme.fg;
-                                font-size: Theme.font-size;
-                                vertical-alignment: center;
-                                single-line: true;
-                                horizontal-stretch: 1;
-                                edited => { root.label-changed(self.text); }
-                                changed has-focus => { label-focus = self.has-focus; }
-                                key-pressed(event) => {
-                                    if event.text == Key.Escape {
-                                        root.cancel();
-                                        return accept;
-                                    }
-                                    reject;
-                                }
-                            }
-
-                            if root.label-text == "": Text {
-                                text: "Label (e.g. prod, home NAS)";
-                                color: Theme.fg-faint;
-                                font-size: Theme.font-size;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                        }
-                    }
-                }
-
-                // ── Status area (multi-line error / info) ────────────────────
-                if root.status-text != "": Rectangle {
-                    height: 32px;
-                    background: root.status-is-error
-                        ? Theme.error.with-alpha(0.12)
-                        : Theme.accent-soft;
-                    border-radius: Theme.radius-sm;
-
-                    HorizontalLayout {
-                        padding-left: Theme.space-3;
-                        padding-right: Theme.space-3;
-                        alignment: center;
-
-                        Text {
-                            text: root.status-text;
-                            color: root.status-is-error ? Theme.error : Theme.fg;
-                            font-size: 12px;
-                            wrap: word-wrap;
-                            vertical-alignment: center;
-                            horizontal-alignment: left;
-                            horizontal-stretch: 1;
-                        }
-                    }
-                }
-
-                // ── Saved servers list ───────────────────────────────────────
-                //
-                // Displayed under the connection form. Each row shows the
-                // backend glyph, the label + full URI, a relative-time
-                // hint, and Edit / Delete affordances. Clicking anywhere
-                // outside those controls populates the form. Delete uses a
-                // two-step confirm — the first click flips `delete-pending`
-                // on that row (chip morphs into "Delete?" / "Cancel"), a
-                // subsequent click on "Delete?" removes the entry and its
-                // keychain secret. Capped at ~6 visible rows via
-                // `saved-servers-viewport`.
-                Rectangle { height: 1px; background: Theme.border; }
-
-                VerticalLayout {
-                    spacing: Theme.space-1;
-
-                    HorizontalLayout {
-                        spacing: Theme.space-2;
-                        alignment: space-between;
-
-                        Text {
-                            text: "SAVED SERVERS";
-                            color: Theme.fg-muted;
-                            font-size: 10px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-
-                        Text {
-                            text: root.saved-servers.length > 0
-                                ? root.saved-servers.length + " total"
-                                : "";
-                            color: Theme.fg-faint;
-                            font-size: 10px;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    if root.saved-servers.length == 0 : Rectangle {
-                        height: 48px;
-                        background: Theme.panel-bg;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        border-radius: Theme.radius-sm;
-
-                        Text {
-                            text: "No saved servers yet. Fill in a connection above and click Save + Connect.";
-                            color: Theme.fg-faint;
-                            font-size: 12px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            wrap: word-wrap;
-                            width: parent.width - Theme.space-4 * 2;
-                            x: Theme.space-4;
-                        }
-                    }
-
-                    // Cap the viewport at ~6 rows (row-h 44px × 6 + spacing).
-                    if root.saved-servers.length > 0 : saved-servers-viewport := Rectangle {
-                        height: min(6 * 44px + Theme.space-1 * 5, root.saved-servers.length * 44px + max(root.saved-servers.length - 1, 0) * Theme.space-1);
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.panel-bg;
-                        clip: true;
-
-                        saved-list := ScrollView {
-                            x: 0px; y: 0px;
-                            width: parent.width;
-                            height: parent.height;
-                            viewport-width: parent.width;
-
-                            VerticalLayout {
-                                width: parent.width;
-                                spacing: Theme.space-1;
-                                padding: Theme.space-1;
-
-                                for entry[i] in root.saved-servers : Rectangle {
-                                    height: 40px;
-                                    background: row-ta.has-hover ? Theme.hover-bg : transparent;
-                                    border-radius: Theme.radius-xs;
-                                    border-width: entry.delete-pending ? 1px : 0px;
-                                    border-color: Theme.error;
-
-                                    row-ta := TouchArea {
-                                        width: 100%; height: 100%;
-                                        clicked => {
-                                            root.saved-server-selected(entry.id);
-                                        }
-                                    }
-
-                                    HorizontalLayout {
-                                        padding-left: Theme.space-2;
-                                        padding-right: Theme.space-2;
-                                        spacing: Theme.space-3;
-                                        alignment: center;
-
-                                        // Backend glyph
-                                        Text {
-                                            text: entry.glyph;
-                                            font-size: 18px;
-                                            vertical-alignment: center;
-                                            width: 22px;
-                                            horizontal-alignment: center;
-                                        }
-
-                                        // Label + address
-                                        VerticalLayout {
-                                            horizontal-stretch: 1;
-                                            spacing: 0px;
-                                            alignment: center;
-
-                                            Text {
-                                                text: entry.label;
-                                                color: Theme.fg;
-                                                font-size: 12px;
-                                                font-weight: 500;
-                                                overflow: elide;
-                                            }
-                                            Text {
-                                                text: entry.address;
-                                                color: Theme.fg-muted;
-                                                font-size: 10px;
-                                                overflow: elide;
-                                            }
-                                        }
-
-                                        // Last-connected relative
-                                        Text {
-                                            text: entry.last-connected-relative;
-                                            color: Theme.fg-faint;
-                                            font-size: 10px;
-                                            vertical-alignment: center;
-                                            width: 76px;
-                                            horizontal-alignment: right;
-                                        }
-
-                                        // Delete button (morphs into "Delete?" chip once armed)
-                                        Rectangle {
-                                            width: entry.delete-pending ? 96px : 64px;
-                                            height: 26px;
-                                            border-radius: Theme.radius-xs;
-                                            border-width: 1px;
-                                            border-color: entry.delete-pending
-                                                ? Theme.error
-                                                : Theme.border;
-                                            background: entry.delete-pending
-                                                ? Theme.error.with-alpha(0.12)
-                                                : Theme.panel-bg;
-
-                                            delete-ta := TouchArea {
-                                                width: 100%; height: 100%;
-                                                clicked => {
-                                                    if entry.delete-pending {
-                                                        root.saved-server-delete-confirmed(entry.id);
-                                                    } else {
-                                                        root.saved-server-delete-requested(entry.id);
-                                                    }
-                                                }
-                                            }
-
-                                            Text {
-                                                text: entry.delete-pending ? "Confirm?" : "Delete";
-                                                color: entry.delete-pending ? Theme.error : Theme.fg-muted;
-                                                font-size: 11px;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-
-                                        // Cancel-delete (only when armed)
-                                        if entry.delete-pending : Rectangle {
-                                            width: 64px;
-                                            height: 26px;
-                                            border-radius: Theme.radius-xs;
-                                            border-width: 1px;
-                                            border-color: Theme.border;
-                                            background: Theme.panel-bg;
-
-                                            cancel-ta := TouchArea {
-                                                width: 100%; height: 100%;
-                                                clicked => { root.saved-server-delete-cancelled(); }
-                                            }
-
-                                            Text {
-                                                text: "Cancel";
-                                                color: Theme.fg-muted;
-                                                font-size: 11px;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Vertical spring so buttons hug the bottom on tall modals.
-                Rectangle {
-                    vertical-stretch: 1;
-                    background: transparent;
-                }
-
-                Rectangle { height: 1px; background: Theme.border; }
-
-                // ── Buttons ──────────────────────────────────────────────────
-                HorizontalLayout {
-                    spacing: Theme.space-2;
-                    alignment: end;
-
-                    Rectangle {
-                        width: 78px;
-                        height: 30px;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        background: Theme.panel-bg;
-                        opacity: root.connecting ? 0.5 : 1.0;
-
-                        TouchArea {
-                            width: 100%; height: 100%;
-                            clicked => { root.cancel(); }
-                        }
-
-                        Text {
-                            text: "Cancel";
-                            color: Theme.fg;
-                            font-size: 13px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    Rectangle {
-                        width: 108px;
-                        height: 30px;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-strong;
-                        background: Theme.panel-bg;
-                        opacity: root.connecting ? 0.5 : 1.0;
-
-                        TouchArea {
-                            width: 100%; height: 100%;
-                            clicked => {
-                                if !root.connecting { root.connect(); }
-                            }
-                        }
-
-                        Text {
-                            text: root.connecting ? "Connecting…" : "Connect";
-                            color: Theme.fg;
-                            font-size: 13px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    Rectangle {
-                        width: 152px;
-                        height: 30px;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.accent;
-                        opacity: root.connecting ? 0.5 : 1.0;
-
-                        TouchArea {
-                            width: 100%; height: 100%;
-                            clicked => {
-                                if !root.connecting { root.save-and-connect(); }
-                            }
-                        }
-
-                        Text {
-                            text: "Save + Connect";
-                            color: Theme.accent-fg;
-                            font-size: 13px;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
+            }
+
+            AtlasPrimaryButton {
+                button-width: 108px;
+                text: root.connecting ? "Connecting…" : "Connect";
+                enabled: !root.connecting;
+                clicked => {
+                    if !root.connecting { root.connect(); }
                 }
             }
         }
