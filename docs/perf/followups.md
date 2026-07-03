@@ -78,7 +78,7 @@ Ordered by expected impact.
   workspace-level `bench/` crate per the perf instructions doc.
 - No bench for `atlas-search::content` (ripgrep-facade). Follow-up
   should compare against `rg` directly on a shared fixture.
-- No bench for `atlas-thumbs::Generator` throughput. The MVP goal
+- No bench for `atlas-thumbs::Generator` throughput. The performance target
   is ≥ 8 thumbs/sec/core for 1080p JPEG @ 256 px; a criterion
   bench would defend that.
 - No bench for `atlas-remote` primitives (would need mock servers).
@@ -97,4 +97,4 @@ Ordered by expected impact.
   `GetFileInformationByHandleEx` (Windows) / `getdents64` (Linux)
   where possible. This is the "stretch goal — zero-copy directory
   enumeration via OS-specific batched APIs" already called out in
-  `performance.instructions.md`. Post-MVP.
+  `performance.instructions.md`. Longer-term.

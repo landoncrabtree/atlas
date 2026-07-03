@@ -5,7 +5,7 @@ description: Guide for adding a new remote-filesystem backend to Atlas (a new sc
 
 Atlas's remote support lives in `crates/atlas-remote/` with one submodule per scheme under `src/vm/`. Every backend owns its full stack — connection, listing, streaming, retry, error mapping — and shares only the pool, retry envelope, TOFU flow, and tokio runtime.
 
-**OpenDAL was removed in Phase 2.3.5.** Do not re-introduce a unified remote-fs adapter. If two backends have divergent semantics, they get divergent modules.
+**OpenDAL was removed.** Do not re-introduce a unified remote-fs adapter. If two backends have divergent semantics, they get divergent modules.
 
 ## The registration points
 

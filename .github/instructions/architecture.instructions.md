@@ -84,7 +84,7 @@ Each remote scheme has a dedicated module under `crates/atlas-remote/src/vm/`:
 | WebDAV / WebDAVS | `vm/webdav.rs` | `reqwest` + `quick-xml` | PROPFIND-driven listing |
 | S3 (and compatibles) | `vm/s3.rs` | `object_store` | AWS S3, MinIO, R2, etc. |
 
-**OpenDAL was removed in Phase 2.3.5.** Do not re-introduce a unified remote-fs abstraction — every backend owns its dedicated crate stack. Adding a new backend follows the workflow in [`remote-backend-authoring.instructions.md`](remote-backend-authoring.instructions.md).
+**OpenDAL was removed.** Do not re-introduce a unified remote-fs abstraction — every backend owns its dedicated crate stack. Adding a new backend follows the workflow in [`remote-backend-authoring.instructions.md`](remote-backend-authoring.instructions.md).
 
 ## Design principles
 
@@ -175,11 +175,11 @@ Cross-thread state crossing the UI boundary goes through `slint::invoke_from_eve
 - The daemon connection is treated as best-effort: if it dies, the app reconnects on next query and falls back to embedded mode for the gap.
 - Filesystem operations are atomic where possible (rename-on-write for config) and produce undo entries for trash/rename in `atlas-ops`.
 
-## What lives outside this repo (future)
+## Potential extensions outside the current core
 
 - The Slint live preview tool (`slint-viewer`, installed separately).
-- An optional CLI (`atlas`) for headless operations — post-MVP.
-- Plugin runtime (WASM or similar) — post-MVP, but the action-ID indirection in `atlas-keymap` is intentional groundwork.
+- An optional CLI (`atlas`) for headless operations — not part of the current core.
+- Plugin runtime (WASM or similar) — not part of the current core, but the action-ID indirection in `atlas-keymap` is intentional groundwork.
 
 ## When applying this architecture
 

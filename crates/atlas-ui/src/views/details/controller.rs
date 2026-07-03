@@ -508,7 +508,7 @@ impl DetailsController {
 
     /// Rebuild every row from the current location snapshot and push
     /// the result to Slint. Called from `AppShell::set_icon_pack` on
-    /// live-reload (Phase 2.11) so the pack toggle actually swaps the
+    /// live-reload so the pack toggle actually swaps the
     /// per-row glyph strings — a pure Slint font swap isn't enough:
     /// each row's `kind_icon` field contains a different string per
     /// pack (`\u{e7a8}` vs `[c]`, etc.).

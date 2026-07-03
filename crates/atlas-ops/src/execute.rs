@@ -176,7 +176,7 @@ async fn execute_copy(
             .map_err(|source| AtlasError::io(Some(local.to_path_buf()), source))?;
     }
 
-    let _ = policy; // Conflict resolution for cross-backend ops is Overwrite in MVP.
+    let _ = policy; // Cross-backend conflict handling currently resolves to overwrite.
 
     for source in sources.iter() {
         let file_name = source.file_name().ok_or_else(|| {

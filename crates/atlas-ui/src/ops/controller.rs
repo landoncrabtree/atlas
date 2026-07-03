@@ -16,13 +16,13 @@
 //!   `background_current_foreground`, `cancel_current_foreground`) are
 //!   safe to call from any thread.
 //!
-//! # Conflict resolution (MVP)
+//! # Conflict resolution
 //!
 //! Copy and Move default to [`atlas_ops::ConflictPolicy::RenameWithSuffix`].
 //! If the queue raises [`atlas_ops::OpEvent::Conflict`] (which requires a
 //! `Prompt` policy), this controller auto-resolves with
 //! [`atlas_ops::ConflictDecision::Skip`] and logs a warning. A modal dialog
-//! for interactive resolution is a post-MVP follow-up.
+//! for interactive resolution is a follow-up.
 
 use std::{
     sync::{
@@ -149,8 +149,6 @@ impl OpsController {
     }
 
     /// Submit a Rename operation.
-    ///
-    /// # MVP note
     ///
     /// The rename UI dialog is not yet implemented. For now this submits the
     /// operation directly with the provided `new_name`. Callers (e.g. the F2
@@ -350,13 +348,13 @@ impl OpsController {
                 dest,
                 resolver,
             } => {
-                // MVP: auto-skip on conflict prompt (safe default; no overwrite without explicit UI).
-                // TODO: surface a conflict-resolution modal (post-MVP).
+                // Auto-skip on conflict prompt (safe default; no overwrite without explicit UI).
+                // TODO: surface a conflict-resolution modal.
                 tracing::warn!(
                     op_id = id,
                     source = %source.display(),
                     dest = %dest.display(),
-                    "ops conflict — auto-skipping (MVP: no conflict dialog yet)"
+                    "ops conflict — auto-skipping (no conflict dialog yet)"
                 );
                 resolver.resolve(ConflictDecision::Skip);
             }

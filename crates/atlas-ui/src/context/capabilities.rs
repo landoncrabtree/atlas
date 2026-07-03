@@ -25,7 +25,7 @@ pub struct ContextTarget {
     /// disables destructive actions like Rename / Trash / Paste
     /// through the capability resolver.
     ///
-    /// MVP: local entries are always writable; remote entries are
+    /// Current model: local entries are always writable; remote entries are
     /// writable unless the caller can positively identify a
     /// read-only host. The upload-on-write flow surfaces per-op
     /// failures separately (see [`crate::remote::preview_watch`]).

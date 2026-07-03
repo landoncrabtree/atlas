@@ -100,7 +100,7 @@ fn cmd_bracket_back_forward_remount_on_remote_pane() -> Result<()> {
     // Drive the tab's back/forward exactly the way the shell does
     // when Cmd+[ / Cmd+] fires. Tab is the sole owner of history —
     // the pane state that used to live on NavigationController was
-    // migrated to TabModel in Phase 2.
+    // migrated to TabModel.
     let mut tab = TabModel::new(loc_a.clone(), 100, Default::default(), Default::default());
     tab.navigate_to(loc_b.clone());
     tab.navigate_to(loc_c.clone());

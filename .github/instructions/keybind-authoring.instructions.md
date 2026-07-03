@@ -64,7 +64,7 @@ Rules of thumb:
 - **Chord aliases**: if the action should be reachable from multiple chords, add multiple bindings for the same action ID. Do **not** create a duplicate action ID for the second chord.
 - **Modifier order**: use the canonical Slint order (`shift-`, `ctrl-`, `alt-`, `cmd-`). The regen test enforces this.
 
-Existing landmark bindings (as of Phase 2.5):
+Existing landmark bindings:
 
 | Action | macOS | Linux / Windows |
 |---|---|---|

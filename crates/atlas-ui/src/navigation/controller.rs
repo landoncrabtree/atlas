@@ -152,7 +152,7 @@ impl NavigationController {
     /// Remote locations are accepted at the API level but not yet routed
     /// through this controller — the caller sees a `warn!` and the pane
     /// is left unchanged. TODO(remote): wire through the atlas-remote
-    /// backend registry in Phase 2.2.
+    /// backend registry.
     pub fn navigate(&self, pane: usize, location: impl Into<Location>) {
         let location = location.into();
         let Some(canonical) = self.resolve_local(location) else {

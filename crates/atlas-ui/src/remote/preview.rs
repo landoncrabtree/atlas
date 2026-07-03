@@ -1,4 +1,4 @@
-//! Preview cache for remote file open (Phase 2.7).
+//! Preview cache for remote file open.
 //!
 //! When the user activates (double-click / Enter / view action) a file
 //! entry on a remote pane, `fs::View` cannot ship the bare

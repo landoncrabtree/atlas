@@ -7,8 +7,8 @@
 //!
 //! # Scope
 //!
-//! The crate is intentionally minimal — this is the Phase 2
-//! *foundation* only:
+//! The crate is intentionally minimal: Atlas exposes a focused
+//! remote-backend foundation, not a general-purpose VFS:
 //!
 //!   * [`backend::open`] returns an [`atlas_fs::LocationViewModel`]
 //!     for a [`atlas_core::Location`], delegating to
@@ -19,13 +19,13 @@
 //!     stored out-of-tree from the workspace state.
 //!
 //! Higher-level policy (connection pooling, retries, saved-server
-//! catalogues) lives in later phases. The [`stream`] module already
-//! provides a chunked async→async copy pipeline that `atlas-ops`
-//! will reuse for cross-backend transfers.
+//! catalogues) builds on this layer. The [`stream`] module provides
+//! a chunked async→async copy pipeline that `atlas-ops` reuses for
+//! cross-backend transfers.
 //!
 //! # Cross-platform backend stack
 //!
-//! Phase 2.3.5 replaced the earlier OpenDAL dependency with four
+//! Atlas replaced the earlier OpenDAL dependency with four
 //! pure-Rust crates so Windows builds work out of the box:
 //!
 //! | Backend | Crate |

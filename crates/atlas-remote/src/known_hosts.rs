@@ -12,7 +12,7 @@
 //! The on-disk format matches the standard `sshd(8)` `known_hosts` grammar so
 //! entries copy-and-paste cleanly in either direction. Both plain and hashed
 //! host patterns are parsed on read; only plain entries are emitted on write
-//! (per Phase 2.6 non-goals).
+//! (parse-only; Atlas does not write hashed known-host entries).
 //!
 //! # Fingerprint format
 //!
@@ -294,7 +294,7 @@ impl KnownHosts {
                 continue;
             }
             let HostPattern::Plain(tokens) = &entry.pattern else {
-                // We never write hashed entries (parse-only per Phase 2.6),
+                // We never write hashed entries (parse-only),
                 // but we round-trip atlas-owned hashed entries as-is if
                 // somehow present — future-proofing.
                 continue;
@@ -393,7 +393,7 @@ fn parse_line(raw: &str, origin: EntryOrigin) -> Result<Option<KnownHostEntry>, 
     }
     // OpenSSH supports optional `@marker` prefixes (`@cert-authority`,
     // `@revoked`). We skip such lines — cert-authority delegation isn't in
-    // scope for Phase 2.6.
+    // scope for the current known-hosts implementation.
     if line.starts_with('@') {
         return Ok(None);
     }
@@ -475,7 +475,7 @@ fn format_host_token(host: &str, port: u16) -> String {
 /// all, and it's not our job to complain.
 //
 // TODO(windows): PuTTY registry `HKEY_CURRENT_USER\Software\SimonTatham\
-// PuTTY\SshHostKeys` as tertiary lookup. Deferred past Phase 2.6 — TOFU
+// PuTTY\SshHostKeys` as tertiary lookup. Deferred — TOFU
 // covers Windows users adequately; PuTTY compatibility is a nice-to-have
 // for the subset of Windows shops that predate Windows-OpenSSH (2018+).
 fn ssh_known_hosts_path() -> Option<PathBuf> {

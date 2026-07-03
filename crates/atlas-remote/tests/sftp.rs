@@ -453,7 +453,7 @@ async fn follow_symlink_returns_target_location() -> Result<()> {
     Ok(())
 }
 
-/// Regression for Phase 2.7's "Trust always doesn't stick on deeper
+/// Regression for the "Trust always doesn't stick on deeper
 /// nav" bug: with an `AutoTrust` default installed at process level
 /// (mirroring what the connect controller does when the user picks
 /// "Trust always"), `SftpBackend::new` — the code path invoked by

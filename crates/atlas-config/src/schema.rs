@@ -81,7 +81,7 @@ pub struct Ui {
     pub active_pane_border_px: f32,
     /// Filetype-icon rendering options (glyph pack selection + friends).
     /// See [`Icons`] for the full sub-schema. The `pack` field is the
-    /// cross-platform escape hatch introduced in Phase 2.11: on hosts
+    /// cross-platform escape hatch: on hosts
     /// whose renderer can't reach the bundled Symbols Nerd Font Mono
     /// (rare — the font is embedded via a Slint `import` at compile
     /// time — but possible on trimmed-down Linux distros without
@@ -412,7 +412,7 @@ pub struct Remote {
     pub preview: RemotePreview,
 }
 
-/// Preview cache for remote file open (Phase 2.7). When the user
+/// Preview cache for remote file open. When the user
 /// activates a file on a remote pane we download it into
 /// `<cache_dir>/<sha256(uri:mtime:size)>/<name>` and hand the local
 /// copy off to `open::that`. Subsequent opens of the same file are a

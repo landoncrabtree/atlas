@@ -570,7 +570,7 @@ impl GalleryController {
 
     /// Rebuild every strip row + the preview-fallback glyph from the
     /// current entries snapshot and push both back to Slint. Called
-    /// from `AppShell::set_icon_pack` on live-reload (Phase 2.11).
+    /// from `AppShell::set_icon_pack` on live-reload.
     /// Unlike `refresh_from_location`, this deliberately preserves
     /// preview state (decoded image, strip thumbs) so the pack swap
     /// doesn't wipe an already-loaded preview — only glyph strings

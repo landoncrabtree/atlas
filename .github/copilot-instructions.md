@@ -4,7 +4,7 @@ These instructions apply to all Copilot interactions in this repository (chat, c
 
 ## Project at a glance
 
-Atlas is a cross-platform, performance-focused file explorer for developers and power users, written in **Rust** with a **Slint** (Skia renderer) UI. Architecture is a Cargo workspace of small, focused crates. macOS is the primary target; Linux and Windows follow. License is **proprietary**.
+Atlas is a cross-platform, performance-focused file explorer for developers and power users, written in **Rust** with a **Slint** (Skia renderer) UI. Architecture is a Cargo workspace of small, focused crates. macOS is the primary target; Linux and Windows follow. License is **MIT**.
 
 ## North-star principles
 
@@ -36,7 +36,7 @@ Atlas is a cross-platform, performance-focused file explorer for developers and 
 | Remote S3 (and compatibles) | `object_store` |
 | Remote runtime | `tokio` (multi-threaded, shared inside `atlas-remote` + `atlas-ops` only) |
 
-**Do not** introduce a new GUI framework, a new async runtime in library crates outside the remote/ops shared tokio (use channels), or a new error library (use `thiserror` + `anyhow`). **OpenDAL was removed in Phase 2.3.5** — do not re-introduce it or any other unified remote-fs abstraction; every backend has its own dedicated crate under `atlas-remote::vm::<scheme>`.
+**Do not** introduce a new GUI framework, a new async runtime in library crates outside the remote/ops shared tokio (use channels), or a new error library (use `thiserror` + `anyhow`). **OpenDAL was removed** — do not re-introduce it or any other unified remote-fs abstraction; every backend has its own dedicated crate under `atlas-remote::vm::<scheme>`.
 
 We already evaluated and rejected **gpui** (requires full Xcode for Metal shaders) for Slint. Do not re-suggest gpui.
 
@@ -67,7 +67,7 @@ Each crate's `Cargo.toml` consumes dependencies via `workspace.dependencies`. Ad
 
 The non-negotiable headline: **no blocking I/O on the UI thread or any thread serving the UI.**
 Measure before optimizing hot paths; use [`.github/skills/write-benches/SKILL.md`](skills/write-benches/SKILL.md) for benchmark setup, interpretation, and perf commit format.
-Performance goals and anti-patterns live in [`.github/instructions/performance.instructions.md`](instructions/performance.instructions.md).
+Performance rules live in [`.github/instructions/performance.instructions.md`](instructions/performance.instructions.md).
 
 ### Concurrency
 
@@ -136,7 +136,7 @@ before pushing.
 - All documentation is in the `docs/` directory (user-facing) and `.github/instructions/` (contributor / AI conventions).
 - The source-of-truth docs are:
   - `.github/instructions/architecture.instructions.md` — crate layout, process model, threading, storage.
-  - `.github/instructions/performance.instructions.md` — performance goals, principles, and anti-patterns.
+  - `.github/instructions/performance.instructions.md` — performance philosophy and Rust best practices.
   - `.github/instructions/design.instructions.md` — Apple-HIG-inspired UI/UX tokens and component patterns.
   - `.github/instructions/ui-composition.instructions.md` — canonical flow for adding a new modal, panel, view mode, or context menu.
   - `.github/instructions/keybind-authoring.instructions.md` — end-to-end keybind workflow.

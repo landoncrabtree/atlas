@@ -3,7 +3,7 @@
 //! Every user gesture that produces a semantic operation is expressed as a
 //! [`UiAction`] value and routed through an [`ActionSink`]. The concrete sink
 //! wired at startup is a [`crate::shell::AppShell`]-provided adapter; the
-//! real atlas-keymap integration is a follow-up todo.
+//! atlas-keymap integration is handled by the application dispatcher.
 
 use std::path::PathBuf;
 
@@ -52,13 +52,11 @@ pub enum UiAction {
     //
     // These variants are emitted by the shell's F-key callback wiring and
     // handled directly by AppShell (which owns the OpsController).
-    // They are also available for future atlas-keymap integration so that
-    // keymap-driven action IDs (e.g. "fs::Copy") can be translated here.
+    // They can also translate keymap-driven action IDs (e.g. "fs::Copy").
     /// F5 — copy the source pane's selection to the target pane's directory.
     ///
     /// When `target_pane` is `None` (no dual-pane), the operation is skipped
-    /// and a warning is logged. A destination-path dialog is a post-MVP
-    /// follow-up.
+    /// and a warning is logged. A destination-path dialog is a follow-up.
     FsCopy {
         /// Pane whose selection provides the sources.
         source_pane: usize,
@@ -76,7 +74,7 @@ pub enum UiAction {
     ///
     /// When `to_trash` is `true` (default for F8), items are moved to the OS
     /// trash. Permanent deletion requires an explicit Shift+F8 binding
-    /// (post-MVP).
+    /// (follow-up).
     FsDelete {
         /// Pane whose selection is deleted.
         pane: usize,
@@ -85,7 +83,7 @@ pub enum UiAction {
     },
     /// F2 — rename the focused entry in a pane.
     ///
-    /// The rename dialog UI is a post-MVP follow-up. The F2 handler currently
+    /// The rename dialog UI is a follow-up. The F2 handler currently
     /// logs the action and skips the operation.
     FsRename {
         /// Pane that contains the focused entry.
