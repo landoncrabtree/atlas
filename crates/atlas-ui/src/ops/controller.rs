@@ -203,16 +203,20 @@ impl OpsController {
     ///
     /// Wired to the modal's `Background` button (and to Escape / Enter /
     /// click-outside). The op keeps running; the modal simply hides.
+    ///
+    /// The ops panel visibility is deliberately **not** flipped here — ops
+    /// stay silent until the user explicitly asks for them via
+    /// `ops::TogglePanel` (`Cmd+J`). Making Background auto-open the panel
+    /// swaps one visible surface for another and breaks the "fast and
+    /// asynchronous" feel the modal contract promises.
     pub fn background_current_foreground(&self) {
         let id = self.foreground.write().take();
         if let Some(id) = id {
             tracing::debug!(op_id = id, "op-modal: user pressed Background");
         }
-        // Removing the foreground pointer implicitly hides the modal; also
-        // reveal the panel so the user can see the op still lives on.
-        if self.rows.read().iter().any(|r| !r.is_terminal) {
-            self.visible.store(true, Ordering::Relaxed);
-        }
+        // NB: do not touch `self.visible` here. The panel's open/closed state
+        // is user-owned via `ops::TogglePanel` (`Cmd+J`); if it was already
+        // open we leave it open, if it was closed we leave it closed.
         self.push_modal_state();
         self.push_to_ui();
     }
@@ -546,6 +550,12 @@ impl OpsController {
     pub(crate) fn foreground_snapshot(&self) -> Option<OpId> {
         *self.foreground.read()
     }
+
+    /// Return the current ops-panel visibility (for testing).
+    #[cfg(test)]
+    pub(crate) fn visible_snapshot(&self) -> bool {
+        self.visible.load(Ordering::Relaxed)
+    }
 }
 
 /// Compact snapshot pushed to Slint on every foreground state change.
@@ -839,6 +849,88 @@ mod tests {
         assert_eq!(ctrl.rows_snapshot().len(), 1);
         ctrl.clear_completed();
         assert!(ctrl.rows_snapshot().is_empty());
+    }
+
+    #[test]
+    fn background_does_not_open_ops_panel() {
+        // The Background button on the progress modal must dismiss the modal
+        // WITHOUT opening the ops panel. The panel is user-owned via
+        // `ops::TogglePanel` (Cmd+J); Background should be silent so that
+        // "fire-and-forget" file ops feel fast and asynchronous.
+        let ctrl = OpsController::new();
+
+        // Inject a running (non-terminal) row and mark it as the current
+        // foreground op — this is the state the modal is showing in.
+        {
+            ctrl.rows.write().push(OpRow {
+                id: 42,
+                status: "Running".to_owned(),
+                is_terminal: false,
+                ..OpRow::default()
+            });
+            *ctrl.foreground.write() = Some(42);
+        }
+        assert_eq!(ctrl.foreground_snapshot(), Some(42));
+        assert!(
+            !ctrl.visible_snapshot(),
+            "panel should start closed in this test"
+        );
+
+        ctrl.background_current_foreground();
+
+        assert_eq!(
+            ctrl.foreground_snapshot(),
+            None,
+            "Background must drop the foreground op (dismissing the modal)"
+        );
+        assert!(
+            !ctrl.visible_snapshot(),
+            "Background must NOT open the ops panel — that surface is Cmd+J-only"
+        );
+    }
+
+    #[test]
+    fn background_preserves_existing_open_panel() {
+        // If the user already had the ops panel open (via Cmd+J) when they
+        // clicked Background, we must NOT close it as a side effect. The
+        // panel's open/closed state is orthogonal to the modal's lifecycle.
+        let ctrl = OpsController::new();
+        {
+            ctrl.rows.write().push(OpRow {
+                id: 7,
+                status: "Running".to_owned(),
+                is_terminal: false,
+                ..OpRow::default()
+            });
+            *ctrl.foreground.write() = Some(7);
+        }
+        ctrl.set_visible(true);
+        assert!(ctrl.visible_snapshot());
+
+        ctrl.background_current_foreground();
+
+        assert_eq!(ctrl.foreground_snapshot(), None);
+        assert!(
+            ctrl.visible_snapshot(),
+            "Background must leave an already-open panel open"
+        );
+    }
+
+    #[test]
+    fn trivial_op_completion_does_not_open_ops_panel() {
+        // Auto-dismissal on completion (the modal closes because the op
+        // finished, not because the user pressed Background) must also keep
+        // the panel closed.
+        let ctrl = OpsController::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        ctrl.submit_mkdir(Location::local(dir.path().join("silent_complete")));
+        wait(400);
+
+        assert_eq!(ctrl.foreground_snapshot(), None);
+        assert!(
+            !ctrl.visible_snapshot(),
+            "op completing (with no user interaction) must not open the panel"
+        );
     }
 
     #[test]

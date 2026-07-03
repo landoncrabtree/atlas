@@ -7,8 +7,9 @@ import { Theme } from "../theme.slint";
 //
 // Buttons:
 //   Cancel     — aborts the operation (routes to `OpsController::cancel`).
-//   Background — dismisses the modal without cancelling; op continues
-//                and stays visible in the Cmd+J operations panel.
+//   Background — dismisses the modal without cancelling; op continues in
+//                the background. Does NOT open the ops panel — the panel
+//                stays under user control via `ops::TogglePanel` (Cmd+J).
 //
 // Clicking outside the modal (on the scrim) also fires `background()`.
 // The parent `FocusScope` routes Escape and Enter to `background()` too.
