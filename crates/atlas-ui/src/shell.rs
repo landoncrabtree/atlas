@@ -13,7 +13,10 @@ use std::{
     collections::{HashMap, VecDeque},
     env,
     path::{Path, PathBuf},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU8, Ordering},
+        Arc,
+    },
 };
 
 use ahash::AHashMap;
@@ -776,6 +779,27 @@ struct ContextTargetRecord {
     target: ContextTarget,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RightDockSurface {
+    Hidden = 0,
+    Search = 1,
+    Ops = 2,
+}
+
+impl RightDockSurface {
+    fn from_index(index: u8) -> Self {
+        match index {
+            1 => Self::Search,
+            2 => Self::Ops,
+            _ => Self::Hidden,
+        }
+    }
+
+    fn as_index(self) -> i32 {
+        self as i32
+    }
+}
+
 /// Owns Rust-side model state and bridges it to the Slint window.
 ///
 /// Construct with [`AppShell::new`], then call
@@ -810,6 +834,8 @@ pub struct AppShell {
     search: Arc<SearchController>,
     /// File-operations queue controller.
     ops: Arc<OpsController>,
+    /// Single source of truth for the shared right-side dock slot.
+    right_dock_surface: AtomicU8,
     /// Bulk rename modal controller.
     bulk_rename: Arc<BulkRenameController>,
     /// Connect-to-Server modal controller.
@@ -951,6 +977,7 @@ impl AppShell {
                 palette_ctrl,
                 search,
                 ops,
+                right_dock_surface: AtomicU8::new(RightDockSurface::Hidden as u8),
                 bulk_rename,
                 connect: Arc::clone(&connect),
                 preview,
@@ -1132,6 +1159,64 @@ impl AppShell {
     #[must_use]
     pub fn ops(&self) -> Arc<OpsController> {
         Arc::clone(&self.ops)
+    }
+
+    /// Toggle the shared right dock to the Search surface (Cmd/Ctrl+F).
+    pub fn toggle_search_panel(self: &Arc<Self>) {
+        if self.current_right_dock_surface() == RightDockSurface::Search {
+            self.close_right_dock();
+        } else {
+            self.open_search_panel();
+        }
+    }
+
+    /// Show Search in the shared right dock, swapping out Operations if needed.
+    pub fn open_search_panel(self: &Arc<Self>) {
+        self.ops.set_visible(false);
+        self.search.open();
+        self.set_right_dock_surface(RightDockSurface::Search);
+    }
+
+    /// Toggle the shared right dock to the Operations surface (Cmd/Ctrl+J).
+    pub fn toggle_ops_panel(self: &Arc<Self>) {
+        if self.current_right_dock_surface() == RightDockSurface::Ops {
+            self.close_right_dock();
+        } else {
+            self.open_ops_panel();
+        }
+    }
+
+    /// Show Operations in the shared right dock, swapping out Search if needed.
+    pub fn open_ops_panel(self: &Arc<Self>) {
+        self.search.close();
+        self.ops.set_visible(true);
+        self.set_right_dock_surface(RightDockSurface::Ops);
+    }
+
+    /// Hide whichever surface owns the shared right dock.
+    pub fn close_right_dock(self: &Arc<Self>) {
+        match self.current_right_dock_surface() {
+            RightDockSurface::Search => self.search.close(),
+            RightDockSurface::Ops => self.ops.set_visible(false),
+            RightDockSurface::Hidden => {}
+        }
+        self.set_right_dock_surface(RightDockSurface::Hidden);
+    }
+
+    fn current_right_dock_surface(&self) -> RightDockSurface {
+        RightDockSurface::from_index(self.right_dock_surface.load(Ordering::Relaxed))
+    }
+
+    fn set_right_dock_surface(&self, surface: RightDockSurface) {
+        self.right_dock_surface
+            .store(surface as u8, Ordering::Relaxed);
+        let weak = self.window.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            window.set_right_dock_surface(surface.as_index());
+        });
     }
 
     /// Return the bulk-rename modal controller.
@@ -3458,41 +3543,38 @@ impl AppShell {
             });
         }
         {
-            let search_ctrl = Arc::clone(&self.search);
+            let shell = Arc::clone(self);
             let actions = Arc::clone(&self.actions);
             window.on_search_confirm(move |index| {
                 actions
                     .lock()
                     .dispatch(UiAction::SearchConfirm(index as usize));
-                search_ctrl.confirm(index as usize);
+                shell.search.confirm(index as usize);
+                shell.close_right_dock();
             });
         }
         {
-            let search_ctrl = Arc::clone(&self.search);
+            let shell = Arc::clone(self);
             let actions = Arc::clone(&self.actions);
             window.on_search_close(move || {
                 actions.lock().dispatch(UiAction::SearchClose);
-                search_ctrl.close();
+                shell.close_right_dock();
             });
         }
         {
-            let search_ctrl = Arc::clone(&self.search);
+            let shell = Arc::clone(self);
             let actions = Arc::clone(&self.actions);
             window.on_toggle_search_panel(move || {
                 actions.lock().dispatch(UiAction::ToggleSearchPanel);
-                if search_ctrl.is_open() {
-                    search_ctrl.close();
-                } else {
-                    search_ctrl.open();
-                }
+                shell.toggle_search_panel();
             });
         }
         {
-            let search_ctrl = Arc::clone(&self.search);
+            let shell = Arc::clone(self);
             let actions = Arc::clone(&self.actions);
             window.on_open_search_panel(move || {
                 actions.lock().dispatch(UiAction::OpenSearchPanel);
-                search_ctrl.open();
+                shell.open_search_panel();
             });
         }
 
@@ -4109,9 +4191,9 @@ impl AppShell {
             });
         }
         {
-            let ops = Arc::clone(&self.ops);
+            let shell = Arc::clone(self);
             window.on_ops_close(move || {
-                ops.set_visible(false);
+                shell.close_right_dock();
             });
         }
         {
@@ -4122,9 +4204,9 @@ impl AppShell {
             });
         }
         {
-            let ops = Arc::clone(&self.ops);
+            let shell = Arc::clone(self);
             window.on_toggle_ops_panel(move || {
-                ops.toggle_visible();
+                shell.toggle_ops_panel();
             });
         }
         {

@@ -10,8 +10,9 @@ import { Pane } from "components/pane.slint";
 // The whole-window component is no longer used from atlas.slint.
 import { ShortcutFooter, ShortcutHint } from "components/shortcut-footer.slint";
 import { CommandPalette, PaletteEntry } from "components/command-palette.slint";
-import { SearchPanel, SearchRow } from "components/search-panel.slint";
-import { OpsPanel, OpRow } from "components/ops-panel.slint";
+import { SearchRow } from "components/search-panel.slint";
+import { OpRow } from "components/ops-panel.slint";
+import { RightDockPanel } from "components/right-dock-panel.slint";
 import { OperationProgress } from "components/operation-progress.slint";
 import { BulkRenameModal, RenamePreview } from "components/bulk-rename.slint";
 import { ConnectServerModal, SavedServerRow } from "components/connect-server.slint";
@@ -206,7 +207,6 @@ export component AtlasWindow inherits Window {
     in property <[PaletteEntry]> palette-results: [];
     in property <int> palette-selected: 0;
 
-    in property <bool> search-panel-visible: false;
     in-out property <string> search-panel-query: "";
     in property <[SearchRow]> search-panel-rows: [];
     in property <int> search-panel-selected: 0;
@@ -280,9 +280,12 @@ export component AtlasWindow inherits Window {
     /// to enable keymap bypass while a TextInput in the modal has focus.
     property <bool> connect-modal-input-focused: false;
 
-    /// Whether the file-operations tray is shown.
-    in property <bool> ops-panel-visible: false;
-    /// Operation rows shown in the ops tray.
+    /// Shared right-side dock surface: 0=hidden, 1=Find/Search, 2=Operations.
+    in property <int> right-dock-surface: 0;
+    property <bool> right-dock-visible: right-dock-surface != 0;
+    property <bool> search-panel-visible: right-dock-surface == 1;
+    property <bool> ops-panel-visible: right-dock-surface == 2;
+    /// Operation rows shown in the Ops right-dock panel.
     in property <[OpRow]> ops-rows: [];
 
     // ── Progress modal (Finder-style, per-foreground-op) ──────────────────
@@ -766,13 +769,14 @@ export component AtlasWindow inherits Window {
         // Force initial focus so the first Cmd+P works before any click.
         init => { self.focus(); }
 
-        // Track whether any modal is open so we can re-focus this scope
-        // as soon as the last modal closes (Slint's `changed` handler only
-        // works on properties in the current element, so we mirror the
-        // root properties into a local one first).
-        property <bool> any-modal-visible: root.palette-visible || root.search-panel-visible || root.bulk-rename-visible || root.op-modal-visible || root.connect-modal-visible;
-        changed any-modal-visible => {
-            if !any-modal-visible { self.focus(); }
+        // Track whether any overlay is open so we can re-focus this scope
+        // as soon as the last modal/right-dock panel closes (Slint's
+        // `changed` handler only works on properties in the current element,
+        // so we mirror the root properties into a local one first).
+        property <bool> any-modal-visible: root.palette-visible || root.bulk-rename-visible || root.op-modal-visible || root.connect-modal-visible;
+        property <bool> any-overlay-visible: any-modal-visible || root.right-dock-visible;
+        changed any-overlay-visible => {
+            if !any-overlay-visible { self.focus(); }
         }
 
         // Tracks which pane's address-bar TextInput currently owns focus,
@@ -792,7 +796,7 @@ export component AtlasWindow inherits Window {
         // Composite gate passed to the Rust dispatcher: `true` restricts
         // context to `[Global]` so Pane bindings return false and the
         // key falls through to whatever TextInput currently owns focus.
-        property <bool> keymap-bypass-active: any-modal-visible || text-focus-pane-id != -1 || root.connect-modal-input-focused;
+        property <bool> keymap-bypass-active: any-modal-visible || root.right-dock-visible || text-focus-pane-id != -1 || root.connect-modal-input-focused;
 
         // Ticks up whenever Rust wants the root FocusScope to re-grab focus
         // (e.g. after the AddressBar's TextInput cancels or submits). We rely
@@ -822,7 +826,6 @@ export component AtlasWindow inherits Window {
             if event.text == Key.Escape {
                 if is-dragging          { root.drag-cancel();          return accept; }
                 if palette-visible      { root.palette-dismiss();      return accept; }
-                if search-panel-visible { root.search-close();         return accept; }
                 if bulk-rename-visible  { root.bulk-rename-cancel();   return accept; }
                 if connect-modal-visible{ root.connect-cancel();       return accept; }
                 if op-modal-visible     { root.op-modal-background();  return accept; }
@@ -839,7 +842,7 @@ export component AtlasWindow inherits Window {
             // outside the keymap because Tab in a TextInput has native
             // meaning (focus-nav / autocomplete).
             if event.text == Key.Tab && panes.length > 1 && !palette-visible
-                && !search-panel-visible && !bulk-rename-visible && !connect-modal-visible {
+                && !right-dock-visible && !bulk-rename-visible && !connect-modal-visible {
                 root.cycle-pane-focus();
                 return accept;
             }
@@ -853,8 +856,8 @@ export component AtlasWindow inherits Window {
             // below, which routes through the same dispatcher but only after
             // TextInputs have had first refusal (bubble phase).
             //
-            // When any modal (palette, goto, search, bulk rename, ops
-            // progress) is visible OR a per-pane text input (address bar)
+            // When any modal/right-dock surface (palette, goto, search,
+            // bulk rename, ops progress) is visible OR a per-pane text input (address bar)
             // owns focus, we still call the dispatcher but pass
             // `modal-active = true` (see `keymap-bypass-active` above) —
             // Rust restricts the context stack to `[Global]` so Pane-scoped
@@ -862,6 +865,7 @@ export component AtlasWindow inherits Window {
             // TextInput natively.
             if event.modifiers.control || event.modifiers.meta
                 || event.modifiers.alt || event.modifiers.shift
+                || (event.text == Key.Escape && root.right-dock-visible)
                 || event.text == Key.F1 || event.text == Key.F2
                 || event.text == Key.F3 || event.text == Key.F4
                 || event.text == Key.F5 || event.text == Key.F6
@@ -895,7 +899,7 @@ export component AtlasWindow inherits Window {
         //     to the `[Global]` context only. Result: no config gate needed;
         //     keyboard-first navigation is always available.
         key-pressed(event) => {
-            if palette-visible || search-panel-visible || bulk-rename-visible || op-modal-visible || connect-modal-visible {
+            if palette-visible || right-dock-visible || bulk-rename-visible || op-modal-visible || connect-modal-visible {
                 return reject;
             }
             if root.handle-key-chord(event.text,
@@ -1107,18 +1111,26 @@ export component AtlasWindow inherits Window {
             if root.show-shortcut-footer : ShortcutFooter { hints: root.shortcut-hints; }
         }
 
-        // File-operations tray — auto-shown by Rust when ops are queued.
-        OpsPanel {
-            x: 0px;
-            y: parent.height - (root.ops-panel-visible ? 236px : 0px);
-            width: parent.width;
-            height: root.ops-panel-visible ? 236px : 0px;
-            visible-panel: root.ops-panel-visible;
-            rows: root.ops-rows;
-            cancel(i) => { root.ops-cancel(i); }
-            dismiss(i) => { root.ops-dismiss(i); }
-            close => { root.ops-close(); }
-            clear-completed => { root.ops-clear-completed(); }
+        // Shared right-side dock. Find (Cmd+F) and Operations (Cmd+J) are
+        // mutually-exclusive variants of this single slot.
+        RightDockPanel {
+            x: parent.width * 0.6;
+            y: 0px;
+            width: parent.width * 0.4;
+            height: parent.height;
+            surface-index: root.right-dock-surface;
+            search-query: root.search-panel-query;
+            search-rows: root.search-panel-rows;
+            search-selected-index: root.search-panel-selected;
+            search-status-text: root.search-panel-status;
+            ops-rows: root.ops-rows;
+            search-query-changed(q) => { root.search-query-changed(q); }
+            search-confirm(i) => { root.search-confirm(i); }
+            search-close => { root.search-close(); }
+            ops-cancel(i) => { root.ops-cancel(i); }
+            ops-dismiss(i) => { root.ops-dismiss(i); }
+            ops-close => { root.ops-close(); }
+            ops-clear-completed => { root.ops-clear-completed(); }
         }
 
         // Foreground progress modal — surfaces only for ops that outlive
@@ -1153,21 +1165,6 @@ export component AtlasWindow inherits Window {
             confirm(id) => { root.palette-confirm(id); }
             dismiss => { root.palette-dismiss(); }
             select-delta(d) => { root.palette-selection-delta(d); }
-        }
-
-        SearchPanel {
-            x: parent.width * 0.6;
-            y: 0px;
-            width: parent.width * 0.4;
-            height: parent.height;
-            visible-panel: root.search-panel-visible;
-            query: root.search-panel-query;
-            rows: root.search-panel-rows;
-            selected-index: root.search-panel-selected;
-            status-text: root.search-panel-status;
-            query-changed(q) => { root.search-query-changed(q); }
-            confirm(i) => { root.search-confirm(i); }
-            close => { root.search-close(); }
         }
 
         BulkRenameModal {
