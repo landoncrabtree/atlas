@@ -409,6 +409,12 @@ context = "Pane"
 key = "ctrl-h"
 action = "pane::ToggleHidden"
 
+# [Global] Cancel / Close Panel
+[[bindings]]
+context = "Global"
+key = "escape"
+action = "ui::Cancel"
+
 # [Global] Toggle Search Panel
 [[bindings]]
 context = "Global"

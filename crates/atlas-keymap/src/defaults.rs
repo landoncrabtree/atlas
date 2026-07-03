@@ -193,6 +193,7 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
             }
         },
         // ── Search / ops / bulk-rename / dual-pane ────────────────────────
+        b("escape", "Global", "ui::Cancel"),
         p("f", ("Global", "search::Toggle")),
         ps("f", ("Global", "search::Open")),
         p("j", ("Global", "ops::TogglePanel")),
@@ -371,9 +372,15 @@ pub fn default_actions() -> Vec<ActionMeta> {
         action!("tab::Reopen", "Reopen Closed Tab", None, &["Global"]),
         // ── Search / ops / rename / dual-pane ─────────────────────────────────
         action!(
+            "ui::Cancel",
+            "Cancel / Close Panel",
+            Some("Close the active right-side dock panel when one is visible.".into()),
+            &["Global"]
+        ),
+        action!(
             "search::Toggle",
             "Toggle Search Panel",
-            Some("Show or hide the right-hand search panel.".into()),
+            Some("Show, hide, or swap to the right-side search panel.".into()),
             &["Global"]
         ),
         action!(
@@ -385,7 +392,7 @@ pub fn default_actions() -> Vec<ActionMeta> {
         action!(
             "ops::TogglePanel",
             "Toggle Operations Panel",
-            Some("Show or hide the bottom operations tray.".into()),
+            Some("Show, hide, or swap to the right-side operations panel.".into()),
             &["Global"]
         ),
         action!(

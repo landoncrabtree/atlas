@@ -113,7 +113,7 @@ pub enum UiAction {
         /// Resolution decision string.
         decision: String,
     },
-    /// Show or hide the file-operations tray (Ctrl/Cmd+J).
+    /// Show or hide the file-operations right-dock panel (Ctrl/Cmd+J).
     ToggleOpsPanel,
     /// Open a file (e.g. by double-click or Enter in the Miller view).
     OpenFile {
