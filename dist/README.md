@@ -58,7 +58,12 @@ dist/release.sh
 
 ## Icons
 
-`dist/icons/atlas.icns` is generated at build time from `dist/icons/atlas.iconset/` if it does not already exist. Place properly-sized artwork PNGs in `atlas.iconset/` (see `iconutil` docs) before cutting a release. For pre-alpha builds the script generates a solid-color placeholder so the bundle is always valid.
+`build-app.sh` copies the checked-in app icon from `assets/branding/atlas.icns`
+to `Atlas.app/Contents/Resources/atlas.icns`. The bundle template references it
+with `CFBundleIconFile=atlas`.
+
+Regenerate macOS, Windows, and Linux icon derivatives from
+`assets/branding/atlas.png` with `sips`, `iconutil`, and ImageMagick.
 
 ## Out of scope (planned for v0.2)
 

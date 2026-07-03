@@ -60,61 +60,17 @@ if [ -d assets/keymaps ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Icon (best-effort — generate placeholder if artwork is missing)
+# App icon
 # ---------------------------------------------------------------------------
-ICONSET_DIR="dist/icons/atlas.iconset"
-ICNS_FILE="dist/icons/atlas.icns"
-
-mkdir -p "${ICONSET_DIR}"
+ICNS_FILE="assets/branding/atlas.icns"
 
 if [ ! -f "${ICNS_FILE}" ]; then
-    echo "--> Generating placeholder icon..."
-    if command -v python3 &>/dev/null; then
-        # Generate solid-color PNG files at all required sizes
-        python3 - <<'PYEOF'
-import struct, zlib, os
-
-def make_png(w, h, r=70, g=130, b=200):
-    """Return bytes for a solid-color RGBA PNG."""
-    def chunk(tag, data):
-        c = zlib.crc32(tag + data) & 0xFFFFFFFF
-        return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', c)
-    sig = b'\x89PNG\r\n\x1a\n'
-    ihdr = chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
-    row = bytes([0] + [r, g, b] * w)
-    raw = b''.join(row for _ in range(h))
-    idat = chunk(b'IDAT', zlib.compress(raw))
-    iend = chunk(b'IEND', b'')
-    return sig + ihdr + idat + iend
-
-iconset = "dist/icons/atlas.iconset"
-os.makedirs(iconset, exist_ok=True)
-for size in [16, 32, 64, 128, 256, 512, 1024]:
-    png = make_png(size, size)
-    with open(f"{iconset}/icon_{size}x{size}.png", "wb") as f:
-        f.write(png)
-    if size <= 512:
-        with open(f"{iconset}/icon_{size}x{size}@2x.png", "wb") as f:
-            f.write(make_png(size * 2, size * 2))
-print("  Generated placeholder PNGs in dist/icons/atlas.iconset/")
-PYEOF
-        if command -v iconutil &>/dev/null; then
-            iconutil -c icns "${ICONSET_DIR}" -o "${ICNS_FILE}"
-            echo "    Created ${ICNS_FILE}"
-        else
-            echo "    iconutil not found — skipping .icns creation (bundle will have no icon)"
-        fi
-    else
-        echo "    python3 not found — skipping icon generation (bundle will have no icon)"
-    fi
+    echo "Error: ${ICNS_FILE} not found — regenerate app icons from assets/branding/atlas.png" >&2
+    exit 1
 fi
 
-if [ -f "${ICNS_FILE}" ]; then
-    cp "${ICNS_FILE}" "${APP_DIR}/Contents/Resources/atlas.icns"
-    echo "    Copied atlas.icns → Resources/"
-else
-    echo "    Warning: no atlas.icns available; bundle has no icon"
-fi
+cp "${ICNS_FILE}" "${APP_DIR}/Contents/Resources/atlas.icns"
+echo "    Copied atlas.icns → Resources/"
 
 # ---------------------------------------------------------------------------
 # Info.plist (substitute template placeholders)
