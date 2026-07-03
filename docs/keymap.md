@@ -290,7 +290,7 @@ TextEdit, or any other app.
 | `fs::Cut` | `cmd-x` | `ctrl-x` | `ctrl-x` | Pane |
 | `fs::Paste` | `cmd-v` | `ctrl-v` | `ctrl-v` | Pane |
 | `fs::Rename` | `f2` | `f2` | `f2` | Pane |
-| `rename::OpenBulk` | `shift-f2` | `shift-f2` | `shift-f2` | Pane |
+| `rename::OpenBulk` | `shift-cmd-f2` | `ctrl-shift-f2` | `ctrl-shift-f2` | Pane |
 | `fs::Mkdir` (New Folder) | `cmd-shift-n` | `ctrl-shift-n` | `ctrl-shift-n` | Pane |
 | `fs::Delete` (→ Trash) | `cmd-backspace` | `delete` | `delete` | Pane |
 
