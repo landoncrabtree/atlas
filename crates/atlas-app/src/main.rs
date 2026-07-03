@@ -994,6 +994,25 @@ fn build_dispatcher(
             s.go_up(s.focused_pane_id());
         });
     }
+    // ── pane::MoveLeft / pane::MoveRight (directional, view-dispatched) ──
+    //
+    // v0.2 (this commit): temporary pass-through that mirrors the pre-
+    // convergence chord bindings — Left = GoUp, Right = activate. Commit 3
+    // rewires both through the ViewNavigation trait so Grid gets column
+    // navigation and Gallery gets prev/next.
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::MoveLeft", move || {
+            s.go_up(s.focused_pane_id());
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::MoveRight", move || {
+            let id = s.focused_pane_id();
+            s.view_focused_entry(id);
+        });
+    }
     {
         let s = Arc::clone(shell);
         d.register("pane::Back", move || {
