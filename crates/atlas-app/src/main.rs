@@ -1105,10 +1105,12 @@ fn build_dispatcher(
                 let _ = w.hide();
             }
         });
-        d.register("app::OpenSettings", || {
-            tracing::info!(
-                "app::OpenSettings: no in-app settings UI yet — edit ~/.config/atlas/config.toml"
-            );
+        d.register("app::OpenSettings", {
+            let s = Arc::clone(shell);
+            move || {
+                tracing::info!("app::OpenSettings: opening config file in preferred editor");
+                s.open_config_in_editor();
+            }
         });
     }
 

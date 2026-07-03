@@ -1216,6 +1216,77 @@ impl AppShell {
         }
     }
 
+    /// Open the user's Atlas config file (`config.toml`) in their
+    /// preferred editor.
+    ///
+    /// Bound to `app::OpenSettings` (`Cmd+,` on macOS, `Ctrl+,` on
+    /// Linux/Windows). Resolution order:
+    ///
+    /// 1. Resolve the config path via
+    ///    [`atlas_config::config_file_path`].
+    /// 2. Ensure the parent directory exists via
+    ///    [`atlas_config::ensure_config_dir`].
+    /// 3. If the file does not exist, seed it with
+    ///    [`atlas_config::skeleton_toml`] so the editor opens a
+    ///    populated template rather than an empty buffer.
+    /// 4. If `$EDITOR` is set to a non-empty value, spawn it with the
+    ///    config path as argument. This handles headless / non-GUI
+    ///    contexts where `open` would fail.
+    /// 5. Otherwise defer to the `open` crate — `open::that` picks the
+    ///    OS default handler (macOS `open`, Linux `xdg-open`, Windows
+    ///    `ShellExecute`).
+    ///
+    /// Every failure path logs via [`tracing::warn`] and returns
+    /// without crashing. The shell must survive a broken editor
+    /// invocation the same way it survives a broken
+    /// `fs::View` — see [`Self::view_focused_entry`].
+    pub fn open_config_in_editor(&self) {
+        let path = match atlas_config::ensure_config_file() {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::warn!(%err, "app::OpenSettings: ensure_config_file failed");
+                return;
+            }
+        };
+        // Respect $EDITOR when set — some users route .toml through vim
+        // / helix / emacs deliberately and do not want the GUI default.
+        if let Ok(editor) = std::env::var("EDITOR") {
+            let editor = editor.trim();
+            if !editor.is_empty() {
+                tracing::info!(?path, editor, "app::OpenSettings: spawning $EDITOR");
+                // Split on whitespace so `EDITOR="code --wait"` works;
+                // Command::new does not parse args from a single string.
+                let mut parts = editor.split_whitespace();
+                if let Some(bin) = parts.next() {
+                    let args: Vec<&str> = parts.collect();
+                    match std::process::Command::new(bin)
+                        .args(&args)
+                        .arg(&path)
+                        .spawn()
+                    {
+                        Ok(_child) => return,
+                        Err(err) => {
+                            tracing::warn!(
+                                %err,
+                                bin,
+                                ?path,
+                                "app::OpenSettings: $EDITOR spawn failed; falling back to open::that",
+                            );
+                            // Fall through to open::that below.
+                        }
+                    }
+                }
+            }
+        }
+        tracing::info!(
+            ?path,
+            "app::OpenSettings: opening via platform default handler"
+        );
+        if let Err(err) = open::that(&path) {
+            tracing::warn!(%err, ?path, "app::OpenSettings: open::that failed");
+        }
+    }
+
     /// Open the Cmd+K "Connect to Server" modal targeting `pane_id`.
     ///
     /// The modal itself is a Slint component

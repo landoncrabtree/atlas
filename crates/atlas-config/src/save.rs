@@ -65,6 +65,36 @@ pub fn skeleton_toml() -> &'static str {
     include_str!("skeleton.toml")
 }
 
+/// Ensure the user's config file exists on disk and return its path.
+///
+/// - If the file already exists, return the path unchanged (no I/O
+///   beyond the `exists()` probe).
+/// - If it does not exist, [`ensure_config_dir`] creates the parent
+///   directory (respecting `ATLAS_CONFIG_DIR`, then `XDG_CONFIG_HOME`,
+///   then the platform default) and this function writes
+///   [`skeleton_toml`] there so callers such as
+///   `AppShell::open_config_in_editor` see a documented template
+///   rather than an empty buffer.
+///
+/// This is the canonical path resolver for `app::OpenSettings`
+/// (`Cmd+,` / `Ctrl+,`) and any other action that wants to hand a
+/// live config file off to an external editor. Prefer it over
+/// re-implementing the "create-if-missing" dance in every call site.
+pub fn ensure_config_file() -> Result<std::path::PathBuf> {
+    ensure_config_dir()?;
+    let path = config_file_path()?;
+    if !path.exists() {
+        std::fs::write(&path, skeleton_toml()).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to seed skeleton config at {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+    }
+    Ok(path)
+}
+
 // ── Merge helpers ──────────────────────────────────────────────────────────
 
 /// Merge `src` document into `dst`, updating values while keeping `dst`'s

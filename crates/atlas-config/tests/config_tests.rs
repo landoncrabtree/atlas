@@ -223,6 +223,60 @@ fn skeleton_parses() {
     assert!(!cfg.view.show_hidden);
 }
 
+/// `ensure_config_file` seeds the skeleton on first call and is a
+/// no-op on subsequent calls. Backs `AppShell::open_config_in_editor`
+/// (bound to `Cmd+,` / `Ctrl+,`) — a user with no prior Atlas config
+/// on disk still gets a documented template opened in their editor
+/// rather than an empty file.
+#[test]
+#[serial]
+fn ensure_config_file_seeds_skeleton_and_is_idempotent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = set_config_dir(dir.path());
+
+    // First call: file does not exist, must be created with the
+    // skeleton contents.
+    let path = ensure_config_file().expect("ensure_config_file first call");
+    assert!(path.exists(), "config file must exist after first call");
+    let first = std::fs::read_to_string(&path).expect("read first contents");
+    assert!(
+        first.contains("show_hidden"),
+        "skeleton must document view.show_hidden"
+    );
+
+    // Second call: file exists — must return the same path without
+    // touching the contents (idempotency lets `app::OpenSettings`
+    // be spammed on every keypress without corrupting a
+    // user-edited config).
+    std::fs::write(&path, "[ui]\ntheme = \"atlas-light\"\n")
+        .expect("hand-edit the config to prove idempotency");
+    let path2 = ensure_config_file().expect("ensure_config_file second call");
+    assert_eq!(path, path2);
+    let second = std::fs::read_to_string(&path2).expect("read second contents");
+    assert_eq!(
+        second, "[ui]\ntheme = \"atlas-light\"\n",
+        "ensure_config_file must not overwrite an existing config"
+    );
+}
+
+/// `ensure_config_file` also creates the parent directory when it does
+/// not exist. Covers the case of a fresh install where
+/// `~/.config/atlas/` has never been touched.
+#[test]
+#[serial]
+fn ensure_config_file_creates_parent_dir() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("nested").join("atlas");
+    let _guard = set_config_dir(&target);
+
+    // Parent path does not exist yet — the helper must materialise it.
+    assert!(!target.exists(), "sanity: parent must not exist yet");
+    let path = ensure_config_file().expect("ensure_config_file");
+    assert!(path.exists(), "config file must exist");
+    assert!(target.exists(), "parent directory must exist");
+    assert_eq!(path.parent().unwrap(), target);
+}
+
 /// `indexer.roots` must be deduplicated.
 #[test]
 fn indexer_roots_deduplication() {

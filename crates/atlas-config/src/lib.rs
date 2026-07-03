@@ -33,7 +33,7 @@ pub use paths::{
     config_dir, config_file_path, ensure_config_dir, keymap_file_path, keymaps_dir,
     known_hosts_file_path, servers_file_path, themes_dir,
 };
-pub use save::{save, save_to_string, skeleton_toml};
+pub use save::{ensure_config_file, save, save_to_string, skeleton_toml};
 pub use servers::{
     add_or_replace as add_or_replace_server, delete as delete_server, list as list_servers,
     load as load_servers, save as save_servers, SavedServer, SavedServersFile,
