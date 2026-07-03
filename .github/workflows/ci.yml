@@ -137,3 +137,41 @@ jobs:
             exit 1
           fi
         shell: bash
+
+  perf-check:
+    # Informational only — publishes the criterion bench results as an
+    # artifact so a maintainer can pull the raw report and eyeball for
+    # regressions between PRs. Deliberately NOT a gating check:
+    # criterion medians are runner-dependent and would produce noisy
+    # merge blocks. See `docs/perf/README.md` for how to interpret.
+    name: perf-check (informational)
+    runs-on: ubuntu-latest
+    # Only run on PRs — on push-to-main this would double-run against
+    # the same commit for no signal gain.
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev libfontconfig1-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: perf-check
+      - name: Run criterion benches with a short profile time
+        # `--profile-time 3` runs each bench once for ~3s (instead of
+        # the default 5s + warm-up). Enough to catch large regressions
+        # in the CI window without blowing the runner's 6-hour budget.
+        run: |
+          cargo bench -p atlas-fs --benches -- --profile-time 3
+          cargo bench -p atlas-search --benches -- --profile-time 3
+          cargo bench -p atlas-ops --benches -- --profile-time 3
+      - name: Upload criterion reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-reports
+          path: target/criterion/
+          if-no-files-found: warn
+          retention-days: 14
