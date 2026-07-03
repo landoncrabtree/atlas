@@ -149,7 +149,6 @@ The non-negotiable headline: **no blocking I/O on the UI thread or any thread se
   - `.github/instructions/architecture.instructions.md` — crate layout, process model, threading, storage.
   - `.github/instructions/performance.instructions.md` — performance goals and benchmark methodology.
   - `.github/instructions/design.instructions.md` — Apple-HIG-inspired UI/UX tokens and component patterns.
-  - `.github/instructions/multi-pane-refactor.instructions.md` — N-pane workspace design contract; read before touching `workspace.rs`, `shell.rs`, or any Slint pane/workspace component.
   - `.github/instructions/ui-composition.instructions.md` — canonical flow for adding a new modal, panel, view mode, or context menu.
   - `.github/instructions/keybind-authoring.instructions.md` — end-to-end keybind workflow.
   - `.github/instructions/remote-backend-authoring.instructions.md` — end-to-end remote-backend workflow.

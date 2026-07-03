@@ -106,7 +106,6 @@ Source-of-truth docs:
 - `.github/instructions/architecture.instructions.md` — crate layout, process model, threading, storage (deep dive).
 - `.github/instructions/performance.instructions.md` — performance goals, principles, anti-patterns, benchmark methodology.
 - `.github/instructions/design.instructions.md` — Apple-HIG-inspired UI/UX tokens and component patterns.
-- `.github/instructions/multi-pane-refactor.instructions.md` — N-pane workspace design contract.
 - `.github/instructions/ui-composition.instructions.md` — canonical modal/panel/keybind/backend flow when adding a new UI surface.
 - `.github/instructions/keybind-authoring.instructions.md` — end-to-end keybind authoring workflow.
 - `.github/instructions/remote-backend-authoring.instructions.md` — end-to-end remote-backend authoring workflow.
