@@ -3895,48 +3895,68 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_ctx_open_with(move || {
-                let Some((_, target)) = shell.context_menu_target_full() else {
+                let Some((pane_id, target)) = shell.context_menu_target_full() else {
                     return;
                 };
-                // Native picker is Launch-Services / Shell / DE-driven and
-                // needs a filesystem path the OS can resolve. Remote entries
-                // would first have to be materialised through the preview
-                // cache (see `crate::remote::preview`) — until that flow is
-                // exposed to the picker, refuse remote targets with a warn.
-                // The capability resolver already gates `can_open_with =
-                // is_local`, so this branch is a defence-in-depth.
-                let path = match target.location {
-                    atlas_core::Location::Local(p) => p,
-                    atlas_core::Location::Remote(uri, _) => {
-                        tracing::warn!(
-                            uri = %uri,
-                            "ctx: Open With… requires a local file (materialise via preview cache first)"
-                        );
-                        return;
+                // Local: hand the on-disk path directly to the picker.
+                // Remote: materialise the file through the preview
+                // cache (progress + cancel row appear automatically
+                // for large downloads via PreviewCache's ops-panel
+                // wiring), then call the picker on the cached copy.
+                match target.location {
+                    atlas_core::Location::Local(path) => {
+                        spawn_open_with_picker(path);
                     }
-                };
-                // `open_with_picker` blocks the calling thread for as long
-                // as the OS dialog is on screen (seconds, potentially). We
-                // hand it off to a worker so the Slint event loop keeps
-                // ticking; the picker itself is a modal Launch-Services /
-                // Shell / DE dialog, so no additional Atlas-side modal is
-                // needed.
-                tracing::info!(?path, "ctx: Open With — spawning native picker");
-                if let Err(err) = std::thread::Builder::new()
-                    .name("atlas-open-with-picker".to_owned())
-                    .spawn(move || match crate::platform::open_with::open_with_picker(&path) {
-                        Ok(()) => {
-                            tracing::debug!(?path, "ctx: Open With — picker completed");
+                    atlas_core::Location::Remote(uri, kind) => {
+                        // Directories don't compose with Open With.
+                        if matches!(target.entry_kind, atlas_fs::EntryKind::Dir) {
+                            tracing::warn!(uri = %uri, "ctx: Open With… refuses remote directory");
+                            return;
                         }
-                        Err(crate::platform::open_with::OpenWithError::UserCancelled) => {
-                            tracing::debug!(?path, "ctx: Open With — user cancelled");
+                        // We need the full `Entry` (name + size +
+                        // mtime) to compute the preview cache key.
+                        // The context-menu target already refers to
+                        // the focused / clicked pane row; ask the
+                        // shell for it.
+                        let Some(entry) = shell.focused_entry_full(pane_id) else {
+                            tracing::warn!(
+                                uri = %uri,
+                                "ctx: Open With (remote) — no focused Entry to materialise"
+                            );
+                            return;
+                        };
+                        tracing::info!(
+                            uri = %uri,
+                            name = %entry.name,
+                            size = entry.metadata.size,
+                            "ctx: Open With (remote) — materialising via preview cache"
+                        );
+                        let completion: crate::remote::PreviewCompletion =
+                            Box::new(|cached: &std::path::Path| -> std::io::Result<()> {
+                                spawn_open_with_picker(cached.to_path_buf());
+                                Ok(())
+                            });
+                        match shell
+                            .preview
+                            .open_remote_file_with(uri, kind, entry, completion)
+                        {
+                            crate::remote::PreviewOutcome::CachedOpen(_)
+                            | crate::remote::PreviewOutcome::Downloading => {}
+                            crate::remote::PreviewOutcome::TooLarge { size, cap } => {
+                                tracing::warn!(
+                                    size,
+                                    cap,
+                                    "ctx: Open With (remote) — file exceeds max_open_bytes"
+                                );
+                            }
+                            crate::remote::PreviewOutcome::OpenFailed(msg) => {
+                                tracing::warn!(
+                                    err = %msg,
+                                    "ctx: Open With (remote) — picker completion failed"
+                                );
+                            }
                         }
-                        Err(err) => {
-                            tracing::warn!(?path, %err, "ctx: Open With — picker failed");
-                        }
-                    })
-                {
-                    tracing::warn!(%err, "ctx: Open With — failed to spawn picker worker");
+                    }
                 }
             });
         }
@@ -5571,6 +5591,36 @@ fn unique_new_folder_name(parent_dir: &Path) -> String {
     }
     // Fallback: very unlikely in practice.
     base.to_owned()
+}
+
+/// Hand `path` off to the native Open With… picker on a dedicated
+/// worker thread so the Slint event loop keeps ticking. The picker is
+/// a modal OS-side dialog (macOS *Choose Application*, Windows
+/// *Open With* shell dialog, Linux `mimeopen -a` / `xdg-open`) so no
+/// Atlas-side modal is needed; the platform module handles user
+/// cancellation and error mapping.
+///
+/// Called from `on_ctx_open_with` for both local files (directly) and
+/// remote files (from the preview-cache completion callback after
+/// materialisation).
+fn spawn_open_with_picker(path: PathBuf) {
+    tracing::info!(?path, "ctx: Open With — spawning native picker");
+    if let Err(err) = std::thread::Builder::new()
+        .name("atlas-open-with-picker".to_owned())
+        .spawn(move || match crate::platform::open_with::open_with_picker(&path) {
+            Ok(()) => {
+                tracing::debug!(?path, "ctx: Open With — picker completed");
+            }
+            Err(crate::platform::open_with::OpenWithError::UserCancelled) => {
+                tracing::debug!(?path, "ctx: Open With — user cancelled");
+            }
+            Err(err) => {
+                tracing::warn!(?path, %err, "ctx: Open With — picker failed");
+            }
+        })
+    {
+        tracing::warn!(%err, "ctx: Open With — failed to spawn picker worker");
+    }
 }
 
 #[cfg(test)]
