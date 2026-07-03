@@ -17,9 +17,6 @@ confirm_on_quit = false
 # Follow symbolic links when listing directory contents.
 follow_symlinks = true
 
-# Enable vim-inspired key bindings (hjkl navigation, :q to quit, …).
-vim_mode = false
-
 # Open the app in dual-pane (split-window) layout on startup. When true
 # both panes navigate to `start_path` initially; Cmd/Ctrl+\ toggles at
 # runtime; Tab cycles focus between panes.

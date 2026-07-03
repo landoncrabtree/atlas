@@ -4,3 +4,5 @@ pub mod details;
 pub mod gallery;
 pub mod grid;
 pub mod miller;
+pub mod navigation;
+pub mod selection;

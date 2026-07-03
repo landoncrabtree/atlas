@@ -45,8 +45,6 @@ pub struct General {
     pub confirm_on_quit: bool,
     /// Follow symbolic links when listing directories.
     pub follow_symlinks: bool,
-    /// Enable vim-inspired key bindings.
-    pub vim_mode: bool,
     /// Open the app in dual-pane (split) layout on startup.
     pub dual_pane: bool,
 }

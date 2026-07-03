@@ -329,7 +329,8 @@ fn main() -> Result<()> {
     shell.apply_column_widths(&config.view.details.column_widths);
 
     // Push config-driven UI settings into the Slint window.
-    shell.set_vim_mode(config.general.vim_mode); // config: reads config.general.vim_mode
+    // (vim_mode gate was removed in refactor/nav-convergence — hjkl / wasd
+    // / arrow keys are always active for the Pane context.)
 
     // Open in dual-pane layout when the config asks for it (default: true).
     // The new pane inherits pane 0's location via AppShell::split_focused.
@@ -752,7 +753,6 @@ fn spawn_config_event_thread(
                         shell.set_shortcut_footer_visible(cfg.ui.show_shortcuts);
                         shell.set_animations_enabled(cfg.ui.animations);
                         shell.set_active_pane_border_px(cfg.ui.active_pane_border_px);
-                        shell.set_vim_mode(cfg.general.vim_mode);
 
                         // ── Icon pack (Phase 2.11) ────────────────────────
                         //
@@ -835,31 +835,81 @@ fn build_dispatcher(
     //
     // Left-click still single-selects (Finder/Explorer parity), Shift+arrow
     // extends the range from the anchor, and Cmd+A selects everything.
-    {
+    // ── Pane cursor movement — directional dispatch via ViewNavigation ────
+    //
+    // All four directional actions (`pane::MoveLeft`, `pane::MoveRight`,
+    // `pane::MoveUp`, `pane::MoveDown`) share ONE closure body that
+    // resolves the direction to a `ViewNavAction` via the per-view
+    // mapping table in `atlas_ui::views::navigation`, then executes the
+    // action against the focused pane's controllers.
+    //
+    // This collapses what used to be four separate closures each with
+    // its own `match view_mode { Details => …, Grid => …, Gallery => …,
+    // Miller => … }` block. Adding a new view mode now means adding one
+    // arm to `ViewNavAction::for_mode` — no dispatcher edits.
+    for (action_id, direction) in [
+        (
+            "pane::MoveLeft",
+            atlas_ui::views::navigation::Direction::Left,
+        ),
+        (
+            "pane::MoveRight",
+            atlas_ui::views::navigation::Direction::Right,
+        ),
+        ("pane::MoveUp", atlas_ui::views::navigation::Direction::Up),
+        (
+            "pane::MoveDown",
+            atlas_ui::views::navigation::Direction::Down,
+        ),
+    ] {
         let s = Arc::clone(shell);
-        d.register("pane::MoveDown", move || {
+        d.register(action_id, move || {
             let id = s.focused_pane_id();
             let mode = s.pane_view_mode(id);
-            let Some(ctrl) = s.pane_by_id(id) else { return };
-            match mode {
-                atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(1_i64),
-                atlas_ui::models::ViewMode::Grid => ctrl.grid.move_focus(1_isize, 0),
-                atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(1_isize),
-                atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(1_isize),
-            }
-        });
-    }
-    {
-        let s = Arc::clone(shell);
-        d.register("pane::MoveUp", move || {
-            let id = s.focused_pane_id();
-            let mode = s.pane_view_mode(id);
-            let Some(ctrl) = s.pane_by_id(id) else { return };
-            match mode {
-                atlas_ui::models::ViewMode::Details => ctrl.details.move_focus(-1_i64),
-                atlas_ui::models::ViewMode::Grid => ctrl.grid.move_focus(-1_isize, 0),
-                atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(-1_isize),
-                atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(-1_isize),
+            let action = atlas_ui::views::navigation::ViewNavAction::for_mode(mode, direction);
+            match action {
+                atlas_ui::views::navigation::ViewNavAction::GoUp => {
+                    s.go_up(id);
+                }
+                atlas_ui::views::navigation::ViewNavAction::ViewEntry => {
+                    s.view_focused_entry(id);
+                }
+                atlas_ui::views::navigation::ViewNavAction::Noop => {
+                    tracing::trace!(?mode, ?direction, "pane::Move: no-op in this view mode");
+                }
+                atlas_ui::views::navigation::ViewNavAction::MoveIndex { delta } => {
+                    let Some(ctrl) = s.pane_by_id(id) else { return };
+                    match mode {
+                        atlas_ui::models::ViewMode::Details => {
+                            ctrl.details.move_focus(delta as i64)
+                        }
+                        atlas_ui::models::ViewMode::Miller => ctrl.miller.move_focus(delta),
+                        atlas_ui::models::ViewMode::Gallery => ctrl.gallery.move_focus(delta),
+                        atlas_ui::models::ViewMode::Grid => {
+                            // Grid never resolves to MoveIndex — its
+                            // Direction always maps to MoveFocus. This arm
+                            // is here only to satisfy the exhaustive match.
+                            tracing::debug!(?mode, delta, "unexpected MoveIndex for Grid");
+                        }
+                    }
+                }
+                atlas_ui::views::navigation::ViewNavAction::MoveFocus { dx, dy } => {
+                    let Some(ctrl) = s.pane_by_id(id) else { return };
+                    match mode {
+                        atlas_ui::models::ViewMode::Grid => {
+                            // Horizontal keypresses wrap across rows;
+                            // vertical keypresses clamp at grid edges.
+                            if dy == 0 {
+                                ctrl.grid.move_focus_wrapping(dy, dx);
+                            } else {
+                                ctrl.grid.move_focus(dy, dx);
+                            }
+                        }
+                        _ => {
+                            tracing::debug!(?mode, dx, dy, "unexpected MoveFocus outside Grid");
+                        }
+                    }
+                }
             }
         });
     }

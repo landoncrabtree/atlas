@@ -33,55 +33,14 @@ use crate::{
 /// Sentinel value meaning "no focused index".
 const NO_FOCUS: usize = usize::MAX;
 
-/// Selection state for the Details view.
-#[derive(Debug, Default)]
-pub struct Selection {
-    /// Per-entry selection flags; same length as the current entries snapshot.
-    pub mask: Vec<bool>,
-    /// Anchor index for shift-range selection.
-    pub anchor: Option<usize>,
-}
-
-impl Selection {
-    pub(crate) fn clear(&mut self) {
-        self.mask.fill(false);
-        self.anchor = None;
-    }
-
-    pub(crate) fn resize(&mut self, len: usize) {
-        self.mask.resize(len, false);
-    }
-
-    pub(crate) fn select_single(&mut self, index: usize) {
-        self.clear();
-        if index < self.mask.len() {
-            self.mask[index] = true;
-        }
-        self.anchor = Some(index);
-    }
-
-    pub(crate) fn toggle(&mut self, index: usize) {
-        if index < self.mask.len() {
-            self.mask[index] = !self.mask[index];
-        }
-        self.anchor = Some(index);
-    }
-
-    pub(crate) fn select_range(&mut self, from: usize, to: usize) {
-        if self.mask.is_empty() {
-            self.anchor = Some(to);
-            return;
-        }
-
-        let (lo, hi) = if from <= to { (from, to) } else { (to, from) };
-        let hi_clamped = hi.min(self.mask.len().saturating_sub(1));
-        self.mask.fill(false);
-        for slot in &mut self.mask[lo..=hi_clamped] {
-            *slot = true;
-        }
-        self.anchor = Some(from);
-    }
-}
+/// Details view multi-selection state.
+///
+/// Alias of the shared [`SelectionMask`](crate::views::selection::SelectionMask).
+/// Kept as `pub use` so existing code that imports `Selection` from
+/// `views::details::controller` continues to compile — the actual
+/// implementation lives once in `views/selection.rs` and is shared
+/// with Grid.
+pub use crate::views::selection::SelectionMask as Selection;
 
 struct SubscriptionState {
     handle: JoinHandle<()>,

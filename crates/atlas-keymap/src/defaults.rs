@@ -71,10 +71,15 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         p("q", ("Global", "app::Quit")),
         // ── File-list navigation (Pane context) ───────────────────────────
         //
-        // Vim `hjkl` doubles as file-list navigation when
-        // `general.vim_mode = true`; otherwise the letter keys pass
-        // through to text inputs. Arrow keys / Enter / Backspace are
-        // always active regardless of vim mode.
+        // Vim `hjkl`, WASD, arrow keys, `,` / `.`, `Enter`, and `Backspace`
+        // all navigate the focused pane's file list. They are always active
+        // — there is no config-gated "vim mode" switch. Because Slint's
+        // key-pressed handler is bubble-phase, typing in the address bar
+        // TextInput consumes these letters BEFORE the dispatcher sees them,
+        // so vim/wasd navigation and text entry never collide. When a modal
+        // or focused text input is up, `keymap-bypass-active` flips true and
+        // the dispatcher restricts to the `[Global]` context — Pane bindings
+        // return false and the key falls through to the input natively.
         //
         // `fs::View` handles BOTH cd-into-folder and open-file-with-OS —
         // there is no separate "activate" action; the single action ID
@@ -83,14 +88,20 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         // multiple aliased actions).
         b("j", "Pane", "pane::MoveDown"),
         b("k", "Pane", "pane::MoveUp"),
-        b("h", "Pane", "pane::GoUp"),
-        b("l", "Pane", "fs::View"),
+        b("h", "Pane", "pane::MoveLeft"),
+        b("l", "Pane", "pane::MoveRight"),
+        // WASD as first-class parallel bindings — always active regardless
+        // of platform, no config gate. Same view-dispatch semantics as hjkl.
+        b("w", "Pane", "pane::MoveUp"),
+        b("a", "Pane", "pane::MoveLeft"),
+        b("s", "Pane", "pane::MoveDown"),
+        b("d", "Pane", "pane::MoveRight"),
         b(",", "Pane", "pane::GoUp"),
         b(".", "Pane", "fs::View"),
         b("down", "Pane", "pane::MoveDown"),
         b("up", "Pane", "pane::MoveUp"),
-        b("right", "Pane", "fs::View"),
-        b("left", "Pane", "pane::GoUp"),
+        b("right", "Pane", "pane::MoveRight"),
+        b("left", "Pane", "pane::MoveLeft"),
         b("g g", "Pane", "pane::MoveToTop"),
         b("shift-g", "Pane", "pane::MoveToBottom"),
         b("/", "Pane", "pane::SearchInPlace"),
@@ -99,13 +110,15 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         b("alt-left", "Pane", "pane::Back"),
         b("alt-right", "Pane", "pane::Forward"),
         // Space toggles the focused entry's selected state (multi-select
-        // support), Shift+Arrow/j/k extends the range selection while
-        // moving focus.
+        // support), Shift+Arrow/j/k/w/s extends the range selection while
+        // moving focus vertically.
         b("space", "Pane", "pane::ToggleSelection"),
         b("shift-down", "Pane", "pane::ExtendDown"),
         b("shift-up", "Pane", "pane::ExtendUp"),
         b("shift-j", "Pane", "pane::ExtendDown"),
         b("shift-k", "Pane", "pane::ExtendUp"),
+        b("shift-s", "Pane", "pane::ExtendDown"),
+        b("shift-w", "Pane", "pane::ExtendUp"),
         p("a", ("Pane", "pane::SelectAll")),
         ps("a", ("Pane", "pane::DeselectAll")),
         // ── Tabs ──────────────────────────────────────────────────────────
@@ -232,6 +245,28 @@ pub fn default_actions() -> Vec<ActionMeta> {
         action!("app::Quit", "Quit Atlas", None, &["Global"]),
         action!("pane::MoveDown", "Move Down", None, &["Pane"]),
         action!("pane::MoveUp", "Move Up", None, &["Pane"]),
+        action!(
+            "pane::MoveLeft",
+            "Move Left",
+            Some(
+                "Directional Left. Semantics depend on the focused pane's \
+                 view mode: Details/Miller → parent directory; Grid → previous \
+                 column (row-wraps); Gallery → previous item."
+                    .into()
+            ),
+            &["Pane"]
+        ),
+        action!(
+            "pane::MoveRight",
+            "Move Right",
+            Some(
+                "Directional Right. Semantics depend on the focused pane's \
+                 view mode: Details/Miller → open focused entry (fs::View); \
+                 Grid → next column (row-wraps); Gallery → next item."
+                    .into()
+            ),
+            &["Pane"]
+        ),
         action!("pane::MoveToTop", "Move to Top", None, &["Pane"]),
         action!("pane::MoveToBottom", "Move to Bottom", None, &["Pane"]),
         action!("pane::SearchInPlace", "Search in Place", None, &["Pane"]),
