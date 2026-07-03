@@ -6,6 +6,18 @@ export struct PaletteEntry {
     action-id: string,
 }
 
+// Command palette (⌘⇧P) — Raycast/Spotlight-style floating panel.
+//
+// Design refs (design.instructions.md):
+// - §Command palette + goto anywhere: 560 wide, radius-xl, sits ON the
+//   workspace (not IN a dimmed sheet), search glyph on the left of the
+//   input row, hairline divider between input and results, selected
+//   row uses `accent-soft` + 2 px `accent` left rail.
+// - §Restrained accent: the palette's accent is the selection wash and
+//   left rail — the input itself carries no accent.
+//
+// Motion: enter fades in at 200 ms `cubic-bezier(0.16, 1, 0.3, 1)`,
+// exit at 160 ms `ease-in` (design.instructions.md §Motion).
 export component CommandPalette {
     in-out property <string> query: "";
     in property <[PaletteEntry]> results: [];
@@ -16,10 +28,18 @@ export component CommandPalette {
     callback dismiss();
     callback select-delta(int);
 
+    // The palette-visible flag on atlas.slint is set by Rust when the
+    // user hits ⌘⇧P; we render the whole tree only while visible so
+    // the input's `init` handler fires per-open and focus lands on
+    // the prompt without extra plumbing.
     if self.visible : Rectangle {
         width: 100%;
         height: 100%;
-        background: #00000066;
+        // Backdrop wash. Spotlight/Raycast sit on the workspace with a
+        // gentle darken rather than a full modal-scrim — we use 40 %
+        // black to match Theme.modal-scrim so the palette isn't
+        // visually louder than confirmation sheets.
+        background: Theme.modal-scrim;
 
         TouchArea {
             width: 100%;
@@ -27,22 +47,40 @@ export component CommandPalette {
             clicked => { root.dismiss(); }
         }
 
+        // ── panel ──────────────────────────────────────────────────────
+        //
+        // Positioned 20 % from the top per HIG-style Spotlight; caps at
+        // 560 px wide (Raycast is ~640, Spotlight is ~680, but 560 is
+        // where the Atlas palette has always sat and consumers rely on
+        // the visual footprint). Radius `radius-xl` (14 px) matches
+        // every other modal in the pass.
         Rectangle {
             x: (parent.width - self.width) / 2;
             y: parent.height * 0.20;
             width: min(560px, parent.width - 48px);
             height: min(440px, parent.height - 80px);
-            background: Theme.panel-bg-elevated;
-            border-radius: Theme.radius-lg;
+            background: Theme.modal-bg;
+            border-width: 1px;
+            border-color: Theme.modal-border;
+            border-radius: Theme.radius-xl;
+            drop-shadow-blur: Theme.modal-shadow-blur;
+            drop-shadow-offset-y: Theme.modal-shadow-y;
+            drop-shadow-color: Theme.modal-shadow-color;
+            clip: true;
 
             TouchArea { width: 100%; height: 100%; }
 
             VerticalLayout {
                 spacing: 0px;
 
-                // Prompt input row
+                // ── input row ──────────────────────────────────────────
+                //
+                // 48 px tall input; a small `nf-fa-search` glyph on the
+                // left, then a large 16 px query text. No border on the
+                // row itself — the divider below separates input from
+                // results.
                 Rectangle {
-                    height: 44px;
+                    height: 48px;
                     background: transparent;
 
                     TouchArea {
@@ -54,13 +92,25 @@ export component CommandPalette {
                     HorizontalLayout {
                         padding-left: Theme.space-4;
                         padding-right: Theme.space-4;
+                        spacing: Theme.space-3;
+                        alignment: center;
+
+                        Text {
+                            text: "\u{f002}";
+                            font-family: Theme.icon-font-family;
+                            color: Theme.fg-faint;
+                            font-size: 16px;
+                            vertical-alignment: center;
+                            width: 20px;
+                            horizontal-alignment: center;
+                        }
 
                         palette-input := TextInput {
                             init => { self.focus(); }
                             text <=> root.query;
                             color: Theme.fg;
-                            font-size: 15px;
-                            font-weight: 600;
+                            font-size: 16px;
+                            font-weight: 400;
                             vertical-alignment: center;
                             single-line: true;
                             horizontal-stretch: 1;
@@ -87,63 +137,107 @@ export component CommandPalette {
                             }
                         }
                     }
+
+                    // Placeholder — rendered as a sibling of the input
+                    // so it doesn't compete with the search glyph. The
+                    // 20-px offset (icon column) + 12-px gap matches
+                    // the HorizontalLayout above.
+                    if query == "" : Text {
+                        x: Theme.space-4 + 20px + Theme.space-3;
+                        y: 0px;
+                        height: 100%;
+                        text: "Search commands and files…";
+                        color: Theme.fg-faint;
+                        font-size: 16px;
+                        vertical-alignment: center;
+                    }
                 }
 
-                // Divider
+                // Divider — hairline `border`; barely visible per
+                // Raycast/Spotlight (they use a very subtle separator).
                 Rectangle { height: 1px; background: Theme.border; }
 
-                // Results list
+                // ── results list ───────────────────────────────────────
                 Rectangle {
                     vertical-stretch: 1;
                     clip: true;
 
                     for entry[i] in results : Rectangle {
-                        y: i * 40px;
-                        height: 40px;
+                        y: i * 44px;
+                        height: 44px;
                         width: parent.width;
-                        background: i == selected-index ? Theme.accent-soft : transparent;
+                        background: i == selected-index ? Theme.accent-soft : (hover-ta.has-hover ? Theme.hover-bg : transparent);
                         animate background { duration: Theme.motion-fast; easing: linear; }
 
-                        // Selected accent left rail
+                        // Selected-row accent left rail (2 px). Only the
+                        // selection uses accent — hover stays neutral.
                         if i == selected-index : Rectangle {
                             x: 0px; y: 0px;
                             width: 2px;
-                            height: 40px;
+                            height: 44px;
                             background: Theme.accent;
                         }
 
-                        TouchArea {
+                        hover-ta := TouchArea {
                             width: 100%;
                             height: 100%;
                             clicked => { root.confirm(entry.action-id); }
                         }
 
-                        VerticalLayout {
-                            x: Theme.space-4;
+                        HorizontalLayout {
+                            x: Theme.space-3;
                             y: 0px;
-                            width: parent.width - Theme.space-4 * 2;
+                            width: parent.width - Theme.space-3 * 2;
                             height: parent.height;
+                            spacing: Theme.space-3;
                             alignment: center;
-                            spacing: 2px;
 
+                            // Category placeholder glyph — chevron/right
+                            // so the row layout looks intentional even
+                            // when Rust hasn't attached per-action icons
+                            // yet. Uses `icon-font-family` so it can be
+                            // swapped for a real category glyph later
+                            // without touching this file.
                             Text {
-                                text: entry.title;
-                                color: Theme.fg;
-                                font-size: 13px;
+                                text: "\u{f0da}";
+                                font-family: Theme.icon-font-family;
+                                color: Theme.fg-faint;
+                                font-size: 14px;
+                                vertical-alignment: center;
+                                width: 18px;
+                                horizontal-alignment: center;
                             }
 
-                            if entry.subtitle != "" : Text {
-                                text: entry.subtitle;
-                                color: Theme.fg-muted;
-                                font-size: 11px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 2px;
+
+                                Text {
+                                    text: entry.title;
+                                    color: Theme.fg;
+                                    font-size: Theme.font-size;
+                                    font-weight: i == selected-index ? 500 : 400;
+                                    overflow: elide;
+                                }
+
+                                if entry.subtitle != "" : Text {
+                                    text: entry.subtitle;
+                                    color: Theme.fg-muted;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
                             }
                         }
                     }
 
+                    // Empty state — "Type to search…" or "No results".
+                    // 44 px tall to match a row so the panel doesn't
+                    // shrink to zero when the query returns nothing.
                     if results.length == 0 : Text {
                         text: query == "" ? "Type to search…" : "No results";
                         color: Theme.fg-faint;
-                        font-size: 13px;
+                        font-size: Theme.font-size;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                         width: parent.width;
