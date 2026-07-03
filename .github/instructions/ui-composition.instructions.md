@@ -14,7 +14,7 @@ This file is the source of truth for that flow. It replaces improvised approache
 Before writing a single Slint or Rust line for a new surface, read:
 
 - `assets/ui/theme.slint` — every token you will consume (`Theme.bg`, `Theme.accent`, `Theme.space_4`, `Theme.radius_lg`, …).
-- `assets/ui/components/` — reusable widgets (`atlas-controls.slint`, `address-bar.slint`, `bulk-rename.slint`, `command-palette.slint`, `connect-server.slint`, `operation-progress.slint`, `ops-panel.slint`, `pane.slint`, `search-panel.slint`, `shortcut-footer.slint`, `tab-bar.slint`, `titlebar.slint`, `breadcrumbs.slint`).
+- `assets/ui/components/` — reusable widgets (`atlas-controls.slint`, `address-bar.slint`, `bulk-rename.slint`, `command-palette.slint`, `connect-server.slint`, `operation-progress.slint`, `ops-panel.slint`, `right-dock-panel.slint`, `pane.slint`, `search-panel.slint`, `shortcut-footer.slint`, `tab-bar.slint`, `titlebar.slint`, `breadcrumbs.slint`).
 - The **closest existing surface** to what you are adding — a modal that is 80% like yours already exists in most cases.
 - `.github/instructions/design.instructions.md` — HIG-derived tokens and component grammar. **Every visible property comes from `Theme.*`; no hex, no pixel literals.**
 
@@ -58,10 +58,19 @@ Composition rules:
 - Use `AtlasFieldGroup { SectionLabel { ... } AtlasTextField { ... } }` for compact form rows.
 - Use `AtlasSegmentedControl` for backend/auth pickers; selected state is neutral, not accent.
 - Use exactly one `AtlasPrimaryButton` per modal when there is a true default action. All other actions use `AtlasSecondaryButton`.
-- Use `AtlasProgressBar` for operation progress in both modal and tray rows.
+- Use `AtlasProgressBar` for operation progress in both modal and right-dock rows.
 - Use `AtlasList` / `AtlasListRow` for inset saved-server and operations lists.
 
 Do not duplicate these components with local `Rectangle` styles. If a component needs a new visual affordance, extend `atlas-controls.slint` and the semantic tokens in `theme.slint` first.
+
+## 2.6 Shared right-side dock
+
+Search and Operations share exactly one right-side slot: `RightDockPanel` in `assets/ui/components/right-dock-panel.slint`.
+
+- `atlas.slint` owns one `right-dock-surface` property (`0` hidden, `1` Search, `2` Ops). Do not add parallel `search_visible` + `ops_visible` UI booleans.
+- `AppShell` owns the matching `RightDockSurface` state and exposes `toggle_search_panel`, `open_search_panel`, `toggle_ops_panel`, and `close_right_dock`.
+- `Cmd+F`, `Cmd+J`, and `Escape` route through `atlas-keymap`; do not hardcode right-dock shortcut handling in Slint.
+- The content variants live in `search-panel.slint` and `ops-panel.slint`; they should be transparent dock contents, not separate dock shells.
 
 ## 3. Adding a new modal — canonical steps
 
@@ -99,12 +108,11 @@ A modal is a Slint component under `assets/ui/components/` that:
 
    ```slint
    property <bool> any-modal-visible:
-       root.palette-visible || root.search-panel-visible
-       || root.bulk-rename-visible || root.op-modal-visible
+       root.palette-visible || root.bulk-rename-visible || root.op-modal-visible
        || root.connect-modal-visible || root.your-modal-visible;
    ```
 
-   There is no `ActiveModal` enum — Atlas uses per-modal `*-visible` booleans OR'd into `any-modal-visible`. Do not invent a parallel enum.
+   There is no `ActiveModal` enum — Atlas uses per-modal `*-visible` booleans OR'd into `any-modal-visible`. Do not invent a parallel modal enum. The shared right dock is the exception and uses `RightDockSurface` because Search/Ops must be mutually exclusive.
 7. **Rust controller.** New feature directory under `crates/atlas-ui/src/<feature>/` with `mod.rs` + `controller.rs`. The controller holds per-session state (`parking_lot::RwLock<…>`), spawns any background work through the shared `atlas_remote::runtime::handle()` if it needs tokio, and exposes typed methods (`open()`, `close()`, `submit(…)`).
 8. **Wire callbacks in `shell.rs::wire_callbacks`.** One `on_<something>` closure per Slint callback. Keep the closure body a one-liner that delegates to the controller.
 9. **Live-verify via MCP.** Screenshot the new modal open, escape-closed, tab-navigated, and with a submit path exercised. See `docs/developer-setup.md` §MCP.

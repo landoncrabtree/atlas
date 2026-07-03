@@ -357,15 +357,15 @@ For operations whose foreground duration exceeds ~250 ms (`FOREGROUND_DEFER` in 
 
 ### Ops panel
 
-- Bottom-right docked tray, ~236 tall when open, `Theme.modal-bg`, `Theme.modal-radius`, and a restrained shadow.
-- Width caps around 760 px so the menu reads like a native utility tray instead of a full-width drawer.
-- Interior rows live in `AtlasList`; row height is 52 px for progress detail.
-- Progress uses `AtlasProgressBar`; only the progress fill uses accent.
-- Cancel/Dismiss icon-only controls are revealed on hover. Terminal rows fade to 60% opacity.
+- Right-docked in the same slot and width as the Search side panel via `RightDockPanel`; Search and Ops are mutually-exclusive content variants.
+- `Cmd+J` toggles Ops in the shared slot. If Search is showing, `Cmd+J` swaps to Ops; if Ops is showing, `Cmd+F` swaps back to Search.
+- Interior rows live in `AtlasList`; row height is 44 px.
+- Progress uses `AtlasProgressBar` (4 px, `radius-xs` rounded ends); only the progress fill uses `accent`.
+- Cancel/Dismiss icon-only controls are revealed on hover. Terminal done/failed/cancelled rows fade to 60% opacity after 5s.
 
 ### Search side panel
 
-- Right-docked, 320 wide, `panel_bg` fill, 1-px left `border`.
+- Right-docked in `RightDockPanel`, the shared slot also used by Ops. Only one right-dock surface is visible at a time.
 - Input at top (`title` size). Results below in Details-view grammar.
 - Content matches: monospace snippet, matched spans wrapped in `accent`.
 

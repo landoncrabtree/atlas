@@ -74,6 +74,7 @@ Existing landmark bindings (as of Phase 2.5):
 | `fs::View` | `l`, `right`, `.`, `enter` | same |
 | `rename::OpenBulk` | `shift-f2` | `shift-f2` |
 | `workspace::ToggleDualPane` | `cmd-\` | `ctrl-\` |
+| `ui::Cancel` | `escape` | `escape` |
 | `search::Toggle` / `search::Open` | `cmd-f` / `cmd-shift-f` | `ctrl-f` / `ctrl-shift-f` |
 | `ops::TogglePanel` | `cmd-j` | `ctrl-j` |
 | `remote::Connect` | `cmd-k` | `ctrl-alt-k` |
