@@ -129,6 +129,64 @@ async fn list_directory_returns_children() -> Result<()> {
     Ok(())
 }
 
+/// Dotfile handling — S3 keys starting with `.` are valid object
+/// names, and the S3 backend must return them in the raw listing
+/// and mark them as hidden.
+///
+/// S3 has no real "directories": prefixes are synthesised from `/`
+/// separators in the key. `.hidden_dot_dir/keep.txt` therefore
+/// surfaces as a `.hidden_dot_dir` prefix in the top-level listing,
+/// which counts as a dot-prefixed entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_preserves_dot_entries_and_filter_hides_them() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockS3Server::start("atlas-dotfiles")?;
+    let _s3_guard = server.install_s3_test_env_locked().await;
+
+    let vm = open_vm(server.uri(), valid_creds())?;
+    // Seed: dot-prefix "directory", dot file, visible file.
+    vm.write(".hidden_dot_dir/keep.txt", b"keep".to_vec())
+        .await?;
+    vm.write(".dot_file", b"secret".to_vec()).await?;
+    vm.write("visible_file", b"public".to_vec()).await?;
+
+    let list_vm = open(
+        &Location::Remote(server.uri(), BackendKind::S3),
+        valid_creds(),
+        OpenOptions::default(),
+    )?;
+    wait_loaded(&list_vm, Duration::from_secs(15))?;
+
+    let entries = list_vm.entries();
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert!(
+        names.contains(&".hidden_dot_dir")
+            && names.contains(&".dot_file")
+            && names.contains(&"visible_file"),
+        "raw list must include all 3 entries; got {names:?}",
+    );
+    for e in &entries {
+        let expected = e.name.starts_with('.');
+        assert_eq!(
+            e.metadata.is_hidden, expected,
+            "entry {:?} must have is_hidden = {expected}",
+            e.name,
+        );
+    }
+
+    let mut filter = list_vm.filter();
+    filter.include_hidden = false;
+    list_vm.set_filter(filter)?;
+    let filtered: Vec<String> = list_vm.entries().iter().map(|e| e.name.clone()).collect();
+    assert_eq!(
+        filtered.as_slice(),
+        &["visible_file"],
+        "Filter::include_hidden=false must hide dot entries; got {filtered:?}",
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stat_single_entry() -> Result<()> {
     crate::skip_if_no_python!();
