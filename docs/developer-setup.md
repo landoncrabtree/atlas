@@ -12,9 +12,9 @@
 - A C/C++ toolchain for Skia bindings (Apple Command Line Tools /
   `build-essential` / MSVC Build Tools).
 
-The full Xcode IDE is **not** required on macOS — Slint with the Skia renderer
-uses prebuilt shaders and only needs a working C++ compiler, which the
-Command Line Tools package provides.
+The full Xcode IDE is **not** required on macOS — Slint 1.17 with the Skia
+renderer uses prebuilt shaders and only needs a working C++ compiler, which
+the Command Line Tools package provides.
 
 ## First-time macOS setup
 
@@ -26,9 +26,13 @@ rustup show                   # confirms the toolchain installs from rust-toolch
 ## First-time Linux setup (Debian/Ubuntu)
 
 ```bash
-sudo apt install -y build-essential pkg-config libfontconfig1-dev libxkbcommon-dev \
-    libwayland-dev libxcb1-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+sudo apt install -y build-essential pkg-config libdbus-1-dev \
+    libfontconfig1-dev libxkbcommon-dev libwayland-dev \
+    libxcb1-dev libxrandr-dev libxi-dev libgl1-mesa-dev
 ```
+
+`libdbus-1-dev` is needed for `keyring` and `arboard`; the CI matrix
+installs it explicitly on Linux runners.
 
 ## Daily commands
 
@@ -36,7 +40,8 @@ These are the workspace-wide gates every PR must satisfy:
 
 ```bash
 cargo build --workspace
-cargo test --workspace
+cargo nextest run --workspace --retries 3      # tests — see "Running tests" below
+cargo test --doc --workspace                   # doctests (nextest does not run doctests yet)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
@@ -53,8 +58,8 @@ cargo run -p atlas-indexd                  # run the indexer daemon
 Debug logging is controlled by `RUST_LOG` (see [tracing docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for the filter grammar):
 
 ```bash
-RUST_LOG=atlas=debug ./target/debug/atlas > /tmp/atlas.log 2>&1 &
-tail -F /tmp/atlas.log
+RUST_LOG=atlas=debug ./target/debug/atlas > atlas.log 2>&1 &
+tail -F atlas.log
 ```
 
 Common filters:
@@ -65,6 +70,73 @@ Common filters:
 | `atlas=debug` | Every controller decision and dispatcher fire |
 | `atlas_remote=trace,atlas=info` | Network round-trip tracing without spamming UI logs |
 | `atlas_keymap=debug` | Watch chord resolution + `keymap-bypass-active` transitions |
+
+## Running tests
+
+Atlas uses [`cargo-nextest`](https://nexte.st) as the primary test runner —
+both for local development and in CI (`.github/workflows/ci.yml`). Nextest
+runs each test binary in its own process (better isolation), executes
+binaries in parallel, and supports **per-test retries**, which lets us
+tolerate the small set of documented filesystem-timing flakies without
+silencing them via `#[ignore]`.
+
+Install nextest once per machine:
+
+```bash
+cargo install cargo-nextest --locked
+```
+
+Run the full suite the way CI does:
+
+```bash
+cargo nextest run --workspace --retries 3
+```
+
+Doctests do not run under nextest (upstream limitation) — invoke them
+separately:
+
+```bash
+cargo test --doc --workspace
+```
+
+Run a single test with logging:
+
+```bash
+RUST_LOG=atlas_remote=debug \
+    cargo nextest run -p atlas-remote sftp::list_dir_streams -- --nocapture
+```
+
+The `--retries 3` flag is the same value the CI matrix uses
+(`cargo nextest run --workspace --locked --retries 3 --no-fail-fast`).
+Keeping the local invocation aligned with CI is the whole point: a test
+that CI passes should pass locally, and a test that fails locally after
+three attempts is a real bug, not a flake.
+
+### Known filesystem-timing flakies
+
+nextest's `--retries` handles the small documented set of tests that
+occasionally flake under high parallel load. These are timing races, not
+correctness bugs — they retry clean and should not be treated as
+regressions:
+
+- `atlas-watch::test_*` — macOS FSEvents drops `Create` / `Modify` events
+  under parallel test load.
+- `atlas-config::watcher_reload_and_error` — `notify` debouncer race
+  against the assertion window.
+- `theming::watcher::hot_reload_on_file_change` — same FSEvents
+  debouncer race as above, tested against the themes directory.
+- `views::miller::controller::set_root_opens_one_column` — Miller
+  controller waits on an async load that occasionally exceeds the
+  fixture timeout on cold caches.
+
+Follow the protocol in
+[`.github/skills/fix-flaky-test/SKILL.md`](../.github/skills/fix-flaky-test/SKILL.md)
+before spending debug time on any of these — the fastest path is to run
+the failing test on the parent commit and confirm the failure is
+pre-existing.
+
+Do **not** add `sleep(…)` to "fix" a flaky. Fix the underlying race, or
+add an explicit `wait_until` helper that polls for the expected state.
 
 ## UI authoring
 
@@ -79,8 +151,8 @@ Layout on disk:
 | `assets/ui/atlas.slint` | The root `AtlasWindow`. Minimise edits here to reduce merge friction. |
 | `assets/ui/theme.slint` | The `Theme` global. Every visible property comes from here. |
 | `assets/ui/pane-data.slint` | `PaneSlintData` struct + parallel per-pane data types. |
-| `assets/ui/components/` | Reusable widgets (address bar, breadcrumbs, pane, ops panel, connect-server modal, command palette, bulk-rename, operation-progress, search panel, tab bar, titlebar, shortcut footer). |
-| `assets/ui/views/{details,grid,gallery,miller,tree}/` | Per-view-mode rendering + row templates. |
+| `assets/ui/components/` | Reusable widgets and modals (address bar, breadcrumbs, pane, ops panel, connect-server modal, command palette, bulk-rename, operation-progress, search panel, tab bar, titlebar, shortcut footer). |
+| `assets/ui/views/{details,grid,gallery,miller}/` | Per-view-mode rendering + row templates. |
 
 Rust-side controllers live under `crates/atlas-ui/src/<feature>/` with a
 `mod.rs` + `controller.rs` split — see `remote/`, `palette/`, `search/`,
@@ -108,14 +180,16 @@ rm -f ~/.config/atlas/keymaps/default.toml
 ```
 
 If you edit `crates/atlas-keymap/src/defaults.rs`, regenerate the
-per-platform TOMLs so `cargo test` stays green:
+per-platform TOMLs so the checked-in files stay byte-identical:
 
 ```bash
 cargo test -p atlas-keymap regen_default_keymap -- --ignored
 ```
 
 A companion test (`test_checked_in_default_toml_matches_emitter`) fails on
-normal `cargo test` if the checked-in files drift.
+a normal test run if the checked-in files drift. This is one of the few
+places where `cargo test` (not `cargo nextest`) is called out explicitly:
+the regen test is `#[ignore]`d and needs the plain-test `--ignored` flag.
 
 ## User config paths
 
@@ -182,13 +256,13 @@ cd tools/mock-servers
 uv sync   # one-shot: installs pinned deps into .venv/
 
 # SFTP:
-uv run sftp_server.py --port 2222 --data-dir /tmp/atlas-sftp \
+uv run sftp_server.py --port 2222 --data-dir ./data-sftp \
     --user atlas --password atlas
 # FTP:
-uv run ftp_server.py --port 2121 --data-dir /tmp/atlas-ftp \
+uv run ftp_server.py --port 2121 --data-dir ./data-ftp \
     --user atlas --password atlas
 # WebDAV:
-uv run webdav_server.py --port 8080 --data-dir /tmp/atlas-webdav \
+uv run webdav_server.py --port 8080 --data-dir ./data-webdav \
     --user atlas --password atlas
 # S3 (bucket auto-created; fixed test creds documented in the tool README):
 uv run s3_server.py --port 5000 --bucket atlas-test
@@ -200,7 +274,8 @@ If `uv` isn't available, fall back to plain `pip`:
 cd tools/mock-servers
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python sftp_server.py --port 2222 --data-dir /tmp/x --user atlas --password atlas
+.venv/bin/python sftp_server.py --port 2222 --data-dir ./data-sftp \
+    --user atlas --password atlas
 ```
 
 ### How the Rust harness spawns them
@@ -214,7 +289,7 @@ To skip every remote integration test (offline, CI without Python, or a
 hostile sandbox):
 
 ```bash
-MOCK_SERVERS_SKIP=1 cargo test --workspace
+MOCK_SERVERS_SKIP=1 cargo nextest run --workspace
 ```
 
 Each of `crates/atlas-remote/tests/{sftp,ftp,webdav,s3,cross_backend_stream}.rs`
@@ -283,7 +358,7 @@ if your resolution differs you can compute the ratio directly.
 
 ```
 # 1. Launch under RUST_LOG so failures leave a trace:
-RUST_LOG=atlas=debug ./target/debug/atlas > /tmp/atlas.log 2>&1 &
+RUST_LOG=atlas=debug ./target/debug/atlas > atlas.log 2>&1 &
 
 # 2. From the Copilot CLI (or any MCP client), drive the app:
 computer-use-take_screenshot()
@@ -330,72 +405,6 @@ atlas-remote
 Per-backend remote crates (`russh`, `russh-sftp`, `suppaftp`, `reqwest`,
 `quick-xml`, `object_store`, `keyring`) all live behind
 `atlas-remote::vm::BackendClient`; consumers only see `atlas_fs::LocationViewModel`.
-
-## Known flakies
-
-These two tests occasionally fail under high parallel load and are known to
-be filesystem-timing flakies rather than real bugs. Both retry-clean:
-
-- `atlas_config::watcher_reload_and_error` — FSEvents timing race between
-  `notify` debounce and the test's assertions.
-- `atlas_watch::test_created_event` — macOS FSEvents drops the `Create`
-  event under parallel test load.
-
-If you hit one, re-run the specific test:
-
-```bash
-cargo test -p atlas-config watcher_reload_and_error
-cargo test -p atlas-watch  test_created_event
-```
-
-Don't chase these unless you can reproduce them deterministically — see the
-`fix-flaky-test` skill in `.github/skills/fix-flaky-test/SKILL.md` for the
-protocol we follow.
-
-## Packaging (macOS)
-
-```bash
-dist/release.sh
-```
-
-Produces `target/dist/Atlas.app` and `target/dist/Atlas-<version>.dmg`.
-
-Individual steps:
-
-```bash
-dist/build-app.sh   # compile release binaries, assemble Atlas.app
-dist/sign.sh        # code-sign with hardened runtime (requires credentials)
-dist/build-dmg.sh   # create compressed DMG
-dist/notarize.sh    # submit to Apple Notary Service and staple ticket
-```
-
-Signing and notarization require environment variables:
-
-| Variable | Description |
-|----------|-------------|
-| `ATLAS_SIGNING_IDENTITY` | `Developer ID Application: Name (TEAMID)` — from your Apple developer keychain |
-| `ATLAS_NOTARY_PROFILE` | Keychain profile name for `notarytool`; set via `xcrun notarytool store-credentials <profile-name>` |
-
-If either variable is unset, the corresponding step is silently skipped — you
-still get a working (unsigned) bundle and DMG that testers can right-click → Open.
-
-### Notes
-
-- Icons: place artwork PNGs in `dist/icons/atlas.iconset/` before release;
-  `build-app.sh` generates a solid-color placeholder automatically so the
-  bundle is always valid.
-- Themes and keymaps in `assets/` are copied into `Contents/Resources/` so
-  Atlas can seed user directories on first launch.
-- `atlas-indexd` is bundled at `Contents/MacOS/atlas-indexd`; a LaunchAgent
-  plist is placed at
-  `Contents/Library/LaunchAgents/dev.atlas.atlas-indexd.plist` for
-  post-install daemon registration.
-
-### Planned (v0.2)
-
-- Sparkle auto-updater integration
-- Linux `.deb` / `.rpm` / AppImage
-- Windows MSI / MSIX
 
 ## Licensing note (Slint)
 
