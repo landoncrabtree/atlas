@@ -11,7 +11,6 @@ impl Default for General {
             start_path: None,
             confirm_on_quit: false,
             follow_symlinks: true,
-            vim_mode: false,
             dual_pane: true,
         }
     }

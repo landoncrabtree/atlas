@@ -191,11 +191,6 @@ export component AtlasWindow inherits Window {
     /// live atlas-keymap Keymap so user rebindings appear automatically.
     in property <[ShortcutHint]> shortcut-hints: [];
 
-    // When true, the `hjkl` keys navigate (vim style). When false, only
-    // arrow keys / Enter / Backspace navigate; letter keys pass through
-    // to focused controls. Driven by `config.general.vim_mode`.
-    in property <bool> vim-mode: false;
-
     /// Border thickness (in logical pixels) drawn inside the focused pane so
     /// users can tell which pane will receive keystrokes. Wired from
     /// `config.ui.active_pane_border_px`; set to 0 to disable.
@@ -854,9 +849,9 @@ export component AtlasWindow inherits Window {
             // Only fire when at least one modifier is held OR the key is a
             // named/function key. Plain letters go straight to text inputs
             // (address bar, palette query) so users can type. Vim `hjkl`
-            // for file navigation lives in the fallback `key-pressed`
-            // handler below, gated on `vim-mode`, so it doesn't collide
-            // with typing in a TextInput.
+            // and WASD navigation live in the fallback `key-pressed` handler
+            // below, which routes through the same dispatcher but only after
+            // TextInputs have had first refusal (bubble phase).
             //
             // When any modal (palette, goto, search, bulk rename, ops
             // progress) is visible OR a per-pane text input (address bar)
@@ -889,25 +884,19 @@ export component AtlasWindow inherits Window {
         // Fallback for keys the dispatcher didn't consume and that no child
         // TextInput handled either. This is the file-list navigation path:
         //
-        //   - Arrow keys / Enter / Backspace / vim `hjkl`: forwarded to the
-        //     dispatcher under Pane context, so user rebindings apply. The
-        //     `vim-mode` flag gates hjkl at the dispatcher-lookup layer
-        //     (see main.rs) — if disabled, those chords resolve to nothing
-        //     and the reject path lets TextInputs claim the letters.
-        //
-        // Note: this fires only AFTER children have had a chance to handle
-        // the key (Slint's regular key-pressed is bubble-phase). So typing
-        // in the AddressBar TextInput consumes 'j'/'k'/'h'/'l' before the
-        // dispatcher ever sees them.
+        //   - Arrow keys / Enter / Backspace: always forwarded to the
+        //     dispatcher under Pane context.
+        //   - Letter keys (`hjkl`, `wasd`, `,`, `.`, `/`, `g`): forwarded too.
+        //     Because Slint's regular key-pressed is bubble-phase, typing in
+        //     the AddressBar TextInput consumes these letters BEFORE the
+        //     dispatcher ever sees them — so vim / wasd navigation and text
+        //     entry never collide. When a modal or address bar owns focus,
+        //     `keymap-bypass-active` also flips true, forcing the dispatcher
+        //     to the `[Global]` context only. Result: no config gate needed;
+        //     keyboard-first navigation is always available.
         key-pressed(event) => {
             if palette-visible || search-panel-visible || bulk-rename-visible || op-modal-visible || connect-modal-visible {
                 return reject;
-            }
-            // Gate vim letters on the vim-mode flag so users who don't want
-            // hjkl hijacked can turn it off. Named keys (arrows, Enter,
-            // Backspace) always fall through to the dispatcher.
-            if event.text == "j" || event.text == "k" || event.text == "h" || event.text == "l" {
-                if !vim-mode { return reject; }
             }
             if root.handle-key-chord(event.text,
                                      event.modifiers.control,

@@ -71,10 +71,15 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         p("q", ("Global", "app::Quit")),
         // ── File-list navigation (Pane context) ───────────────────────────
         //
-        // Vim `hjkl` doubles as file-list navigation when
-        // `general.vim_mode = true`; otherwise the letter keys pass
-        // through to text inputs. Arrow keys / Enter / Backspace are
-        // always active regardless of vim mode.
+        // Vim `hjkl`, WASD, arrow keys, `,` / `.`, `Enter`, and `Backspace`
+        // all navigate the focused pane's file list. They are always active
+        // — there is no config-gated "vim mode" switch. Because Slint's
+        // key-pressed handler is bubble-phase, typing in the address bar
+        // TextInput consumes these letters BEFORE the dispatcher sees them,
+        // so vim/wasd navigation and text entry never collide. When a modal
+        // or focused text input is up, `keymap-bypass-active` flips true and
+        // the dispatcher restricts to the `[Global]` context — Pane bindings
+        // return false and the key falls through to the input natively.
         //
         // `fs::View` handles BOTH cd-into-folder and open-file-with-OS —
         // there is no separate "activate" action; the single action ID

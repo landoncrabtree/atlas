@@ -329,7 +329,8 @@ fn main() -> Result<()> {
     shell.apply_column_widths(&config.view.details.column_widths);
 
     // Push config-driven UI settings into the Slint window.
-    shell.set_vim_mode(config.general.vim_mode); // config: reads config.general.vim_mode
+    // (vim_mode gate was removed in refactor/nav-convergence — hjkl / wasd
+    // / arrow keys are always active for the Pane context.)
 
     // Open in dual-pane layout when the config asks for it (default: true).
     // The new pane inherits pane 0's location via AppShell::split_focused.
@@ -752,7 +753,6 @@ fn spawn_config_event_thread(
                         shell.set_shortcut_footer_visible(cfg.ui.show_shortcuts);
                         shell.set_animations_enabled(cfg.ui.animations);
                         shell.set_active_pane_border_px(cfg.ui.active_pane_border_px);
-                        shell.set_vim_mode(cfg.general.vim_mode);
 
                         // ── Icon pack (Phase 2.11) ────────────────────────
                         //

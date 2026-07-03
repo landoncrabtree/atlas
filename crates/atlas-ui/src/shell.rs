@@ -2281,19 +2281,6 @@ impl AppShell {
         self.project_workspace_to_slint();
     }
 
-    /// Enable / disable vim-mode navigation on the Slint FocusScope.
-    ///
-    /// When true, `hjkl` navigates. When false, only arrow keys do.
-    pub fn set_vim_mode(self: &Arc<Self>, enabled: bool) {
-        let weak = self.window.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(window) = weak.upgrade() {
-                window.set_vim_mode(enabled);
-                tracing::info!(vim_mode = enabled, "vim keybinds toggled");
-            }
-        });
-    }
-
     /// Set which tab is active in pane `id` and reload its location. No-op if
     /// `id` or `tab` is out of range.
     pub fn select_tab(self: &Arc<Self>, id: PaneId, tab: usize) {
