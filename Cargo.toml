@@ -22,7 +22,7 @@ version = "0.0.1"
 edition = "2021"
 rust-version = "1.90"
 authors = ["Landon Crabtree"]
-license = "LicenseRef-Proprietary"
+license = "MIT"
 repository = "https://github.com/landoncrabtree/atlas"
 publish = false
 
