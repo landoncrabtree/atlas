@@ -65,7 +65,9 @@ Each crate's `Cargo.toml` consumes dependencies via `workspace.dependencies`. Ad
 
 ### Performance hygiene
 
-The non-negotiable headline: **no blocking I/O on the UI thread or any thread serving the UI.** See [`.github/instructions/performance.instructions.md`](instructions/performance.instructions.md) for the full set of goals, principles, anti-patterns, and the benchmark methodology.
+The non-negotiable headline: **no blocking I/O on the UI thread or any thread serving the UI.**
+Measure before optimizing hot paths; use [`.github/skills/write-benches/SKILL.md`](skills/write-benches/SKILL.md) for benchmark setup, interpretation, and perf commit format.
+Performance goals and anti-patterns live in [`.github/instructions/performance.instructions.md`](instructions/performance.instructions.md).
 
 ### Concurrency
 
@@ -107,28 +109,15 @@ The non-negotiable headline: **no blocking I/O on the UI thread or any thread se
 
 ### Testing
 
-- Every public API has tests. Aim for behavior tests, not just type-check stubs.
-- Use `tempfile::TempDir` for filesystem tests; never read/write outside `target/` or tempdirs.
-- Tests must not depend on each other or on global state. Use `serial_test` if you must mutate env vars.
+New behavior needs behavior coverage; writing, running, and flaky-triage rules
+live in [`.github/skills/testing/SKILL.md`](skills/testing/SKILL.md).
 
-## Commit conventions
+## Commit conventions and pull requests
 
-- **Conventional Commits**: `feat(crate):`, `fix(crate):`, `refactor(crate):`, `chore:`, `docs:`, `test:`, `perf:`.
-- Subject ≤ 72 chars, imperative mood (`add`, not `added`).
-- Body explains the *why* — wraps at 80 cols — bullet the *what* when there are several changes.
-- One concern per commit. Split unrelated changes.
-- When the change was drafted or assisted by Copilot, append the trailer:
-  ```
-  Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
-  ```
-
-## Pull requests
-
-- Title mirrors the commit subject.
-- Description states: motivation, what changed, how it was tested, and any user-visible impact.
-- Link to the issue or plan todo where applicable.
-- Keep PRs focused; large refactors get their own PR.
-- CI (`fmt`, `clippy`, `test`, `build`) must be green before merge.
+Commit format, PR standards, and the Copilot trailer live in
+[`docs/contributing.md`](../docs/contributing.md). Keep commits focused and run
+the gates from [`docs/developer-setup.md`](../docs/developer-setup.md#daily-commands)
+before pushing.
 
 ## What NOT to do
 
@@ -147,15 +136,18 @@ The non-negotiable headline: **no blocking I/O on the UI thread or any thread se
 - All documentation is in the `docs/` directory (user-facing) and `.github/instructions/` (contributor / AI conventions).
 - The source-of-truth docs are:
   - `.github/instructions/architecture.instructions.md` — crate layout, process model, threading, storage.
-  - `.github/instructions/performance.instructions.md` — performance goals and benchmark methodology.
+  - `.github/instructions/performance.instructions.md` — performance goals, principles, and anti-patterns.
   - `.github/instructions/design.instructions.md` — Apple-HIG-inspired UI/UX tokens and component patterns.
   - `.github/instructions/ui-composition.instructions.md` — canonical flow for adding a new modal, panel, view mode, or context menu.
   - `.github/instructions/keybind-authoring.instructions.md` — end-to-end keybind workflow.
   - `.github/instructions/remote-backend-authoring.instructions.md` — end-to-end remote-backend workflow.
+  - `.github/skills/testing/SKILL.md` — testing lifecycle, commands, and flaky-triage protocol.
+  - `.github/skills/write-benches/SKILL.md` — benchmark lifecycle, result assessment, and perf commit format.
   - `docs/developer-setup.md` — toolchain, prerequisites, daily commands, mock servers, MCP tooling.
-  - `docs/contributing.md` — contributing guidelines.
-  - `docs/multi-pane.md` — user-facing guide to the tiling workspace (concepts, keybinds, remote panes, config recipes).
+  - `docs/contributing.md` — contributing guidelines and PR standards.
+  - `docs/multi-pane.md` — user-facing guide to the tiling workspace.
   - `docs/keymap.md` — full default keymap reference.
-- Cloud-agent skills live under `.github/skills/<skill-name>/SKILL.md` (per the [GitHub add-skills spec](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/add-skills)). Skills are optional entry points that point Copilot at the relevant instruction file for common tasks.
+- Cloud-agent skills live under `.github/skills/<skill-name>/SKILL.md` (per the
+  [GitHub add-skills spec](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/add-skills)).
 - For any significant changes (producer, consumer, API, performance, etc.), update the relevant doc(s) to ensure consistency and clarity.
 - All documentation must be up-to-date and accurately reflect the current state of the repository.
