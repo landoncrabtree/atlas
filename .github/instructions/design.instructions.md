@@ -36,7 +36,7 @@ Layered planes establish hierarchy. Modals float above panels. Panels sit on the
 
 ### 4. Consistency
 
-Same interaction, same treatment. A row hover looks the same in Details, Grid, Miller, Tree, and Gallery. Buttons follow one visual grammar. Text inputs follow one grammar.
+Same interaction, same treatment. A row hover looks the same in Details, Grid, Miller, and Gallery. Buttons follow one visual grammar. Text inputs follow one grammar.
 
 - **Do**: single source of truth in `Theme` global; component compositions rather than one-off styles.
 - **Don't**: local color overrides in components; ad-hoc padding numbers.
@@ -221,14 +221,6 @@ Do NOT animate scroll position, cursor, or focused-row indicator movement — th
 - Divider between columns: 1-px `border` line.
 - Focused column: subtle `accent_soft` background wash + 1-px `accent` right edge.
 - Selected row in each column persists visually even when column isn't focused (dimmed to 60% opacity of `selection_bg`).
-
-### Tree view
-
-- Row height 26 (denser than Details).
-- Indent 16-px per level.
-- Chevron: `›` (collapsed) / `⌄` (expanded) at `fg_muted`, `fg` on hover. Rotates smoothly (100 ms).
-- Kind glyph after the chevron.
-- Selected: `selection_bg` fill on the full row, `radius_sm`.
 
 ### Gallery view
 

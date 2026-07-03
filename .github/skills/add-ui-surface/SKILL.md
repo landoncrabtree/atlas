@@ -40,7 +40,7 @@ Do not invent a new state channel. Extend the disjunction.
 
 ## Verify
 
-- `cargo build --workspace` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` all green.
+- `cargo build --workspace` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo nextest run --workspace --retries 3` all green.
 - Live-verify with the `computer-use-*` MCP tools: `take_screenshot` before + after, `send_keybind` to exercise the new chord, `type_text` in the input.
 - Attach the MCP screenshot to the PR — mandatory for any UI change.
 
