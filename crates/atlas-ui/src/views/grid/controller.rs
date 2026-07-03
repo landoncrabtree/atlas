@@ -271,6 +271,28 @@ impl GridController {
         self.push_selection_to_ui();
     }
 
+    /// Move focus by `(delta_row, delta_col)`, wrapping across row
+    /// boundaries on the horizontal axis (Left at col 0 → prev row's
+    /// last col; Right at end-of-row → next row col 0). Vertical delta
+    /// still clamps at grid edges.
+    ///
+    /// Used by the `pane::MoveLeft` / `pane::MoveRight` dispatcher path
+    /// so Grid horizontal navigation mirrors text-editor caret motion
+    /// — pressing Right at the end of a row lands on the first cell
+    /// of the next row instead of getting stuck.
+    pub fn move_focus_wrapping(self: &Arc<Self>, delta_row: isize, delta_col: isize) {
+        let len = self.entries.read().len();
+        if len == 0 {
+            return;
+        }
+        let cols = self.columns.load(Ordering::Relaxed).max(1);
+        let current = self.focused.load(Ordering::Relaxed);
+        let current_idx = if current == NO_FOCUS { 0 } else { current };
+        let new_idx = grid_move_wrapping(current_idx, delta_row, delta_col, cols, len);
+        self.focused.store(new_idx, Ordering::Relaxed);
+        self.push_selection_to_ui();
+    }
+
     /// Move focus AND single-select the new cell — keyboard-navigation
     /// parity with left-click.
     pub fn move_and_select(self: &Arc<Self>, delta_row: isize, delta_col: isize) {
@@ -601,6 +623,49 @@ pub(crate) fn grid_move(
     candidate.min(len - 1)
 }
 
+/// Compute the next focused linear index after a 2-D grid move,
+/// wrapping across row boundaries on `delta_col`.
+///
+/// Left at column 0 wraps to the previous row's last populated column
+/// (text-editor caret style). Right at end-of-row wraps to the next
+/// row's column 0. Vertical `delta_row` still clamps at grid edges —
+/// this helper is only meant for `Direction::Left` / `Direction::Right`
+/// keypresses; row jumps use [`grid_move`] to preserve the "you can
+/// press Down past the last row and stay put" behaviour.
+///
+/// # Examples
+///
+/// ```ignore
+/// // 3 columns, 5 entries → row 0 = [0,1,2], row 1 = [3,4]
+/// // At col 0, pressing Left wraps to previous row's last col (2).
+/// assert_eq!(grid_move_wrapping(3, 0, -1, 3, 5), 2);
+/// // At col 2, pressing Right wraps to next row col 0 (3).
+/// assert_eq!(grid_move_wrapping(2, 0, 1, 3, 5), 3);
+/// // At row 0 col 0 (first entry) Left saturates at 0 — no upward wrap
+/// // from the top-left corner.
+/// assert_eq!(grid_move_wrapping(0, 0, -1, 3, 5), 0);
+/// ```
+pub(crate) fn grid_move_wrapping(
+    current: usize,
+    delta_row: isize,
+    delta_col: isize,
+    cols: usize,
+    len: usize,
+) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let cols = cols.max(1);
+    // Convert to a signed linear index; a horizontal step of ±1 in linear
+    // space wraps across rows naturally. Vertical delta stays row-aligned.
+    let current_i = current as isize;
+    let candidate = current_i
+        .saturating_add(delta_row.saturating_mul(cols as isize))
+        .saturating_add(delta_col);
+    let max_idx = (len as isize) - 1;
+    candidate.clamp(0, max_idx) as usize
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -678,6 +743,43 @@ mod tests {
         // 11 entries, 4 cols: last row has idx 8..=10
         // from idx 3 (row 0, col 3), down 2 rows → (row 2, col 3) = 11 → clamped to 10
         assert_eq!(grid_move(3, 2, 0, 4, 11), 10);
+    }
+
+    // ── grid_move_wrapping ───────────────────────────────────────────────────
+    //
+    // Horizontal step ±1 wraps between rows text-editor caret style.
+    // Vertical step still clamps; the wrapping helper is used only for
+    // Left/Right keypresses per the ViewNavigation dispatch table.
+
+    #[test]
+    fn wrap_right_at_end_of_row_lands_on_next_row_col_zero() {
+        // 4 cols, 10 entries. idx 3 = (row 0, col 3, last col). +1 → idx 4 (row 1, col 0).
+        assert_eq!(grid_move_wrapping(3, 0, 1, 4, 10), 4);
+    }
+
+    #[test]
+    fn wrap_left_at_col_zero_lands_on_prev_row_last_populated_col() {
+        // 4 cols, 10 entries. idx 4 = (row 1, col 0). -1 → idx 3 (row 0, col 3).
+        assert_eq!(grid_move_wrapping(4, 0, -1, 4, 10), 3);
+    }
+
+    #[test]
+    fn wrap_left_at_first_entry_saturates_at_zero() {
+        // Top-left corner — Left has nowhere to wrap to.
+        assert_eq!(grid_move_wrapping(0, 0, -1, 4, 10), 0);
+    }
+
+    #[test]
+    fn wrap_right_at_last_entry_saturates_at_last() {
+        // 10 entries max → idx 9 is last.
+        assert_eq!(grid_move_wrapping(9, 0, 1, 4, 10), 9);
+    }
+
+    #[test]
+    fn wrap_left_from_partial_last_row_col_zero_lands_on_prev_row_last_col() {
+        // 4 cols, 11 entries: row 2 has idx 8,9,10 (col 0..=2).
+        // idx 8 (row 2, col 0) − 1 → idx 7 (row 1, col 3 — last col of row 1).
+        assert_eq!(grid_move_wrapping(8, 0, -1, 4, 11), 7);
     }
 
     // ── grid_position / grid_row_count / grid_columns_for_width ────────────
