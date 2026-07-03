@@ -315,10 +315,15 @@ search".
 |---|---|---|---|---|
 | `remote::Connect` | `cmd-k` | `ctrl-alt-k` | `ctrl-alt-k` | Global |
 
-### Search / ops panel
+### Search / ops right dock
+
+Search and Operations share the same right-side dock slot. `search::Toggle`
+and `ops::TogglePanel` toggle their own surface, or swap the shared slot when
+the other surface is showing. `ui::Cancel` closes the active right-dock surface.
 
 | Action ID | macOS | Linux | Windows | Context |
 |---|---|---|---|---|
+| `ui::Cancel` | `escape` | `escape` | `escape` | Global |
 | `search::Toggle` | `cmd-f` | `ctrl-f` | `ctrl-f` | Global |
 | `search::Open` (focus query) | `cmd-shift-f` | `ctrl-shift-f` | `ctrl-shift-f` | Global |
 | `ops::TogglePanel` | `cmd-j` | `ctrl-j` | `ctrl-j` | Global |

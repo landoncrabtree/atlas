@@ -508,17 +508,12 @@ impl SearchController {
         format!("Type ≥ {min} characters")
     }
 
-    fn push_visible(&self, visible: bool) {
-        let weak = self.state.window.read().clone();
-        let Some(weak) = weak else {
-            return;
-        };
-        let _ = slint::invoke_from_event_loop(move || {
-            let Some(window) = weak.upgrade() else {
-                return;
-            };
-            window.set_search_panel_visible(visible);
-        });
+    fn push_visible(&self, _visible: bool) {
+        // Visibility is coordinated by AppShell's single RightDockSurface so
+        // Search and Operations cannot both claim the right-side dock slot.
+        // The controller still tracks its own open/closed state for search
+        // cancellation and tests, but it no longer pushes an independent
+        // Slint boolean.
     }
 
     fn push_query(&self, query: &str) {

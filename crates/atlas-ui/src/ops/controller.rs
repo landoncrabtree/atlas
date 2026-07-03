@@ -274,13 +274,13 @@ impl OpsController {
         self.push_to_ui();
     }
 
-    /// Show or hide the ops tray.
+    /// Show or hide the Ops right-dock content state.
     pub fn set_visible(&self, visible: bool) {
         self.visible.store(visible, Ordering::Relaxed);
         self.push_to_ui();
     }
 
-    /// Toggle the ops tray open/closed.
+    /// Toggle the Ops right-dock content state open/closed.
     pub fn toggle_visible(&self) {
         let new = !self.visible.load(Ordering::Relaxed);
         self.visible.store(new, Ordering::Relaxed);
@@ -473,14 +473,12 @@ impl OpsController {
 
     fn push_to_ui(&self) {
         let rows: Vec<crate::OpRow> = self.rows.read().iter().map(OpRow::to_slint).collect();
-        let visible = self.visible.load(Ordering::Relaxed);
         let window = self.window.read().clone();
 
         let _ = slint::invoke_from_event_loop(move || {
             let Some(win) = window.upgrade() else {
                 return;
             };
-            win.set_ops_panel_visible(visible);
             win.set_ops_rows(ModelRc::new(VecModel::from(rows)));
         });
     }

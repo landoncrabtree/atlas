@@ -1296,25 +1296,29 @@ fn build_dispatcher(
         });
     }
 
-    // ── Search / ops / bulk-rename toggles ────────────────────────────────
+    // ── Right dock / search / ops / bulk-rename toggles ───────────────────
     {
-        let search = shell.search();
-        let search2 = Arc::clone(&search);
+        let s = Arc::clone(shell);
         d.register("search::Toggle", move || {
-            if search.is_open() {
-                search.close();
-            } else {
-                search.open();
-            }
-        });
-        d.register("search::Open", move || {
-            search2.open();
+            s.toggle_search_panel();
         });
     }
     {
-        let ops = shell.ops();
+        let s = Arc::clone(shell);
+        d.register("search::Open", move || {
+            s.open_search_panel();
+        });
+    }
+    {
+        let s = Arc::clone(shell);
         d.register("ops::TogglePanel", move || {
-            ops.toggle_visible();
+            s.toggle_ops_panel();
+        });
+    }
+    {
+        let s = Arc::clone(shell);
+        d.register("ui::Cancel", move || {
+            s.close_right_dock();
         });
     }
     {

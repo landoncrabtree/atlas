@@ -1,6 +1,6 @@
 // Design tokens for Atlas. Single source of truth for colors, spacing,
-// typography, and geometry. All properties are in-out so they can be
-// pushed from Rust via AppShell::apply_theme.
+// typography, and geometry. Base properties are in-out so they can be
+// pushed from Rust via AppShell::apply_theme; semantic aliases are derived.
 
 export global Theme {
     in-out property <bool> dark: true;
@@ -103,4 +103,57 @@ export global Theme {
     in-out property <duration> motion-quick: animations ? 120ms : 0ms;
     // Faster transition (list-row hover backgrounds).
     in-out property <duration> motion-fast: animations ? 100ms : 0ms;
+
+    // ── macOS-native surface semantics ────────────────────────────────────────
+    // These semantic aliases keep modal/menu composition aligned with Apple HIG:
+    // compact controls, varied radii, soft borders, hierarchy over nested boxes,
+    // and a restrained accent color.
+    out property <color> modal-scrim: #0000005c;
+    out property <color> modal-bg: panel-bg-elevated;
+    out property <color> modal-border: border.with-alpha(0.72);
+    out property <color> modal-shadow-color: #00000040;
+    out property <length> modal-radius: 12px;
+    out property <length> modal-shadow-blur: 40px;
+    out property <length> modal-shadow-y: 10px;
+    out property <length> modal-title-size: 15px;
+
+    out property <length> control-height: 29px;
+    out property <length> field-radius: 5px;
+    out property <length> button-radius: 6px;
+    out property <length> segmented-radius: 6px;
+    out property <length> segmented-selected-radius: 5px;
+    out property <length> list-radius: 8px;
+    out property <length> list-row-height: 38px;
+    out property <length> progress-height: 4px;
+
+    out property <length> section-label-size: 12px;
+    out property <length> field-label-size: 12px;
+    out property <length> button-font-size: 12px;
+    out property <color> section-label-color: fg-muted.with-alpha(0.82);
+    out property <color> field-label-color: fg-muted.with-alpha(0.88);
+    out property <color> placeholder-color: fg-faint.with-alpha(0.74);
+
+    out property <color> field-bg: dark ? #ffffff0a : #ffffffcc;
+    out property <color> field-bg-focus: dark ? #ffffff0d : #ffffff;
+    out property <color> field-border: border.with-alpha(0.80);
+    out property <color> field-border-focus: border-strong.with-alpha(0.92);
+
+    out property <color> secondary-button-bg: dark ? #ffffff10 : #ffffffd9;
+    out property <color> secondary-button-bg-hover: dark ? #ffffff18 : #ffffff;
+    out property <color> secondary-button-border: border.with-alpha(0.80);
+    out property <color> secondary-button-border-hover: border-strong.with-alpha(0.88);
+    out property <color> accent-hover: accent.mix(fg, 0.10);
+    out property <color> button-shadow-color: #00000024;
+
+    out property <color> segmented-bg: dark ? #00000026 : #00000010;
+    out property <color> segmented-border: border.with-alpha(0.78);
+    out property <color> segmented-divider: border.with-alpha(0.72);
+    out property <color> segmented-selected-bg: dark ? #ffffff18 : #ffffff;
+    out property <color> segmented-selected-border: dark ? #ffffff18 : #00000014;
+    out property <color> segmented-shadow-color: #00000022;
+
+    out property <color> list-bg: dark ? #00000016 : #00000008;
+    out property <color> list-border: border.with-alpha(0.70);
+    out property <color> progress-track: dark ? #00000036 : #00000018;
+    out property <color> ops-panel-shadow-color: #00000038;
 }

@@ -396,9 +396,8 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let socket_path = std::env::current_dir()
-            .expect("current dir should resolve")
-            .join("target/atlas-search-tests/missing-indexd.sock");
+        let socket_path = PathBuf::from("missing-indexd-test.sock");
+        let _ = std::fs::remove_file(&socket_path);
         let previous = std::env::var_os("ATLAS_IPC_SOCKET");
 
         // SAFETY: This test serializes all environment access with a process-wide

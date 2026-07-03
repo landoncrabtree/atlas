@@ -1,0 +1,63 @@
+import { Theme } from "../theme.slint";
+import { SearchPanel, SearchRow } from "search-panel.slint";
+import { OpsPanel, OpRow } from "ops-panel.slint";
+
+// The single right-side dock slot. Search (Cmd+F) and Operations (Cmd+J)
+// are mutually-exclusive content variants of this shell.
+export component RightDockPanel inherits Rectangle {
+    // 0 = hidden, 1 = search, 2 = operations.
+    in property <int> surface-index: 0;
+
+    in property <string> search-query;
+    in property <[SearchRow]> search-rows;
+    in property <int> search-selected-index;
+    in property <string> search-status-text;
+    in property <[OpRow]> ops-rows;
+
+    callback search-query-changed(string);
+    callback search-confirm(int);
+    callback search-close();
+    callback ops-cancel(int);
+    callback ops-dismiss(int);
+    callback ops-close();
+    callback ops-clear-completed();
+
+    visible: surface-index != 0;
+    background: Theme.panel-bg;
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 1px;
+        height: parent.height;
+        background: Theme.border;
+    }
+
+    if surface-index == 1 : SearchPanel {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        visible-panel: true;
+        query: root.search-query;
+        rows: root.search-rows;
+        selected-index: root.search-selected-index;
+        status-text: root.search-status-text;
+        query-changed(q) => { root.search-query-changed(q); }
+        confirm(i) => { root.search-confirm(i); }
+        close => { root.search-close(); }
+    }
+
+    if surface-index == 2 : OpsPanel {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        visible-panel: true;
+        rows: root.ops-rows;
+        cancel(i) => { root.ops-cancel(i); }
+        dismiss(i) => { root.ops-dismiss(i); }
+        close => { root.ops-close(); }
+        clear-completed => { root.ops-clear-completed(); }
+    }
+}
