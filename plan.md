@@ -234,7 +234,7 @@ silently-broken `ui.font_family` wiring, bundle a symbols-only Nerd
 Font as a Slint-registered fallback, and rewrite `theming::icons`
 around a curated LSD-style Nerd Font glyph map. Test count net +13
 (baseline 707 → 720); same FSEvents flaky bucket documented in the
-`fix-flaky-test` skill.
+`testing` skill.
 
 - **f8e85ef** — `fix(ui): make ui.font_family config actually reach
   Slint`. The config field was wired end-to-end (`atlas-config` →
@@ -303,7 +303,7 @@ around a curated LSD-style Nerd Font glyph map. Test count net +13
 ### Baseline & regressions
 
 Baseline before Phase 2.10: 707 lib tests, 7 failed (all in the
-documented FSEvents flaky bucket from the `fix-flaky-test` skill).
+documented FSEvents flaky bucket from the `testing` skill).
 After Phase 2.10: 720 lib tests, 7 failed (same flaky bucket,
 different lottery). Net +13 tests, no regressions.
 `cargo build --workspace ✓ · cargo clippy --workspace --all-targets
