@@ -35,61 +35,17 @@ use super::thumbs::{ThumbRequester, DEFAULT_TARGET_DIM};
 /// Sentinel meaning "no focused index".
 const NO_FOCUS: usize = usize::MAX;
 
-// ── Local selection type ──────────────────────────────────────────────────────
+// ── Selection ────────────────────────────────────────────────────────────────
 //
-// `crate::views::details::Selection` is pub but its methods (`resize`,
-// `select_single`, `toggle`, `select_range`) are private.  We define an
-// equivalent struct here rather than reach into details internals.
-// TODO: if `Selection` methods are made pub upstream, remove this duplicate.
+// Grid uses the same flat mask + anchor model as Details — extracted
+// to `crate::views::selection::SelectionMask` so a bug fix here lands
+// in both views. The historical `GridSelection` name is preserved as a
+// `pub use` alias to avoid churning every controller call site.
 
-/// Selection state for the Grid view.
-#[derive(Debug, Default)]
-pub struct GridSelection {
-    /// Per-entry selection flags; same length as the current entries snapshot.
-    pub mask: Vec<bool>,
-    /// Anchor index for shift-range selection.
-    pub anchor: Option<usize>,
-}
-
-impl GridSelection {
-    fn clear(&mut self) {
-        self.mask.fill(false);
-        self.anchor = None;
-    }
-
-    pub(crate) fn resize(&mut self, len: usize) {
-        self.mask.resize(len, false);
-    }
-
-    pub(crate) fn select_single(&mut self, index: usize) {
-        self.clear();
-        if index < self.mask.len() {
-            self.mask[index] = true;
-        }
-        self.anchor = Some(index);
-    }
-
-    pub(crate) fn toggle(&mut self, index: usize) {
-        if index < self.mask.len() {
-            self.mask[index] = !self.mask[index];
-        }
-        self.anchor = Some(index);
-    }
-
-    pub(crate) fn select_range(&mut self, from: usize, to: usize) {
-        if self.mask.is_empty() {
-            self.anchor = Some(to);
-            return;
-        }
-        let (lo, hi) = if from <= to { (from, to) } else { (to, from) };
-        let hi_clamped = hi.min(self.mask.len().saturating_sub(1));
-        self.mask.fill(false);
-        for slot in &mut self.mask[lo..=hi_clamped] {
-            *slot = true;
-        }
-        self.anchor = Some(from);
-    }
-}
+/// Grid view multi-selection state.
+///
+/// Alias of the shared [`SelectionMask`](crate::views::selection::SelectionMask).
+pub use crate::views::selection::SelectionMask as GridSelection;
 
 // ── Controller ────────────────────────────────────────────────────────────────
 
