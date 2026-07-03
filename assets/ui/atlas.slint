@@ -1110,8 +1110,9 @@ export component AtlasWindow inherits Window {
         // File-operations tray — auto-shown by Rust when ops are queued.
         OpsPanel {
             x: 0px;
-            y: parent.height - self.height;
+            y: parent.height - (root.ops-panel-visible ? 236px : 0px);
             width: parent.width;
+            height: root.ops-panel-visible ? 236px : 0px;
             visible-panel: root.ops-panel-visible;
             rows: root.ops-rows;
             cancel(i) => { root.ops-cancel(i); }

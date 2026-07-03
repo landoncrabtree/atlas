@@ -1,18 +1,10 @@
 import { Theme } from "../theme.slint";
+import {
+    AtlasModal, AtlasProgressBar, AtlasSecondaryButton,
+} from "atlas-controls.slint";
 
-// Small Finder-style progress modal shown while a "foreground" file
-// operation is in flight. Trivial fast ops (<250ms) never surface here —
-// the Rust `OpsController` defers promotion so this only appears when the
-// user actually needs feedback.
-//
-// Buttons:
-//   Cancel     — aborts the operation (routes to `OpsController::cancel`).
-//   Background — dismisses the modal without cancelling; op continues in
-//                the background. Does NOT open the ops panel — the panel
-//                stays under user control via `ops::TogglePanel` (Cmd+J).
-//
-// Clicking outside the modal (on the scrim) also fires `background()`.
-// The parent `FocusScope` routes Escape and Enter to `background()` too.
+// Small Finder-style progress modal shown while a "foreground" file operation
+// is in flight. Fast ops (<250ms) never surface here — Rust defers promotion.
 export component OperationProgress inherits Rectangle {
     in property <bool> visible-modal: false;
     in property <string> icon-glyph: "";
@@ -25,153 +17,83 @@ export component OperationProgress inherits Rectangle {
     callback cancel();
     callback send-to-background();
 
-    if visible-modal : Rectangle {
+    width: 100%;
+    height: 100%;
+
+    AtlasModal {
         width: 100%;
         height: 100%;
-        background: #00000066;
+        visible-modal: root.visible-modal;
+        title: "";
+        modal-width: 420px;
+        modal-height: 148px;
+        dismissed => { root.send-to-background(); }
 
-        // Click-outside dismisses to background (keeps op running).
-        TouchArea {
-            width: 100%; height: 100%;
-            clicked => { root.send-to-background(); }
-        }
+        HorizontalLayout {
+            spacing: Theme.space-3;
+            alignment: start;
 
-        panel := Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 420px;
-            height: 148px;
-            background: Theme.panel-bg-elevated;
-            border-width: 1px;
-            border-color: Theme.border-strong;
-            border-radius: Theme.radius-lg;
-
-            // Swallow clicks on the panel so they don't bubble to the scrim.
-            TouchArea { width: 100%; height: 100%; }
+            Text {
+                text: root.icon-glyph;
+                color: Theme.fg;
+                font-size: 21px;
+                vertical-alignment: center;
+                width: 28px;
+                horizontal-alignment: center;
+            }
 
             VerticalLayout {
-                padding: Theme.space-4;
-                spacing: Theme.space-3;
+                horizontal-stretch: 1;
+                spacing: 2px;
+                alignment: center;
 
-                // Header row: icon + title + subtitle.
-                HorizontalLayout {
-                    spacing: Theme.space-3;
-                    alignment: start;
-
-                    Text {
-                        text: root.icon-glyph;
-                        color: Theme.fg;
-                        font-size: 22px;
-                        vertical-alignment: center;
-                        width: 30px;
-                    }
-
-                    VerticalLayout {
-                        spacing: 2px;
-                        horizontal-stretch: 1;
-                        alignment: center;
-
-                        Text {
-                            text: root.title-text;
-                            color: Theme.fg;
-                            font-size: 15px;
-                            font-weight: 600;
-                            overflow: elide;
-                        }
-
-                        Text {
-                            text: root.subtitle-text;
-                            color: Theme.fg-muted;
-                            font-size: 12px;
-                            overflow: elide;
-                        }
-                    }
+                Text {
+                    text: root.title-text;
+                    color: Theme.fg;
+                    font-size: Theme.modal-title-size;
+                    font-weight: 600;
+                    overflow: elide;
                 }
 
-                // Progress bar + detail line.
-                VerticalLayout {
-                    spacing: Theme.space-1;
-
-                    Rectangle {
-                        height: 4px;
-                        border-radius: Theme.radius-xs;
-                        background: Theme.panel-bg;
-
-                        Rectangle {
-                            x: 0px;
-                            y: 0px;
-                            height: parent.height;
-                            border-radius: Theme.radius-xs;
-                            width: root.indeterminate
-                                ? parent.width * 0.33
-                                : parent.width * clamp(root.progress, 0.0, 1.0);
-                            background: Theme.accent;
-                            animate width { duration: Theme.motion-fast; easing: ease-out; }
-                        }
-                    }
-
-                    Text {
-                        text: root.detail-text;
-                        color: Theme.fg-muted;
-                        font-size: 11px;
-                        overflow: elide;
-                    }
+                Text {
+                    text: root.subtitle-text;
+                    color: Theme.fg-muted;
+                    font-size: 12px;
+                    overflow: elide;
                 }
+            }
+        }
 
-                // Button row: Cancel (left, muted) + Background (right, primary).
-                HorizontalLayout {
-                    spacing: Theme.space-2;
-                    alignment: end;
+        VerticalLayout {
+            spacing: Theme.space-1;
 
-                    cancel-btn := Rectangle {
-                        width: 96px;
-                        height: 26px;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: cancel-ta.has-hover ? Theme.border-strong : Theme.border;
-                        background: cancel-ta.has-hover ? Theme.hover-bg : Theme.panel-bg;
-                        animate background { duration: Theme.motion-fast; easing: ease-out; }
+            AtlasProgressBar {
+                progress: root.progress;
+                indeterminate: root.indeterminate;
+            }
 
-                        cancel-ta := TouchArea {
-                            width: 100%; height: 100%;
-                            clicked => { root.cancel(); }
-                        }
+            Text {
+                text: root.detail-text;
+                color: Theme.fg-muted;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
 
-                        Text {
-                            text: "Cancel";
-                            color: Theme.fg;
-                            font-size: 12px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            width: parent.width;
-                            height: parent.height;
-                        }
-                    }
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            alignment: end;
 
-                    bg-btn := Rectangle {
-                        width: 112px;
-                        height: 26px;
-                        border-radius: Theme.radius-sm;
-                        background: bg-ta.has-hover ? Theme.accent.mix(Theme.fg, 0.9) : Theme.accent;
-                        animate background { duration: Theme.motion-fast; easing: ease-out; }
+            AtlasSecondaryButton {
+                button-width: 92px;
+                text: "Cancel";
+                clicked => { root.cancel(); }
+            }
 
-                        bg-ta := TouchArea {
-                            width: 100%; height: 100%;
-                            clicked => { root.send-to-background(); }
-                        }
-
-                        Text {
-                            text: "Background";
-                            color: Theme.accent-fg;
-                            font-size: 12px;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            width: parent.width;
-                            height: parent.height;
-                        }
-                    }
-                }
+            AtlasSecondaryButton {
+                button-width: 112px;
+                text: "Background";
+                clicked => { root.send-to-background(); }
             }
         }
     }
