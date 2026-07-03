@@ -222,6 +222,10 @@ fn main() -> Result<()> {
         thumbs_enabled,
         thumb_max_file_bytes,
         bookmark_pairs,
+        // config: reads config.view.show_hidden as the initial per-pane
+        // show-hidden state. Runtime Cmd+. toggles are per-pane and do
+        // not persist; next launch reads this again.
+        config.view.show_hidden,
     );
 
     let loader = ThemeLoader::new();
@@ -1105,6 +1109,19 @@ fn build_dispatcher(
             tracing::info!(
                 "app::OpenSettings: no in-app settings UI yet — edit ~/.config/atlas/config.toml"
             );
+        });
+    }
+
+    // ── Per-pane hidden files toggle ──────────────────────────────────────
+    //
+    // Keybind: `Cmd+.` on macOS, `Ctrl+H` on Linux/Windows (Nautilus /
+    // Nemo / Thunar / Dolphin convention). Per-pane: only the focused
+    // pane flips; split screens can show different states. Runtime
+    // only — does not persist to config.toml.
+    {
+        let s = Arc::clone(shell);
+        d.register("pane::ToggleHidden", move || {
+            s.toggle_hidden_focused();
         });
     }
 

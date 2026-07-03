@@ -77,13 +77,23 @@ impl NavigationController {
 
     /// Construct a new controller with defaults derived from the full
     /// [`atlas_config::Config`]. Reads `general.follow_symlinks`,
-    /// `view.show_hidden`, `view.natural_sort`, `view.dirs_first`,
-    /// `view.default_sort_key`, `view.default_sort_order`,
-    /// and `navigation.history_size`.
+    /// `view.natural_sort`, `view.dirs_first`, `view.default_sort_key`,
+    /// `view.default_sort_order`, and `navigation.history_size`.
+    ///
+    /// **`include_hidden` is always `true`** at this layer. Per-pane
+    /// hidden-file visibility is controlled by
+    /// [`atlas_fs::Filter::include_hidden`] which the shell applies
+    /// after the vm loads, seeded from `config.view.show_hidden` and
+    /// flipped at runtime by `pane::ToggleHidden` (Cmd+.). Listing
+    /// dotfiles unconditionally here means the raw list carries every
+    /// entry so the runtime toggle is a cheap filter refresh — no
+    /// second listing pass, no I/O — for both local and remote panes.
     #[must_use]
     pub fn with_config(config: &atlas_config::Config) -> Arc<Self> {
         let opts = OpenOptions {
-            include_hidden: config.view.show_hidden,
+            // See doc comment: raw list always includes hidden entries;
+            // the pane-scoped `Filter::include_hidden` selects visibility.
+            include_hidden: true,
             follow_symlinks: config.general.follow_symlinks,
             watch: false,
             sort: SortSpec {
@@ -102,7 +112,12 @@ impl NavigationController {
                 natural: config.view.natural_sort,
                 case_insensitive: true,
             },
-            filter: Filter::default(),
+            // Seed the filter with the config default; the shell applies
+            // per-pane overrides after the vm loads.
+            filter: Filter {
+                include_hidden: config.view.show_hidden,
+                ..Filter::default()
+            },
         };
         // config: reads config.navigation.history_size
         let history_cap = config.navigation.history_size.max(1);

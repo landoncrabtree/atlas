@@ -875,6 +875,11 @@ impl AppShell {
     /// thumbnail requester created for each pane; pass `0` / `500 * 1024 * 1024`
     /// for defaults.  See config fields `thumbnails.generation_threads` and
     /// `thumbnails.cache_max_size_mb`.
+    ///
+    /// `initial_show_hidden` seeds every pane's per-pane `show_hidden`
+    /// state from `config.view.show_hidden`. Runtime toggles via
+    /// `pane::ToggleHidden` flip individual panes independently and do
+    /// not persist; next launch reverts to the config value.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         window: &AtlasWindow,
@@ -886,6 +891,7 @@ impl AppShell {
         thumbs_enabled: bool,
         thumb_max_file_bytes: u64,
         bookmarks: Vec<(String, PathBuf)>,
+        initial_show_hidden: bool,
     ) -> Arc<Self> {
         let actions: Arc<Mutex<Box<dyn ActionSink>>> = Arc::new(Mutex::new(Box::new(actions)));
         let thumb_cache = Arc::new(
@@ -893,7 +899,7 @@ impl AppShell {
                 .unwrap_or_else(|error| panic!("failed to open thumbnail cache: {error}")),
         );
 
-        let workspace = WorkspaceModel::new_default();
+        let workspace = WorkspaceModel::new_default_with_show_hidden(initial_show_hidden);
         let initial_pane_id = workspace.focused;
 
         let mut pane_slint_index = AHashMap::default();
@@ -1146,6 +1152,70 @@ impl AppShell {
         self.workspace.read().focused
     }
 
+    /// Apply the pane's runtime `show_hidden` flag to `vm`'s filter.
+    ///
+    /// Reads `pane.show_hidden` under the workspace read-lock, then
+    /// pushes a fresh [`Filter`] with `include_hidden = show_hidden`
+    /// (preserving every other filter field) via
+    /// [`LocationViewModel::set_filter`]. On error we log and swallow —
+    /// filter application is best-effort and must never crash the shell.
+    ///
+    /// Called from [`Self::on_location_changed_impl`] and
+    /// [`Self::open_remote_location`] to seed a freshly-mounted vm,
+    /// and from [`Self::toggle_hidden_focused`] to react to `Cmd+.` /
+    /// `Ctrl+H`.
+    fn apply_pane_filter(&self, pane_id: PaneId, vm: &dyn LocationViewModel) {
+        let show_hidden = {
+            let workspace = self.workspace.read();
+            workspace
+                .pane(pane_id)
+                .map(|p| p.show_hidden)
+                .unwrap_or(false)
+        };
+        let mut filter = vm.filter();
+        if filter.include_hidden == show_hidden {
+            return;
+        }
+        filter.include_hidden = show_hidden;
+        if let Err(err) = vm.set_filter(filter) {
+            tracing::warn!(pane = ?pane_id, %err, "pane::ToggleHidden: set_filter failed");
+        } else {
+            tracing::debug!(pane = ?pane_id, include_hidden = show_hidden, "apply_pane_filter");
+        }
+    }
+
+    /// Flip the focused pane's `show_hidden` flag and re-apply the
+    /// per-pane filter so the current view refreshes without a
+    /// re-listing round-trip.
+    ///
+    /// Bound to `pane::ToggleHidden` — `Cmd+.` on macOS, `Ctrl+H` on
+    /// Linux/Windows. Per-pane: only the focused pane flips. Runtime
+    /// only — never mutates `config.toml`; next launch reverts to the
+    /// value of `config.view.show_hidden`.
+    pub fn toggle_hidden_focused(self: &Arc<Self>) {
+        let (pane_id, new_state) = {
+            let mut workspace = self.workspace.write();
+            let pane_id = workspace.focused;
+            let Some(pane) = workspace.pane_mut(pane_id) else {
+                return;
+            };
+            pane.show_hidden = !pane.show_hidden;
+            (pane_id, pane.show_hidden)
+        };
+        tracing::info!(pane = ?pane_id, show_hidden = new_state, "pane::ToggleHidden");
+        let vm = {
+            let vms = self.vms.read();
+            vms.get(&pane_id).map(Arc::clone)
+        };
+        if let Some(vm) = vm {
+            self.apply_pane_filter(pane_id, vm.as_ref());
+        }
+        self.refresh_pane_status(pane_id);
+        if pane_id == self.focused_pane_id() {
+            self.refresh_status();
+        }
+    }
+
     /// Open the Cmd+K "Connect to Server" modal targeting `pane_id`.
     ///
     /// The modal itself is a Slint component
@@ -1189,6 +1259,14 @@ impl AppShell {
         tracing::info!(pane = ?pane_id, loc = %location.display_path(), "mounting remote location");
         let vm_dyn = Arc::clone(&vm);
         self.vms.write().insert(pane_id, Arc::clone(&vm_dyn));
+
+        // Same per-pane filter sync as local navigation — see
+        // `on_location_changed_impl`. Remote entries have their
+        // `is_hidden` flag set from the leading dot in the entry name
+        // (see `atlas_remote::vm::build_atlas_entry`), so
+        // `Filter::include_hidden` toggles hide dotfiles across every
+        // remote backend uniformly.
+        self.apply_pane_filter(pane_id, vm_dyn.as_ref());
 
         {
             let panes = self.panes_ctrl.read();
@@ -3072,6 +3150,13 @@ impl AppShell {
         let vm_for_status = Arc::clone(&vm);
 
         self.vms.write().insert(pane_id, Arc::clone(&vm_dyn));
+
+        // Sync the vm's filter to this pane's runtime `show_hidden`. Panes
+        // remember their own toggle state (see `pane::ToggleHidden`), and
+        // the raw listing always includes hidden entries — see
+        // `NavigationController::with_config` — so the toggle is just a
+        // filter flip, no re-listing needed.
+        self.apply_pane_filter(pane_id, vm_dyn.as_ref());
 
         {
             let panes = self.panes_ctrl.read();

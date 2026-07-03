@@ -47,13 +47,30 @@ impl WorkspaceModel {
     }
 
     /// Construct a sensible default workspace rooted at `$HOME`.
+    ///
+    /// Uses `PaneState::new` which defaults `show_hidden = false`. Use
+    /// [`Self::new_default_with_show_hidden`] when the caller has the
+    /// user's config-driven show-hidden preference in hand.
     #[must_use]
     pub fn new_default() -> Self {
+        Self::new_default_with_show_hidden(false)
+    }
+
+    /// Same as [`Self::new_default`] but seeds the initial pane's
+    /// `show_hidden` flag from an explicit argument (typically
+    /// `config.view.show_hidden`).
+    #[must_use]
+    pub fn new_default_with_show_hidden(show_hidden: bool) -> Self {
         let home = BaseDirs::new()
             .map(|dirs| dirs.home_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from("/"));
         let id = PaneId(1);
-        let initial = PaneState::new(id, TabModel::at(Location::local(home)), ViewMode::default());
+        let initial = PaneState::new_with_show_hidden(
+            id,
+            TabModel::at(Location::local(home)),
+            ViewMode::default(),
+            show_hidden,
+        );
         Self::new(initial)
     }
 
@@ -107,8 +124,17 @@ impl WorkspaceModel {
         let focused = self.focused;
         let active_location = self.focused_pane().active_location();
         let view_mode = initial_view_mode.unwrap_or(self.focused_pane().view_mode);
+        // Inherit the parent pane's runtime `show_hidden` state so a
+        // freshly-split pane starts in the same visibility mode as the
+        // pane it duplicates.
+        let show_hidden = self.focused_pane().show_hidden;
         let new_id = self.allocate_id();
-        let new_pane = PaneState::new(new_id, TabModel::at(active_location), view_mode);
+        let new_pane = PaneState::new_with_show_hidden(
+            new_id,
+            TabModel::at(active_location),
+            view_mode,
+            show_hidden,
+        );
 
         let split_result = self.layout.split_leaf(focused, direction, new_id);
         debug_assert!(split_result.is_ok(), "focused pane must exist in layout");
@@ -238,6 +264,34 @@ mod tests {
         assert_eq!(
             workspace.focus_direction(Cardinal::Down, Rect::from_size(200.0, 200.0)),
             Some(down)
+        );
+    }
+
+    #[test]
+    fn new_default_with_show_hidden_seeds_initial_pane() {
+        let workspace = WorkspaceModel::new_default_with_show_hidden(true);
+        assert!(workspace.focused_pane().show_hidden);
+    }
+
+    #[test]
+    fn split_focused_inherits_show_hidden_from_parent() {
+        // Seed with a parent pane that has show_hidden=true.
+        let parent = PaneState::new_with_show_hidden(
+            PaneId(1),
+            TabModel::new(
+                Location::local("/a"),
+                16,
+                SortSpec::default(),
+                Filter::default(),
+            ),
+            ViewMode::Details,
+            true,
+        );
+        let mut workspace = WorkspaceModel::new(parent);
+        let new_id = workspace.split_focused(SplitDirection::Horizontal, None);
+        assert!(
+            workspace.pane(new_id).unwrap().show_hidden,
+            "child pane must inherit parent's show_hidden"
         );
     }
 }

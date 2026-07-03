@@ -346,7 +346,7 @@ action = "pane::Close"
 # [Pane] Focus Left Pane
 [[bindings]]
 context = "Pane"
-key = "ctrl-h"
+key = "ctrl-shift-h"
 action = "pane::FocusLeft"
 
 # [Pane] Focus Below Pane
@@ -366,6 +366,12 @@ action = "pane::FocusUp"
 context = "Pane"
 key = "ctrl-l"
 action = "pane::FocusRight"
+
+# [Pane] Toggle Hidden Files
+[[bindings]]
+context = "Pane"
+key = "ctrl-h"
+action = "pane::ToggleHidden"
 
 # [Global] Toggle Search Panel
 [[bindings]]
