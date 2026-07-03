@@ -70,6 +70,7 @@ export component BulkRenameModal inherits Rectangle {
         HorizontalLayout {
             spacing: Theme.space-2;
             alignment: start;
+            height: 22px;
 
             Text {
                 text: "Rename";
@@ -96,6 +97,7 @@ export component BulkRenameModal inherits Rectangle {
         // 18) — inside a modal we want a slightly tighter cadence.
         VerticalLayout {
             spacing: Theme.space-1 + 2px;
+            height: 51px;
 
             SectionLabel { label: "Find"; }
             find-field := AtlasTextField {
@@ -109,6 +111,7 @@ export component BulkRenameModal inherits Rectangle {
 
         VerticalLayout {
             spacing: Theme.space-1 + 2px;
+            height: 51px;
 
             SectionLabel { label: "Replace with"; }
             replace-field := AtlasTextField {
@@ -127,6 +130,7 @@ export component BulkRenameModal inherits Rectangle {
         HorizontalLayout {
             spacing: Theme.space-2;
             alignment: start;
+            height: Theme.control-height;
 
             regex-toggle := Rectangle {
                 width: 80px;
@@ -314,6 +318,7 @@ export component BulkRenameModal inherits Rectangle {
         HorizontalLayout {
             spacing: Theme.space-2;
             alignment: end;
+            height: Theme.control-height;
 
             if conflict-count > 0: Text {
                 text: conflict-count + " conflict" + (conflict-count == 1 ? "" : "s");

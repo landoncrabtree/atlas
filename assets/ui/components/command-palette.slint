@@ -79,6 +79,11 @@ export component CommandPalette {
                 // left, then a large 16 px query text. No border on the
                 // row itself — the divider below separates input from
                 // results.
+                //
+                // Layout is done with absolute positioning (not a
+                // HorizontalLayout) so the placeholder text can align
+                // with the input cursor position without competing
+                // with the icon's layout slot.
                 Rectangle {
                     height: 48px;
                     background: transparent;
@@ -89,59 +94,58 @@ export component CommandPalette {
                         clicked => { palette-input.focus(); }
                     }
 
-                    HorizontalLayout {
-                        padding-left: Theme.space-4;
-                        padding-right: Theme.space-4;
-                        spacing: Theme.space-3;
-                        alignment: center;
+                    // Search glyph, anchored to the left.
+                    Text {
+                        x: Theme.space-4;
+                        y: 0px;
+                        width: 20px;
+                        height: 100%;
+                        text: "\u{f002}";
+                        font-family: Theme.icon-font-family;
+                        color: Theme.fg-faint;
+                        font-size: 16px;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
 
-                        Text {
-                            text: "\u{f002}";
-                            font-family: Theme.icon-font-family;
-                            color: Theme.fg-faint;
-                            font-size: 16px;
-                            vertical-alignment: center;
-                            width: 20px;
-                            horizontal-alignment: center;
+                    palette-input := TextInput {
+                        init => { self.focus(); }
+                        x: Theme.space-4 + 20px + Theme.space-3;
+                        y: 0px;
+                        width: parent.width - self.x - Theme.space-4;
+                        height: 100%;
+                        text <=> root.query;
+                        color: Theme.fg;
+                        font-size: 16px;
+                        font-weight: 400;
+                        vertical-alignment: center;
+                        single-line: true;
+                        edited => { root.query-changed(self.text); }
+                        accepted => {
+                            if results.length > 0 {
+                                root.confirm(results[selected-index].action-id);
+                            }
                         }
-
-                        palette-input := TextInput {
-                            init => { self.focus(); }
-                            text <=> root.query;
-                            color: Theme.fg;
-                            font-size: 16px;
-                            font-weight: 400;
-                            vertical-alignment: center;
-                            single-line: true;
-                            horizontal-stretch: 1;
-                            edited => { root.query-changed(self.text); }
-                            accepted => {
-                                if results.length > 0 {
-                                    root.confirm(results[selected-index].action-id);
-                                }
+                        key-pressed(event) => {
+                            if event.text == Key.Escape {
+                                root.dismiss();
+                                return accept;
                             }
-                            key-pressed(event) => {
-                                if event.text == Key.Escape {
-                                    root.dismiss();
-                                    return accept;
-                                }
-                                if event.text == Key.DownArrow {
-                                    root.select-delta(1);
-                                    return accept;
-                                }
-                                if event.text == Key.UpArrow {
-                                    root.select-delta(-1);
-                                    return accept;
-                                }
-                                reject;
+                            if event.text == Key.DownArrow {
+                                root.select-delta(1);
+                                return accept;
                             }
+                            if event.text == Key.UpArrow {
+                                root.select-delta(-1);
+                                return accept;
+                            }
+                            reject;
                         }
                     }
 
-                    // Placeholder — rendered as a sibling of the input
-                    // so it doesn't compete with the search glyph. The
-                    // 20-px offset (icon column) + 12-px gap matches
-                    // the HorizontalLayout above.
+                    // Placeholder — aligned to the same x/y as the
+                    // input so the cursor sits on the "S" of "Search"
+                    // when the field is empty.
                     if query == "" : Text {
                         x: Theme.space-4 + 20px + Theme.space-3;
                         y: 0px;
