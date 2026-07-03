@@ -98,7 +98,7 @@ impl CompiledFilter {
         }
 
         if let Some(q) = &self.query {
-            if !name.to_ascii_lowercase().contains(q) {
+            if !ascii_case_insensitive_contains(name, q) {
                 return false;
             }
         }
@@ -123,6 +123,36 @@ impl CompiledFilter {
 
         true
     }
+}
+
+/// Case-insensitive-ASCII substring search that never allocates.
+///
+/// `needle` must already be ASCII-lower-cased (which
+/// [`Filter::compile`] guarantees).
+fn ascii_case_insensitive_contains(haystack: &str, needle_lower: &str) -> bool {
+    let needle = needle_lower.as_bytes();
+    if needle.is_empty() {
+        return true;
+    }
+    let hay = haystack.as_bytes();
+    if hay.len() < needle.len() {
+        return false;
+    }
+    let first = needle[0];
+    let end = hay.len() - needle.len();
+    let mut i = 0usize;
+    while i <= end {
+        if hay[i].to_ascii_lowercase() == first
+            && hay[i..i + needle.len()]
+                .iter()
+                .zip(needle.iter())
+                .all(|(h, n)| h.to_ascii_lowercase() == *n)
+        {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 fn build_globset(patterns: &[String]) -> Result<Option<GlobSet>> {

@@ -21,10 +21,12 @@ pub fn can_thumbnail(path: &Path) -> bool {
         return false;
     };
 
-    let lower = ext.to_lowercase();
+    // `eq_ignore_ascii_case` avoids the per-call `to_lowercase()`
+    // allocation the previous form paid on every entry the grid /
+    // gallery views consider for thumbnailing.
     decode_thumbnailable_extensions()
         .iter()
-        .any(|&supported| supported == lower)
+        .any(|supported| supported.eq_ignore_ascii_case(ext))
 }
 
 /// Decodes the image at `path` into an RGBA8 image buffer.

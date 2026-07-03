@@ -35,3 +35,8 @@ rand = "0.8"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 atlas-remote = { workspace = true }
 libc = "0.2"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "copy"
+harness = false
