@@ -91,6 +91,12 @@ struct Inner {
     /// Write-back watcher; registers each successfully-opened file
     /// so subsequent local edits are uploaded back to the remote.
     watch_registry: super::preview_watch::PreviewWatchRegistry,
+    /// Optional handle used to surface long-running download
+    /// progress in the ops panel. When `None`, downloads still
+    /// work — they just don't emit rows (matches the pre-progress
+    /// behaviour). Populated once via
+    /// [`PreviewCache::attach_ops_controller`].
+    ops_controller: parking_lot::Mutex<Option<std::sync::Weak<crate::ops::OpsController>>>,
 }
 
 impl PreviewCache {
@@ -116,8 +122,17 @@ impl PreviewCache {
                 opener,
                 downloads: parking_lot::Mutex::new(0),
                 watch_registry,
+                ops_controller: parking_lot::Mutex::new(None),
             }),
         }
+    }
+
+    /// Wire the shell's [`OpsController`] into the preview cache so
+    /// large downloads surface as ops-panel rows with progress and a
+    /// cancel button. Called once during shell startup after both
+    /// controllers exist.
+    pub fn attach_ops_controller(&self, ops: std::sync::Weak<crate::ops::OpsController>) {
+        *self.inner.ops_controller.lock() = Some(ops);
     }
 
     /// Access the write-back registry so the shell can install a
@@ -387,7 +402,9 @@ async fn download_and_open(
     };
 
     if entry.metadata.size < threshold {
-        // Small file — one buffered `read()` is the fast path.
+        // Small file — one buffered `read()` is the fast path. No
+        // ops row: the download is short by definition, matching
+        // the FOREGROUND_DEFER contract in ops::controller.
         let bytes = vm
             .read(&child_path)
             .await
@@ -395,14 +412,12 @@ async fn download_and_open(
         std::fs::write(&staging, &bytes)?;
     } else {
         // Large file — stream chunks straight to the `.part` file so
-        // memory stays bounded at `stream_chunk_bytes`.
-        //
-        // TODO(ops-panel): thread the ops controller through
-        // PreviewCache so the progress channel below (currently
-        // dropped) becomes a "Downloading readme.txt · 42/1024 KiB"
-        // row in the ops panel. `stream_copy` already emits
-        // per-chunk `StreamProgress`; the missing piece is a
-        // `Sender<StreamProgress>` sink wired to the ops event bus.
+        // memory stays bounded at `stream_chunk_bytes`. Progress
+        // events flow into the ops panel via `PreviewDownloadHandle`
+        // when an ops controller is attached — see
+        // `PreviewCache::attach_ops_controller`. Cache misses under
+        // `stream_threshold_bytes` don't reach this branch, so
+        // cache-hit / small-file paths stay silent by construction.
         let mut reader = vm
             .reader(&child_path, Some(entry.metadata.size))
             .await
@@ -413,15 +428,72 @@ async fn download_and_open(
             .map_err(|err| PreviewError::Remote(format!("spawn: {err}")))??;
         let mut writer = futures::io::AllowStdIo::new(file);
         let chunk = usize::try_from(chunk_bytes).unwrap_or(usize::MAX).max(1);
-        atlas_remote::stream::stream_copy(
+
+        let ops_handle = inner
+            .ops_controller
+            .lock()
+            .as_ref()
+            .and_then(|weak| weak.upgrade())
+            .map(|ops| {
+                ops.start_preview_download(entry.name.clone(), uri.to_uri(), entry.metadata.size)
+            });
+        let progress_tx = ops_handle.as_ref().map(|h| h.progress_tx.clone());
+
+        let copy_result = atlas_remote::stream::stream_copy(
             &mut reader,
             &mut writer,
             Some(chunk),
             Some(entry.metadata.size),
-            None,
+            progress_tx.as_ref(),
         )
-        .await
-        .map_err(|err| PreviewError::Io(io::Error::other(format!("stream_copy: {err}"))))?;
+        .await;
+        // Explicit `drop` to release the Sender so the progress
+        // bridge thread exits its `recv()` loop deterministically.
+        drop(progress_tx);
+
+        match copy_result {
+            Ok(_) => {
+                if let Some(handle) = ops_handle {
+                    // Check for post-hoc cancellation. `stream_copy`
+                    // doesn't currently short-circuit on the flag,
+                    // so a "cancel just as it finished" race falls
+                    // through to Completed. That's fine — the
+                    // preview cache still lands the file.
+                    if handle.is_cancelled() {
+                        handle.cancelled();
+                        // Roll back the .part file so we don't leave
+                        // a half-committed cache line behind.
+                        let staging_cleanup = staging.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            let _ = std::fs::remove_file(&staging_cleanup);
+                        })
+                        .await;
+                        return Err(PreviewError::Io(io::Error::other(
+                            "preview download cancelled",
+                        )));
+                    }
+                    handle.complete();
+                }
+            }
+            Err(err) => {
+                if let Some(handle) = ops_handle {
+                    handle.fail(err.to_string());
+                }
+                // Leave `.part` cleanup to the caller via
+                // `Err(PreviewError::Io)` — the atomic rename to
+                // `cached_file` below never happens on error, so
+                // the partial download stays orphaned. Best-effort
+                // cleanup here to avoid leaking bytes into the cache.
+                let staging_cleanup = staging.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = std::fs::remove_file(&staging_cleanup);
+                })
+                .await;
+                return Err(PreviewError::Io(io::Error::other(format!(
+                    "stream_copy: {err}"
+                ))));
+            }
+        }
     }
     std::fs::rename(&staging, &cached_file)?;
 
