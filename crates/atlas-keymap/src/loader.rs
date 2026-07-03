@@ -280,9 +280,16 @@ action = ""
         ];
         for (platform, name, checked_in) in cases {
             let expected = default_keymap_toml_string_for(platform);
+            // Windows checkouts with git autocrlf=true rewrite the
+            // checked-in TOML's LF line endings to CRLF, breaking the
+            // byte-comparison even when the semantic content is
+            // identical. `.gitattributes` pins these files to LF, but
+            // add a defensive normalisation here so the test passes
+            // even on a repo cloned before `.gitattributes` landed.
+            let checked_in_normalised = checked_in.replace("\r\n", "\n");
             assert_eq!(
                 expected.as_str(),
-                checked_in,
+                checked_in_normalised.as_str(),
                 "assets/keymaps/default.{name}.toml is stale — regenerate it by running \
                  `cargo test -p atlas-keymap -- --ignored regen_default_keymap`"
             );

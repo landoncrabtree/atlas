@@ -29,23 +29,107 @@ pub struct WalkRequest {
     pub max_depth: Option<usize>,
 }
 
-/// Recursively walk `req.roots`, streaming [`ListEvent`]s over the returned
-/// channel.
+/// Handle to an in-flight recursive walk.
+///
+/// Owns both the [`Receiver`] streaming [`ListEvent`]s AND the outer
+/// producer thread's [`JoinHandle`]. On drop the producer thread is
+/// joined so no worker threads outlive the handle — critical for
+/// tests (nextest flags detached threads as "LEAK") and for the
+/// workspace's "no unbounded thread lingering" performance clause
+/// in `.github/instructions/performance.instructions.md`.
+///
+/// Dereferences to the underlying [`Receiver`] so existing call sites
+/// (`for event in &handle`, `handle.iter()`, `handle.recv()`,
+/// `handle.try_recv()`) work unchanged.
+pub struct WalkHandle {
+    rx: Receiver<ListEvent>,
+    // `Option` so `Drop` can `.take()` and `.join()`. Always `Some`
+    // for the entire lifetime except during Drop / `into_receiver`.
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl std::ops::Deref for WalkHandle {
+    type Target = Receiver<ListEvent>;
+    fn deref(&self) -> &Self::Target {
+        &self.rx
+    }
+}
+
+// Forward `for ev in &handle` to the receiver's iterator so existing
+// call sites (`for event in &rx { … }`) work unchanged after switching
+// from bare `Receiver` to `WalkHandle`. Rust's auto-deref doesn't
+// cover `IntoIterator` when written as `for … in &handle`.
+impl<'a> IntoIterator for &'a WalkHandle {
+    type Item = ListEvent;
+    type IntoIter = crossbeam_channel::Iter<'a, ListEvent>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.rx.iter()
+    }
+}
+
+impl WalkHandle {
+    /// Consume the handle and return just the [`Receiver`]. Joins the
+    /// producer thread inline so ownership transfer doesn't leak.
+    /// Useful when the caller needs `Receiver` by value (e.g. for
+    /// `for ev in rx { … }` when `rx` is a local, not a borrow).
+    #[must_use]
+    pub fn into_receiver(mut self) -> Receiver<ListEvent> {
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        // Swap out the receiver so Drop doesn't try to double-drop
+        // or close prematurely.
+        std::mem::replace(&mut self.rx, crossbeam_channel::unbounded().1)
+    }
+}
+
+impl Drop for WalkHandle {
+    fn drop(&mut self) {
+        // Drop `rx` first so the sender in worker threads sees the
+        // channel disconnected and short-circuits on the next
+        // `tx.send()`. Otherwise `ignore::WalkBuilder::build_parallel()`
+        // keeps enqueuing into an unbounded buffer even though nobody
+        // is consuming.
+        drop(std::mem::replace(
+            &mut self.rx,
+            crossbeam_channel::unbounded().1,
+        ));
+        // Then join the producer thread so its ignore-crate worker
+        // pool has fully wound down before Drop returns. If a caller
+        // dropped the handle before consuming Done, this is where the
+        // walker's pool actually stops.
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Recursively walk `req.roots`, streaming [`ListEvent`]s.
 ///
 /// Traversal runs on a pool of worker threads sized to the available
 /// parallelism. Entries are emitted in [`ListEvent::Batch`] chunks and a final
 /// [`ListEvent::Done`] is always sent. The root entries themselves (depth 0)
 /// are not emitted — only their descendants.
+///
+/// The returned [`WalkHandle`] joins the producer thread on drop so
+/// worker threads never outlive the handle.
 #[must_use]
-pub fn walk(req: WalkRequest) -> Receiver<ListEvent> {
+pub fn walk(req: WalkRequest) -> WalkHandle {
     let (tx, rx) = crossbeam_channel::unbounded();
 
     if req.roots.is_empty() {
         let _ = tx.send(ListEvent::Done);
-        return rx;
+        // Spawn a trivial thread even here so the WalkHandle contract
+        // ("Drop joins a thread") holds uniformly. Thread exits after
+        // dropping tx.
+        let thread = std::thread::spawn(move || drop(tx));
+        return WalkHandle {
+            rx,
+            thread: Some(thread),
+        };
     }
 
-    std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || {
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
@@ -108,7 +192,10 @@ pub fn walk(req: WalkRequest) -> Receiver<ListEvent> {
         let _ = tx.send(ListEvent::Done);
     });
 
-    rx
+    WalkHandle {
+        rx,
+        thread: Some(thread),
+    }
 }
 
 /// Per-worker accumulator that batches entries and flushes the remainder when

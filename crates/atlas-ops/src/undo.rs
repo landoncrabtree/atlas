@@ -5,6 +5,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::anyhow;
 use parking_lot::Mutex;
+#[cfg(any(
+    target_os = "windows",
+    all(
+        unix,
+        not(target_os = "macos"),
+        not(target_os = "ios"),
+        not(target_os = "android")
+    )
+))]
+use tracing::warn;
 
 /// Token returned when an undoable operation is pushed onto the stack.
 #[derive(Debug, Clone)]

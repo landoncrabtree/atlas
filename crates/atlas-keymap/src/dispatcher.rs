@@ -136,14 +136,26 @@ mod tests {
 
     #[test]
     fn handle_key_resolves_and_dispatches() {
-        let km = Keymap::with_defaults();
+        // Install a deterministic keymap so the test is independent of
+        // the OS-defaults table (macOS binds cmd-shift-p → toggle,
+        // Linux/Windows bind ctrl-shift-p — see per-OS defaults in
+        // defaults.rs).
+        let seq = crate::ChordSequence::from_str("ctrl-shift-p").unwrap();
+        let mut km = Keymap::empty();
+        km.add_layer(
+            "default",
+            vec![crate::Binding::new(
+                seq.clone(),
+                "Global",
+                ActionId::new("command_palette::Toggle"),
+            )],
+        );
         let d = Dispatcher::new(km);
         let called = Arc::new(AtomicUsize::new(0));
         let called2 = Arc::clone(&called);
         d.register("command_palette::Toggle", move || {
             called2.fetch_add(1, Ordering::SeqCst);
         });
-        let seq = crate::ChordSequence::from_str("cmd-shift-p").unwrap();
         assert!(d.handle_key(&seq, &[]));
         assert_eq!(called.load(Ordering::SeqCst), 1);
     }

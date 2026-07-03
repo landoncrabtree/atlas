@@ -29,7 +29,7 @@ pub fn fuzzy_rank<T, F: Fn(&T) -> &str>(items: Vec<T>, needle: &str, key: F) -> 
         .into_iter()
         .filter_map(|item| fuzzy_score(needle, key(&item)).map(|score| (item, score)))
         .collect();
-    ranked.sort_by(|left, right| right.1.cmp(&left.1));
+    ranked.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
     ranked
 }
 

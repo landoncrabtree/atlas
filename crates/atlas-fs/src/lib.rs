@@ -29,4 +29,4 @@ pub use filter::{CompiledFilter, Filter};
 pub use lister::{list_directory, ListEvent, ListRequest};
 pub use sort::{compare, sort_in_place, SortKey, SortOrder, SortSpec};
 pub use view_model::{InMemoryLocationViewModel, LocationViewModel, OpenOptions, ViewModelEvent};
-pub use walker::{walk, WalkRequest};
+pub use walker::{walk, WalkHandle, WalkRequest};

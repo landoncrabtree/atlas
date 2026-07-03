@@ -107,31 +107,38 @@ mod windows {
             // Iterate every top-level window owned by this thread so a
             // multi-window app all tints together. Currently Atlas ships
             // a single window; the loop future-proofs the helper.
+            //
+            // Type notes for windows-sys 0.52:
+            //   * `HWND` is a `isize` typedef, not `*mut _`. Null sentinel
+            //     is `0`, and `is_null` is `== 0`.
+            //   * `BOOL` lives at `Win32::Foundation::BOOL` (an `i32`),
+            //     not at the crate root's `core` module.
             unsafe {
-                let use_dark: windows_sys::core::BOOL = if dark { 1 } else { 0 };
-                let mut hwnd =
-                    windows_sys::Win32::UI::WindowsAndMessaging::GetTopWindow(std::ptr::null_mut());
-                while !hwnd.is_null() {
+                use windows_sys::Win32::Foundation::{BOOL, HWND};
+                use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    GetTopWindow, GetWindow, GW_HWNDNEXT,
+                };
+                let use_dark: BOOL = if dark { 1 } else { 0 };
+                let mut hwnd: HWND = GetTopWindow(0);
+                while hwnd != 0 {
                     // DWMWA_USE_IMMERSIVE_DARK_MODE = 20 on 20H1+; 19 on the
                     // 1809/1903 preview builds. Try 20 first, silently fall
                     // back — DWM returns E_INVALIDARG for unknown attrs.
-                    let bool_ptr: *const _ = &use_dark;
-                    let _ = windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                    let bool_ptr: *const BOOL = &use_dark;
+                    let _ = DwmSetWindowAttribute(
                         hwnd,
                         20, // DWMWA_USE_IMMERSIVE_DARK_MODE
                         bool_ptr.cast(),
-                        std::mem::size_of::<windows_sys::core::BOOL>() as u32,
+                        std::mem::size_of::<BOOL>() as u32,
                     );
-                    let _ = windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                    let _ = DwmSetWindowAttribute(
                         hwnd,
                         19, // legacy pre-20H1 fallback
                         bool_ptr.cast(),
-                        std::mem::size_of::<windows_sys::core::BOOL>() as u32,
+                        std::mem::size_of::<BOOL>() as u32,
                     );
-                    hwnd = windows_sys::Win32::UI::WindowsAndMessaging::GetWindow(
-                        hwnd,
-                        windows_sys::Win32::UI::WindowsAndMessaging::GW_HWNDNEXT,
-                    );
+                    hwnd = GetWindow(hwnd, GW_HWNDNEXT);
                 }
             }
             tracing::debug!(?dark, "titlebar_theme: applied DWM immersive-dark-mode");

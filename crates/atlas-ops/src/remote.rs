@@ -680,7 +680,7 @@ pub(crate) async fn delete_remote(
                 .iter()
                 .filter(|e| matches!(e.kind, RemoteMode::File))
                 .collect();
-            files.sort_by(|a, b| b.relative_path.len().cmp(&a.relative_path.len()));
+            files.sort_by_key(|e| std::cmp::Reverse(e.relative_path.len()));
             for entry in files {
                 check_flags_async(flags).await?;
                 let path = join_remote(&root_trim, &entry.relative_path);
@@ -695,7 +695,7 @@ pub(crate) async fn delete_remote(
                 .iter()
                 .filter(|e| matches!(e.kind, RemoteMode::Dir))
                 .collect();
-            dirs.sort_by(|a, b| b.relative_path.len().cmp(&a.relative_path.len()));
+            dirs.sort_by_key(|e| std::cmp::Reverse(e.relative_path.len()));
             for entry in dirs {
                 check_flags_async(flags).await?;
                 let path = join_remote(&root_trim, &entry.relative_path);

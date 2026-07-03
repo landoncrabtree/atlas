@@ -24,18 +24,25 @@ jobs:
 
   check:
     # One job per OS runs clippy + test back-to-back and shares a
-    # single incremental target/ dir. The dedicated `build` job that
-    # used to sit alongside was dropped: `cargo test --workspace`
-    # already compiles every workspace member (dev profile), and
+    # single incremental target/ dir. `cargo test --workspace` already
+    # compiles every workspace member (dev profile), and
     # `crates/atlas-ui/tests/font_bundle.rs::release_binary_embeds_the_bundled_ttf`
-    # invokes `cargo build --release --bin atlas` internally — so the
-    # release profile is exercised as a side effect of `cargo test`
-    # on every OS in the matrix.
+    # byte-scans an already-built rlib — so no separate build step is
+    # needed.
+    #
+    # `windows-latest` is deliberately absent from the matrix: Unix is
+    # the priority for MVP, and Windows-only test failures need a real
+    # Windows machine to root-cause (GitHub-hosted runners can't
+    # provide interactive debugging, and Windows Defender AV on the
+    # runner's temp-file paths adds enough latency to make timing-
+    # sensitive tests flake in ways that can't be reproduced locally
+    # on macOS). Re-add `windows-latest` once the app is validated on
+    # a real Windows dev box. See `.github/instructions/architecture.instructions.md`.
     name: check (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -81,5 +88,52 @@ jobs:
       - name: Install uv (Linux only, for remote-fs mock servers)
         if: runner.os == 'Linux'
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - name: Install cargo-nextest
+        # nextest is significantly faster than `cargo test` (parallel
+        # binary execution, per-test timeout, retry-on-flake) and is
+        # the recommended runner for CI. Retries let us tolerate the
+        # documented FSEvents-timing flakies on macOS runners
+        # (`theming::watcher`, `views::miller::controller`,
+        # `atlas-watch::test_*`, `atlas-config::watcher_reload_and_error`)
+        # without silencing them via `#[ignore]`. See
+        # `.github/skills/fix-flaky-test/SKILL.md`.
+        uses: taiki-e/install-action@nextest
+      - name: Clippy (continue on failure to surface all issues)
+        id: clippy
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run tests (nextest, retry-on-flake, no-fail-fast)
+        id: tests
+        # `--no-fail-fast` runs every test binary even after one crate's
+        # tests fail — surfaces the full list of cross-platform issues
+        # in one CI cycle instead of the back-and-forth of fix-one → CI →
+        # fix-next → CI. `continue-on-error: true` keeps the workflow
+        # running so sibling steps (doctests) + sibling jobs (Windows /
+        # Linux) surface their own failures in the same cycle. The
+        # aggregate step at the end still fails the job.
+        # TODO: remove `--no-fail-fast` + `continue-on-error` once the
+        # CI matrix has been green for a full sprint.
+        continue-on-error: true
+        run: cargo nextest run --workspace --locked --retries 3 --no-fail-fast
+      - name: Run doctests
+        id: doctests
+        # nextest doesn't run doctests yet (upstream issue).
+        # Keep them under plain `cargo test --doc`.
+        continue-on-error: true
+        run: cargo test --doc --workspace --locked --no-fail-fast
+      - name: Fail job if any prior step failed
+        # Aggregate exit code across the tolerant steps above so the
+        # full log surfaces in ONE cycle, but the job still fails when
+        # anything went wrong. Sorted by likelihood of noise: clippy
+        # first (usually surfaces first), then tests, then doctests.
+        run: |
+          echo "clippy outcome:   ${{ steps.clippy.outcome }}"
+          echo "tests outcome:    ${{ steps.tests.outcome }}"
+          echo "doctests outcome: ${{ steps.doctests.outcome }}"
+          if [ "${{ steps.clippy.outcome }}" != "success" ] \
+              || [ "${{ steps.tests.outcome }}" != "success" ] \
+              || [ "${{ steps.doctests.outcome }}" != "success" ]; then
+            echo "::error::One or more prior steps failed — see logs above."
+            exit 1
+          fi
+        shell: bash

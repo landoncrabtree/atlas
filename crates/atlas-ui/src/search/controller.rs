@@ -616,7 +616,7 @@ fn rank_and_cap(rows: &[UnifiedResult], query: &str, cap: usize) -> Vec<UnifiedR
             UnifiedResult::Content { .. } => contents.push(row.clone()),
         }
     }
-    paths.sort_by(|a, b| b.1.cmp(&a.1));
+    paths.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
 
     let mut out: Vec<UnifiedResult> = Vec::with_capacity(cap.min(rows.len()));
     for (row, _) in paths {

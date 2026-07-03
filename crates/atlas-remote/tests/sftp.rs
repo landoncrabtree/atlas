@@ -273,6 +273,15 @@ async fn list_nested_uri_path_lists_children() -> Result<()> {
 /// pointing at a file should surface as `EntryKind::File`. A broken
 /// symlink surfaces as `EntryKind::Symlink { broken: true, .. }`.
 /// See `SftpBackend::list` in `crates/atlas-remote/src/vm/sftp.rs`.
+///
+/// Skipped on Windows: `std::os::unix::fs::symlink` creates the seed
+/// symlinks on the mock server's data dir, and there is no Windows
+/// equivalent that produces a symlink readable back over SFTP without
+/// admin privileges. The SFTP backend's symlink-resolution logic is
+/// exercised via the Unix runners in CI; Windows users driving Atlas
+/// against a Unix SFTP server see the same behaviour at runtime — this
+/// test's Windows gap is a seed-fixture limitation, not a runtime one.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_resolves_symlink_target_kinds() -> Result<()> {
     crate::skip_if_no_python!();
@@ -335,6 +344,12 @@ async fn list_resolves_symlink_target_kinds() -> Result<()> {
 /// `follow_symlink` on the VM resolves relative-and-absolute link
 /// targets and returns a fully-formed [`Location::Remote`] pointing
 /// at the resolved path. See `RemoteLocationViewModel::follow_symlink`.
+///
+/// Skipped on Windows for the same reason as
+/// `list_resolves_symlink_target_kinds` above — the fixture uses
+/// `std::os::unix::fs::symlink` to seed a symlink on the mock
+/// server's data dir.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn follow_symlink_returns_target_location() -> Result<()> {
     crate::skip_if_no_python!();

@@ -103,7 +103,7 @@ fn walk_counts_with_and_without_hidden() {
         respect_gitignore: false,
         max_depth: None,
     });
-    let (visible_entries, _) = collect(visible);
+    let (visible_entries, _) = collect(visible.into_receiver());
     let vn = names(&visible_entries);
     assert!(vn.contains("alpha.txt"));
     assert!(vn.contains("nested.txt"));
@@ -117,7 +117,7 @@ fn walk_counts_with_and_without_hidden() {
         respect_gitignore: false,
         max_depth: None,
     });
-    let (hidden_entries, _) = collect(hidden);
+    let (hidden_entries, _) = collect(hidden.into_receiver());
     assert!(names(&hidden_entries).contains(".hidden"));
     assert!(hidden_entries.len() > visible_entries.len());
 }
@@ -125,14 +125,14 @@ fn walk_counts_with_and_without_hidden() {
 #[test]
 fn walk_respects_max_depth() {
     let tree = make_tree();
-    let rx = walk(WalkRequest {
+    let handle = walk(WalkRequest {
         roots: vec![tree.path().to_path_buf()],
         follow_symlinks: false,
         include_hidden: false,
         respect_gitignore: false,
         max_depth: Some(1),
     });
-    let (entries, _) = collect(rx);
+    let (entries, _) = collect(handle.into_receiver());
     let n = names(&entries);
     assert!(n.contains("subdir"));
     assert!(!n.contains("nested.txt"), "depth 2 entry must be excluded");

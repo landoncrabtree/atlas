@@ -127,18 +127,25 @@ async fn add_root_appears_in_stats() {
         .expect("AddRoot request should succeed");
     assert!(matches!(resp, Response::Ok), "expected Ok, got {resp:?}");
 
-    // Allow the ingest to run (blocking spawn_blocking task).
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let resp = client
-        .request(Request::Stats)
-        .await
-        .expect("stats request should succeed");
-    match resp {
-        Response::Stats { docs, .. } => {
-            assert!(docs >= 2, "expected at least 2 docs, got {docs}");
+    // Poll for the ingest to complete. On Windows the tokio +
+    // spawn_blocking + tantivy pipeline is measurably slower than
+    // Unix, so a fixed 500 ms sleep raced. Poll every 250 ms up to
+    // 15 s — the test still fails fast if the daemon never indexes.
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let resp = client
+            .request(Request::Stats)
+            .await
+            .expect("stats request should succeed");
+        match resp {
+            Response::Stats { docs, .. } if docs >= 2 => break,
+            Response::Stats { .. } if std::time::Instant::now() >= deadline => {
+                panic!("expected at least 2 docs within 15s; daemon never ingested");
+            }
+            Response::Stats { .. } => continue,
+            other => panic!("unexpected response: {other:?}"),
         }
-        other => panic!("unexpected response: {other:?}"),
     }
 
     daemon.shutdown().await;

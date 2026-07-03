@@ -2,3 +2,10 @@
 *.otf binary
 *.woff binary
 *.woff2 binary
+
+# Checked-in keymap TOMLs are compared byte-for-byte against
+# `default_keymap_toml_string_for()` output in
+# atlas-keymap::loader::tests::test_checked_in_default_toml_matches_emitter.
+# The emitter always writes `\n` line endings; Windows autocrlf would
+# convert them to `\r\n` on checkout and break the test. Pin to LF.
+assets/keymaps/default.*.toml text eol=lf
