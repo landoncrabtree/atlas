@@ -96,9 +96,12 @@ mod tests {
         let loc = Location::from_str("sftp://alice@host/var/log").unwrap();
         let pane = PaneModel::new(loc);
         let segments = pane.path_segments();
+        // `Location::from_str` canonicalises bare SFTP URIs to the
+        // backend default port; breadcrumb rendering reflects that.
+        // See `atlas_core::RemoteUri::with_default_port`.
         assert_eq!(
             segments.first().map(String::as_str),
-            Some("sftp://alice@host")
+            Some("sftp://alice@host:22")
         );
     }
 }

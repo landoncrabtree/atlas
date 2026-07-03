@@ -70,13 +70,25 @@ static SESSION_CREDENTIALS: Lazy<RwLock<HashMap<String, Credentials>>> =
 
 /// Compute the cache key for a remote URI. Same host+user+port maps
 /// to the same credentials regardless of path.
+///
+/// The port is normalised via the backend's default when absent — so
+/// `sftp://user@host` and `sftp://user@host:22` produce the same key,
+/// even if the caller synthesised the URI outside the connect
+/// controller (which is where `RemoteUri::with_default_port` is
+/// normally applied). This is a belt-and-suspenders defence against a
+/// future refactor bypassing that call site: without it, a URI that
+/// leaks in with `port: None` would silently miss the credentials
+/// cache and force the OS keychain prompt every time.
 fn cred_key(uri: &atlas_core::RemoteUri) -> String {
+    let effective_port = uri.port.or_else(|| {
+        atlas_core::BackendKind::from_scheme(&uri.scheme).and_then(|k| k.default_port())
+    });
     format!(
         "{}://{}@{}:{}",
         uri.scheme,
         uri.username.clone().unwrap_or_default(),
         uri.host.clone().unwrap_or_default(),
-        uri.port.map(|p| p.to_string()).unwrap_or_default(),
+        effective_port.map(|p| p.to_string()).unwrap_or_default(),
     )
 }
 
@@ -888,5 +900,54 @@ mod tests {
         // No credential_ref, cache empty — falls back to Anonymous.
         let cleared = credentials_for(&uri).unwrap();
         assert!(matches!(cleared, Credentials::Anonymous));
+    }
+
+    #[test]
+    fn cred_key_normalises_missing_port_via_scheme() {
+        // Regression: `port: None` and `port: Some(default_port_for_scheme)`
+        // must produce the same cred_key so a URI that slipped past
+        // `RemoteUri::with_default_port` still hits the session
+        // credentials cache. Previously the two forms produced
+        // `sftp://alice@host:` and `sftp://alice@host:22` respectively
+        // and `credentials_for` missed every cache lookup.
+        let without_port = atlas_core::RemoteUri {
+            scheme: "sftp".into(),
+            host: Some("host.cred-key-test.example".into()),
+            port: None,
+            username: Some("alice".into()),
+            path: "/some/path".into(),
+            credential_ref: None,
+        };
+        let with_default = atlas_core::RemoteUri {
+            port: Some(22),
+            ..without_port.clone()
+        };
+        assert_eq!(
+            cred_key(&without_port),
+            cred_key(&with_default),
+            "cred_key must be identical whether the URI carries None or Some(default)"
+        );
+
+        // Explicit non-default port stays distinct.
+        let explicit_alt = atlas_core::RemoteUri {
+            port: Some(2222),
+            ..without_port.clone()
+        };
+        assert_ne!(cred_key(&without_port), cred_key(&explicit_alt));
+
+        // FTP + WebDAV get the same treatment via their respective defaults.
+        let ftp = atlas_core::RemoteUri {
+            scheme: "ftp".into(),
+            host: Some("ftp.example".into()),
+            port: None,
+            username: Some("anon".into()),
+            path: "/".into(),
+            credential_ref: None,
+        };
+        let ftp_explicit = atlas_core::RemoteUri {
+            port: Some(21),
+            ..ftp.clone()
+        };
+        assert_eq!(cred_key(&ftp), cred_key(&ftp_explicit));
     }
 }
