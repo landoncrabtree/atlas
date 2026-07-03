@@ -82,8 +82,15 @@ pub fn compare(a: &Entry, b: &Entry, spec: &SortSpec) -> Ordering {
         SortKey::Size => a.metadata.size.cmp(&b.metadata.size),
         SortKey::Modified => a.metadata.modified.cmp(&b.metadata.modified),
         SortKey::Kind => a.kind.sort_rank().cmp(&b.kind.sort_rank()),
-        SortKey::Extension => compare_opt_str(a.extension(), b.extension())
-            .then_with(|| compare_names(&a.name, &b.name, spec)),
+        SortKey::Extension => {
+            // `Entry::extension()` returns a borrow when the name's
+            // extension is already lowercase ASCII — no per-comparison
+            // allocation in the common case.
+            let ae = a.extension();
+            let be = b.extension();
+            compare_opt_str(ae.as_deref(), be.as_deref())
+                .then_with(|| compare_names(&a.name, &b.name, spec))
+        }
     };
 
     // Stable tie-break by name so equal keys produce a deterministic order.
@@ -100,12 +107,12 @@ pub fn sort_in_place(entries: &mut [Entry], spec: &SortSpec) {
     entries.sort_by(|a, b| compare(a, b, spec));
 }
 
-fn compare_opt_str(a: Option<String>, b: Option<String>) -> Ordering {
+fn compare_opt_str(a: Option<&str>, b: Option<&str>) -> Ordering {
     match (a, b) {
         (None, None) => Ordering::Equal,
         (None, Some(_)) => Ordering::Less,
         (Some(_), None) => Ordering::Greater,
-        (Some(a), Some(b)) => a.cmp(&b),
+        (Some(a), Some(b)) => a.cmp(b),
     }
 }
 
@@ -113,10 +120,28 @@ fn compare_names(a: &str, b: &str, spec: &SortSpec) -> Ordering {
     if spec.natural {
         natural_cmp(a, b, spec.case_insensitive)
     } else if spec.case_insensitive {
-        a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase())
+        // Fold on the fly instead of `to_ascii_lowercase().cmp(&…)`,
+        // which allocated two Strings per comparison. Non-ASCII bytes
+        // are left as-is, matching the previous behaviour.
+        ascii_case_insensitive_cmp(a, b)
     } else {
         a.cmp(b)
     }
+}
+
+fn ascii_case_insensitive_cmp(a: &str, b: &str) -> Ordering {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    let n = ab.len().min(bb.len());
+    for i in 0..n {
+        let ca = ab[i].to_ascii_lowercase();
+        let cb = bb[i].to_ascii_lowercase();
+        match ca.cmp(&cb) {
+            Ordering::Equal => {}
+            other => return other,
+        }
+    }
+    ab.len().cmp(&bb.len())
 }
 
 /// Natural ordering: compares strings segment by segment, treating runs of

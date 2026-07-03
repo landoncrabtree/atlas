@@ -3,6 +3,7 @@
 //! These types are the lightweight, cheap-to-clone representation of a single
 //! filesystem object that flows through the lister, walker, and view models.
 
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -123,12 +124,31 @@ impl Entry {
             .unwrap_or_else(|| path.to_string_lossy().into_owned())
     }
 
-    /// The lowercased extension of the entry's name, if any.
+    /// The lowercased ASCII extension of the entry's name, if any.
+    ///
+    /// Returns a [`Cow`] — borrowed when the extension is already all
+    /// lower-case ASCII (the overwhelming common case: `.rs`, `.png`,
+    /// `.txt`) and owned only when a case fold is actually needed
+    /// (e.g. `.PNG`, `.JPEG`). This matters because this function is
+    /// called twice per comparison in the `SortKey::Extension`
+    /// comparator; the previous `Option<String>` return allocated
+    /// unconditionally, and sorting 10k entries would allocate ~260 k
+    /// short strings just to compare.
+    ///
+    /// Non-ASCII extensions fall back to the full-Unicode
+    /// `to_ascii_lowercase` path (still allocating), which is the
+    /// desired semantic — non-ASCII bytes are left alone.
     #[must_use]
-    pub fn extension(&self) -> Option<String> {
-        Path::new(&self.name)
-            .extension()
-            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+    pub fn extension(&self) -> Option<Cow<'_, str>> {
+        let ext = Path::new(&self.name).extension()?;
+        // `OsStr::to_str` returns `Some` for the valid-UTF-8 case,
+        // which every extension we sort by in practice is.
+        let s = ext.to_str()?;
+        if s.bytes().all(|b| !b.is_ascii_uppercase()) {
+            Some(Cow::Borrowed(s))
+        } else {
+            Some(Cow::Owned(s.to_ascii_lowercase()))
+        }
     }
 }
 
