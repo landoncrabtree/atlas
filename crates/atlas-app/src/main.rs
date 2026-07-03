@@ -1139,10 +1139,15 @@ fn build_dispatcher(
     }
 
     // ── Reopen closed tab ─────────────────────────────────────────────────
+    //
+    // `AppShell::reopen_closed_tab` consumes the top of the per-pane
+    // closed-tab deque (bounded at 20) and appends the reopened tab at
+    // the end of the strip, making it active. Empty stack is a silent
+    // no-op — matches browser convention (no beep, no toast).
     {
-        // TODO(v0.3): needs a closed-tabs stack on AppShell.
-        d.register("tab::Reopen", || {
-            tracing::warn!("tab::Reopen: not yet implemented (requires closed-tabs stack — v0.3)");
+        let s = Arc::clone(shell);
+        d.register("tab::Reopen", move || {
+            s.reopen_closed_tab(s.focused_pane_id());
         });
     }
 

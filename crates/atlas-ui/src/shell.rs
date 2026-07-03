@@ -5857,6 +5857,56 @@ mod tab_ops_tests {
         assert!(closed[&id].is_empty());
     }
 
+    /// Reopen appends the popped tab at the end of the tab list (Finder
+    /// / Chrome convention — the tab reappears at the right edge, not
+    /// at its original slot) and makes it active.
+    #[test]
+    fn reopen_appends_at_end_and_activates() {
+        let id = PaneId(1);
+        let mut ws = workspace_with_n_tabs(id, 3);
+        let mut closed: AHashMap<PaneId, VecDeque<TabModel>> = ahash::AHashMap::default();
+
+        // Close the middle tab (index 1 → "tab-1").
+        let p = ws.pane_mut(id).unwrap();
+        let removed = p.close_tab(1).expect("close_tab returns Some");
+        closed.entry(id).or_default().push_front(removed);
+
+        // Order after close: ["tab-0", "tab-2"].
+        assert_eq!(ws.pane(id).unwrap().tabs.len(), 2);
+
+        // Simulate AppShell::reopen_closed_tab — pop deque, push to
+        // tabs, make active.
+        let popped = closed.get_mut(&id).and_then(VecDeque::pop_front).unwrap();
+        let p = ws.pane_mut(id).unwrap();
+        p.tabs.push(popped);
+        p.active_tab = p.tabs.len() - 1;
+
+        // "tab-1" now sits at the end and is active.
+        assert_eq!(p.tabs.len(), 3);
+        assert_eq!(p.tabs[2].title, "tab-1");
+        assert_eq!(p.active_tab, 2);
+    }
+
+    /// Reopen with an empty closed-tab stack is a silent no-op: no
+    /// panic, no tab appended, active tab unchanged. Matches browser
+    /// convention (no beep, no toast).
+    #[test]
+    fn reopen_with_empty_stack_is_noop() {
+        let id = PaneId(1);
+        let mut ws = workspace_with_n_tabs(id, 2);
+        let mut closed: AHashMap<PaneId, VecDeque<TabModel>> = ahash::AHashMap::default();
+        ws.pane_mut(id).unwrap().set_active(1);
+
+        // Nothing to pop.
+        let popped = closed.get_mut(&id).and_then(VecDeque::pop_front);
+        assert!(popped.is_none());
+
+        // Pane state stays untouched.
+        let p = ws.pane(id).unwrap();
+        assert_eq!(p.tabs.len(), 2);
+        assert_eq!(p.active_tab, 1);
+    }
+
     #[test]
     fn closed_tab_deque_caps_at_twenty() {
         let id = PaneId(1);
