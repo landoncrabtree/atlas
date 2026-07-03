@@ -2407,12 +2407,6 @@ impl AppShell {
         }
     }
 
-    /// Split the focused pane rightward (horizontal split).
-    #[deprecated(since = "0.0.1", note = "use split_focused")]
-    pub fn split_focused_or_toggle_dual(self: &Arc<Self>) {
-        self.split_focused(SplitDirection::Horizontal);
-    }
-
     /// Append a new tab to pane `id` pointing at the pane's current location.
     /// The new tab becomes active. No-op if `id` is out of range.
     pub fn new_tab(self: &Arc<Self>, id: PaneId) {
@@ -2973,49 +2967,6 @@ impl AppShell {
         };
         if let Some(loc) = dest {
             self.navigate_pane_to_location_no_push(id, loc);
-        }
-    }
-
-    // ── Deprecated usize-indexed compat shims ────────────────────────────
-    // These resolve the Slint slot index to a PaneId via the layout's
-    // DFS-ordered leaves. New code should use the PaneId-based methods.
-
-    /// Return the Slint slot index (0 or 1) of the focused pane.
-    #[deprecated(since = "0.0.1", note = "use focused_pane_id()")]
-    #[must_use]
-    pub fn focused_pane(&self) -> usize {
-        let focused = self.focused_pane_id();
-        let leaves = self.workspace.read().layout.all_leaves();
-        leaves.iter().position(|&id| id == focused).unwrap_or(0)
-    }
-
-    /// Return whether more than one pane is open.
-    #[deprecated(since = "0.0.1", note = "use split_focused/close_focused_pane")]
-    #[must_use]
-    pub fn is_dual_pane(&self) -> bool {
-        self.workspace.read().layout.leaf_count() > 1
-    }
-
-    /// Enable (split) or disable (close) the second pane.
-    #[deprecated(since = "0.0.1", note = "use split_focused/close_focused_pane")]
-    pub fn set_dual_pane(self: &Arc<Self>, on: bool) {
-        if on {
-            if self.workspace.read().layout.leaf_count() < 2 {
-                self.split_focused(SplitDirection::Horizontal);
-            }
-        } else if self.workspace.read().layout.leaf_count() > 1 {
-            if let Some(id1) = self.pane_id_for_index(1) {
-                self.set_focused_pane_id(id1);
-                self.close_focused_pane();
-            }
-        }
-    }
-
-    /// Set the focused pane by Slint slot index (0 or 1).
-    #[deprecated(since = "0.0.1", note = "use set_focused_pane_id")]
-    pub fn set_focused_pane(self: &Arc<Self>, index: usize) {
-        if let Some(id) = self.pane_id_for_index(index) {
-            self.set_focused_pane_id(id);
         }
     }
 
