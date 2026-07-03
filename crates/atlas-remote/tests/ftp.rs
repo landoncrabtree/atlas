@@ -106,6 +106,56 @@ async fn list_directory_returns_children() -> Result<()> {
     Ok(())
 }
 
+/// Dotfile handling — the FTP backend must return `.`-prefixed
+/// entries in the raw listing and mark them as hidden. See the SFTP
+/// counterpart in `sftp.rs` for the rationale (per-pane runtime
+/// toggle via `Cmd+.` / `Ctrl+H`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_preserves_dot_entries_and_filter_hides_them() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockFtpServer::start_anon()?;
+
+    std::fs::create_dir(server.root_dir().join(".hidden_dot_dir"))?;
+    std::fs::write(server.root_dir().join(".dot_file"), b"secret")?;
+    std::fs::write(server.root_dir().join("visible_file"), b"public")?;
+
+    let vm = open(
+        &Location::Remote(server.uri(), BackendKind::Ftp),
+        Credentials::Anonymous,
+        OpenOptions::default(),
+    )?;
+    wait_loaded(&vm, Duration::from_secs(15))?;
+
+    let entries = vm.entries();
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert!(
+        names.contains(&".hidden_dot_dir")
+            && names.contains(&".dot_file")
+            && names.contains(&"visible_file"),
+        "raw list must include all 3 entries; got {names:?}",
+    );
+    for e in &entries {
+        let expected = e.name.starts_with('.');
+        assert_eq!(
+            e.metadata.is_hidden, expected,
+            "entry {:?} must have is_hidden = {expected}",
+            e.name,
+        );
+    }
+
+    let mut filter = vm.filter();
+    filter.include_hidden = false;
+    vm.set_filter(filter)?;
+    let filtered: Vec<String> = vm.entries().iter().map(|e| e.name.clone()).collect();
+    assert_eq!(
+        filtered.as_slice(),
+        &["visible_file"],
+        "Filter::include_hidden=false must hide dot entries; got {filtered:?}",
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stat_single_entry() -> Result<()> {
     crate::skip_if_no_python!();

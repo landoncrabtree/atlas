@@ -118,6 +118,83 @@ async fn list_directory_returns_children() -> Result<()> {
     Ok(())
 }
 
+/// Dotfile handling — the SFTP backend must return `.` -prefixed
+/// entries in the raw listing and mark them as hidden so
+/// [`atlas_fs::Filter::include_hidden`] can toggle them at runtime.
+///
+/// This backs the per-pane `Cmd+.` (macOS) / `Ctrl+H` (Linux/Windows)
+/// runtime toggle for remote panes — see
+/// `AppShell::toggle_hidden_focused`.
+///
+/// Before the audit fix, `build_atlas_entry` set `is_hidden = false`
+/// unconditionally, so remote panes silently ignored the toggle. This
+/// test locks in the fix: name-based hidden detection must survive
+/// the OpenDAL Metadata → atlas-fs Entry conversion, and the
+/// pane-scoped Filter must reduce the listing when
+/// `include_hidden = false`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_preserves_dot_entries_and_filter_hides_them() -> Result<()> {
+    crate::skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+
+    // Seed: one hidden dir, one hidden file, one visible file.
+    std::fs::create_dir(server.root_dir().join(".hidden_dot_dir"))?;
+    std::fs::write(server.root_dir().join(".dot_file"), b"secret")?;
+    std::fs::write(server.root_dir().join("visible_file"), b"public")?;
+
+    let vm = open(
+        &Location::Remote(server.uri("atlas"), BackendKind::Sftp),
+        Credentials::SshKey(server.client_key(), None),
+        OpenOptions::default(),
+    )?;
+    wait_loaded(&vm, Duration::from_secs(15))?;
+
+    let entries = vm.entries();
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert!(
+        names.contains(&".hidden_dot_dir")
+            && names.contains(&".dot_file")
+            && names.contains(&"visible_file"),
+        "raw list must include all 3 entries; got {names:?}",
+    );
+
+    // Every leading-dot entry must be flagged is_hidden so the
+    // filter can gate on it.
+    for e in &entries {
+        let expected = e.name.starts_with('.');
+        assert_eq!(
+            e.metadata.is_hidden, expected,
+            "entry {:?} must have is_hidden = {expected}",
+            e.name,
+        );
+    }
+
+    // Applying `include_hidden = false` at the pane filter layer must
+    // reduce the listing to the single visible entry — no re-listing
+    // round-trip.
+    let mut filter = vm.filter();
+    filter.include_hidden = false;
+    vm.set_filter(filter)?;
+    let filtered: Vec<String> = vm.entries().iter().map(|e| e.name.clone()).collect();
+    assert_eq!(
+        filtered.as_slice(),
+        &["visible_file"],
+        "Filter::include_hidden=false must hide dot entries; got {filtered:?}",
+    );
+
+    // Flipping back to `include_hidden = true` must restore all 3.
+    let mut filter = vm.filter();
+    filter.include_hidden = true;
+    vm.set_filter(filter)?;
+    let restored_len = vm.entries().len();
+    assert_eq!(
+        restored_len, 3,
+        "Filter::include_hidden=true must restore all 3 entries",
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stat_single_entry() -> Result<()> {
     crate::skip_if_no_python!();

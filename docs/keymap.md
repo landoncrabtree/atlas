@@ -196,29 +196,27 @@ These bindings act on the focused pane.
 
 ### Pane splitting and focus
 
-Vim-style pane focus stays on physical Ctrl on macOS. On Linux/Windows
-the same chord would collide with the OS-native "toggle hidden files"
-chord (Nautilus / Nemo / Thunar / Dolphin all use Ctrl+H), so
-`pane::FocusLeft` will shift to `Ctrl+Shift+H` on those platforms once
-PR #5 lands. **Currently on `main`, `Ctrl+H` binds to `pane::FocusLeft`
-on every platform.**
+Vim-style pane focus (`ctrl-h/j/k/l`) stays on physical Ctrl on macOS —
+muscle memory from tmux/vim expects this. On Linux/Windows, `Ctrl+H` is
+the OS-native "toggle hidden files" chord (Nautilus, Nemo, Thunar,
+Dolphin all use it), so `pane::FocusLeft` shifts to `Ctrl+Shift+H` there
+and `Ctrl+H` binds to `pane::ToggleHidden` instead.
+
+`pane::ToggleHidden` is a per-pane runtime toggle: split screens can
+show different states, and the toggle does **not** persist to
+`config.toml` (edit `[view].show_hidden` for a persistent default).
 
 | Action ID | macOS | Linux | Windows | Context |
 |---|---|---|---|---|
 | `pane::SplitRight` | `cmd-d` | `ctrl-d` | `ctrl-d` | Global |
 | `pane::SplitDown` | `cmd-shift-d` | `ctrl-shift-d` | `ctrl-shift-d` | Global |
 | `pane::Close` | `cmd-shift-w` | `ctrl-shift-w` | `ctrl-shift-w` | Global |
-| `pane::FocusLeft` | `ctrl-h` | `ctrl-h` <!-- TODO(PR #5): `ctrl-shift-h` --> | `ctrl-h` <!-- TODO(PR #5): `ctrl-shift-h` --> | Pane |
+| `pane::FocusLeft` | `ctrl-h` | `ctrl-shift-h` | `ctrl-shift-h` | Pane |
 | `pane::FocusDown` | `ctrl-j` | `ctrl-j` | `ctrl-j` | Pane |
 | `pane::FocusUp` | `ctrl-k` | `ctrl-k` | `ctrl-k` | Pane |
 | `pane::FocusRight` | `ctrl-l` | `ctrl-l` | `ctrl-l` | Pane |
+| `pane::ToggleHidden` | `cmd-.` | `ctrl-h` | `ctrl-h` | Pane |
 | `workspace::ToggleDualPane` | `cmd-\` | `ctrl-\` | `ctrl-\` | Global |
-
-<!-- TODO(PR #5 — feat/hidden-and-config-keybinds-v2):
-     Once PR #5 merges, add a `pane::ToggleHidden` row here:
-       | `pane::ToggleHidden` | `cmd-.` | `ctrl-h` | `ctrl-h` | Pane |
-     and update the FocusLeft row to reflect the `ctrl-shift-h` shift
-     on Linux/Windows. -->
 
 ### View modes
 

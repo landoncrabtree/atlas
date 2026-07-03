@@ -367,6 +367,12 @@ context = "Pane"
 key = "ctrl-l"
 action = "pane::FocusRight"
 
+# [Pane] Toggle Hidden Files
+[[bindings]]
+context = "Pane"
+key = "cmd-."
+action = "pane::ToggleHidden"
+
 # [Global] Toggle Search Panel
 [[bindings]]
 context = "Global"

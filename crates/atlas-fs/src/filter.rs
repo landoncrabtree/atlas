@@ -14,8 +14,8 @@ use crate::entry::Entry;
 /// A declarative filter describing which entries should be retained.
 ///
 /// All present criteria must match (logical AND). An empty/default filter
-/// matches everything.
-#[derive(Clone, Debug, Default)]
+/// matches everything visible.
+#[derive(Clone, Debug)]
 pub struct Filter {
     /// Case-insensitive substring matched against the entry name.
     pub query: Option<String>,
@@ -25,6 +25,28 @@ pub struct Filter {
     pub exclude_globs: Vec<String>,
     /// Regular expression matched against the entry name.
     pub regex: Option<String>,
+    /// When `false`, entries whose [`Entry::metadata`] carries
+    /// `is_hidden = true` are filtered out post-list. Defaults to `true`
+    /// (show everything), matching the historical behaviour when the
+    /// raw list already excluded hidden entries at the walker layer.
+    ///
+    /// Setting this to `false` is the runtime-toggleable knob for the
+    /// per-pane hidden-file visibility (Cmd+.): the shell always opens
+    /// the underlying view model with hidden entries listed, then
+    /// applies a filter reflecting the pane's own `show_hidden` state.
+    pub include_hidden: bool,
+}
+
+impl Default for Filter {
+    fn default() -> Self {
+        Self {
+            query: None,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            regex: None,
+            include_hidden: true,
+        }
+    }
 }
 
 /// A compiled, ready-to-apply form of [`Filter`].
@@ -37,6 +59,7 @@ pub struct CompiledFilter {
     include: Option<GlobSet>,
     exclude: Option<GlobSet>,
     regex: Option<Regex>,
+    include_hidden: bool,
 }
 
 impl Filter {
@@ -58,6 +81,7 @@ impl Filter {
                 }
                 None => None,
             },
+            include_hidden: self.include_hidden,
         })
     }
 }
@@ -67,6 +91,11 @@ impl CompiledFilter {
     #[must_use]
     pub fn matches(&self, entry: &Entry) -> bool {
         let name = &entry.name;
+
+        // Hidden-file gate — cheap boolean check first.
+        if !self.include_hidden && entry.metadata.is_hidden {
+            return false;
+        }
 
         if let Some(q) = &self.query {
             if !name.to_ascii_lowercase().contains(q) {
@@ -110,4 +139,72 @@ fn build_globset(patterns: &[String]) -> Result<Option<GlobSet>> {
         .build()
         .map_err(|e| AtlasError::InvalidPath(format!("failed to build glob set: {e}")))?;
     Ok(Some(set))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::entry::{EntryKind, Metadata};
+
+    use super::*;
+
+    fn entry(name: &str, hidden: bool) -> Entry {
+        Entry {
+            path: PathBuf::from(name),
+            name: name.to_owned(),
+            kind: EntryKind::File,
+            metadata: Metadata {
+                size: 0,
+                modified: None,
+                created: None,
+                accessed: None,
+                permissions_mode: None,
+                is_hidden: hidden,
+            },
+        }
+    }
+
+    #[test]
+    fn default_filter_includes_hidden() {
+        let f = Filter::default();
+        assert!(
+            f.include_hidden,
+            "default filter must include hidden entries so the pane-level toggle drives visibility"
+        );
+        let cf = f.compile().expect("default filter must compile");
+        assert!(cf.matches(&entry(".rc", true)));
+        assert!(cf.matches(&entry("visible", false)));
+    }
+
+    #[test]
+    fn filter_hides_hidden_entries_when_include_hidden_false() {
+        let f = Filter {
+            include_hidden: false,
+            ..Filter::default()
+        };
+        let cf = f.compile().expect("filter must compile");
+        assert!(
+            !cf.matches(&entry(".rc", true)),
+            "hidden entry must be rejected when include_hidden = false"
+        );
+        assert!(
+            cf.matches(&entry("visible", false)),
+            "non-hidden entry must still match"
+        );
+    }
+
+    #[test]
+    fn include_hidden_short_circuits_before_other_criteria() {
+        // Regression: the hidden gate must run first so we don't allocate
+        // a lowercased query string for entries we'll drop anyway.
+        let f = Filter {
+            query: Some("cache".into()),
+            include_hidden: false,
+            ..Filter::default()
+        };
+        let cf = f.compile().expect("filter must compile");
+        // Hidden + matches query — still rejected.
+        assert!(!cf.matches(&entry(".cache", true)));
+    }
 }

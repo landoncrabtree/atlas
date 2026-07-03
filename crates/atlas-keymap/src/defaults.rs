@@ -151,12 +151,34 @@ pub fn default_bindings_for(platform: PrettyPlatform) -> Vec<Binding> {
         p("d", ("Global", "pane::SplitRight")),
         ps("d", ("Global", "pane::SplitDown")),
         ps("w", ("Global", "pane::Close")),
-        // Vim-style pane focus stays on physical Ctrl on every platform
-        // (users muscle-memory-remember Ctrl+H/J/K/L from tmux/vim).
-        b("ctrl-h", "Pane", "pane::FocusLeft"),
+        // Vim-style pane focus stays on physical Ctrl on macOS (users
+        // muscle-memory-remember Ctrl+H/J/K/L from tmux/vim). On
+        // Linux/Windows `Ctrl+H` is already the OS-native "toggle hidden
+        // files" chord (Nautilus, Nemo, Thunar, Dolphin all use it),
+        // so `pane::FocusLeft` shifts to `Ctrl+Shift+H` there to keep
+        // vim-style navigation available without stomping the platform
+        // convention.
+        match platform {
+            PrettyPlatform::Mac => b("ctrl-h", "Pane", "pane::FocusLeft"),
+            PrettyPlatform::Linux | PrettyPlatform::Windows => {
+                b("ctrl-shift-h", "Pane", "pane::FocusLeft")
+            }
+        },
         b("ctrl-j", "Pane", "pane::FocusDown"),
         b("ctrl-k", "Pane", "pane::FocusUp"),
         b("ctrl-l", "Pane", "pane::FocusRight"),
+        // Per-pane hidden-files toggle. macOS uses `Cmd+.` (Finder's
+        // `Cmd+Shift+.` is dotfile-only but Atlas has no separate
+        // "system" vs "user" hidden concept, so we ship the shorter
+        // one-key chord). Linux/Windows use `Ctrl+H` (Nautilus / Nemo /
+        // Thunar / Dolphin). Per-pane means the focused pane flips
+        // independently — split screens can show different states.
+        match platform {
+            PrettyPlatform::Mac => b("cmd-.", "Pane", "pane::ToggleHidden"),
+            PrettyPlatform::Linux | PrettyPlatform::Windows => {
+                b("ctrl-h", "Pane", "pane::ToggleHidden")
+            }
+        },
         // ── Search / ops / bulk-rename / dual-pane ────────────────────────
         p("f", ("Global", "search::Toggle")),
         ps("f", ("Global", "search::Open")),
@@ -294,6 +316,18 @@ pub fn default_actions() -> Vec<ActionMeta> {
         action!("pane::FocusDown", "Focus Below Pane", None, &["Pane"]),
         action!("pane::FocusUp", "Focus Above Pane", None, &["Pane"]),
         action!("pane::FocusRight", "Focus Right Pane", None, &["Pane"]),
+        // ── Per-pane hidden-files toggle ─────────────────────────────────
+        action!(
+            "pane::ToggleHidden",
+            "Toggle Hidden Files",
+            Some(
+                "Show or hide dotfiles in the focused pane. Per-pane: \
+                 one pane can hide dotfiles while another shows them. \
+                 Runtime only — does not persist to config.toml."
+                    .into()
+            ),
+            &["Pane"]
+        ),
         // ── View cycle ───────────────────────────────────────────────────────
         action!("view::Cycle", "Cycle View Mode", None, &["Pane"]),
         // ── Tab cycle / reopen ────────────────────────────────────────────────
@@ -429,6 +463,7 @@ mod tests {
             "pane::FocusDown",
             "pane::FocusUp",
             "pane::FocusRight",
+            "pane::ToggleHidden",
             "view::Cycle",
             "tab::CyclePrev",
             "tab::CycleNext",
@@ -450,6 +485,7 @@ mod tests {
             "pane::FocusDown",
             "pane::FocusUp",
             "pane::FocusRight",
+            "pane::ToggleHidden",
             "view::Cycle",
             "tab::CyclePrev",
             "tab::CycleNext",
@@ -457,6 +493,43 @@ mod tests {
             "remote::Connect",
         ] {
             assert!(action_ids.contains(id), "missing ActionMeta for {id:?}");
+        }
+    }
+
+    #[test]
+    fn test_toggle_hidden_binding_per_platform() {
+        // Regression test: ensure the platform-specific chord for
+        // `pane::ToggleHidden` stays aligned with OS conventions and
+        // that `pane::FocusLeft` moves off `ctrl-h` on Linux/Windows
+        // to avoid stomping the OS-native hidden-files chord.
+        for (platform, expected_toggle, expected_focus_left) in [
+            (PrettyPlatform::Mac, "cmd-.", "ctrl-h"),
+            (PrettyPlatform::Linux, "ctrl-h", "ctrl-shift-h"),
+            (PrettyPlatform::Windows, "ctrl-h", "ctrl-shift-h"),
+        ] {
+            let bindings = default_bindings_for(platform);
+            let toggle = bindings
+                .iter()
+                .find(|b| b.action.as_str() == "pane::ToggleHidden")
+                .unwrap_or_else(|| {
+                    panic!("pane::ToggleHidden missing on {platform:?}");
+                });
+            assert_eq!(
+                toggle.sequence.display(),
+                expected_toggle,
+                "pane::ToggleHidden chord for {platform:?}"
+            );
+            assert_eq!(toggle.context, "Pane");
+
+            let focus_left = bindings
+                .iter()
+                .find(|b| b.action.as_str() == "pane::FocusLeft")
+                .unwrap_or_else(|| panic!("pane::FocusLeft missing on {platform:?}"));
+            assert_eq!(
+                focus_left.sequence.display(),
+                expected_focus_left,
+                "pane::FocusLeft chord for {platform:?}"
+            );
         }
     }
 

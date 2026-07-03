@@ -627,7 +627,7 @@ fn build_atlas_entry(uri: &RemoteUri, e: &RemoteEntry) -> Option<Entry> {
     };
     Some(Entry {
         path: PathBuf::from(&e.path),
-        name,
+        name: name.clone(),
         kind,
         metadata: Metadata {
             size,
@@ -635,7 +635,13 @@ fn build_atlas_entry(uri: &RemoteUri, e: &RemoteEntry) -> Option<Entry> {
             created: None,
             accessed: None,
             permissions_mode: None,
-            is_hidden: false,
+            // Match the local walker: dotfile-style entries are marked
+            // hidden so the per-pane `Filter::include_hidden` toggle
+            // (Cmd+.) applies uniformly to remote and local panes.
+            // Every backend's list() surfaces dot-prefixed entries
+            // (verified in `tests/dotfiles_*.rs`) so this is the only
+            // hidden-classification hook that runs for remote entries.
+            is_hidden: name.starts_with('.'),
         },
     })
 }

@@ -17,17 +17,44 @@ pub struct PaneState {
     pub active_tab: usize,
     /// View mode for the pane.
     pub view_mode: ViewMode,
+    /// Whether this pane currently shows hidden entries (dotfiles on
+    /// Unix, HIDDEN-attribute files on Windows). Toggled at runtime via
+    /// `pane::ToggleHidden` (Cmd+. on macOS / Ctrl+H on Linux + Windows);
+    /// initial value comes from `config.view.show_hidden` at pane
+    /// construction time. Runtime toggles do NOT persist — the next
+    /// launch reverts to the config default.
+    pub show_hidden: bool,
 }
 
 impl PaneState {
     /// Construct a new pane with one initial tab.
+    ///
+    /// `show_hidden` is initialised to `false` — the historical default
+    /// matching `config.view.show_hidden = false`. Call
+    /// [`Self::new_with_show_hidden`] when the caller has the pane's
+    /// initial visibility policy in hand (typically the shell,
+    /// threading `config.view.show_hidden` through).
     #[must_use]
     pub fn new(id: PaneId, initial: TabModel, view_mode: ViewMode) -> Self {
+        Self::new_with_show_hidden(id, initial, view_mode, false)
+    }
+
+    /// Construct a new pane with an explicit initial `show_hidden`
+    /// policy. Used by the shell so the first navigation applies the
+    /// user's `config.view.show_hidden` default.
+    #[must_use]
+    pub fn new_with_show_hidden(
+        id: PaneId,
+        initial: TabModel,
+        view_mode: ViewMode,
+        show_hidden: bool,
+    ) -> Self {
         Self {
             id,
             tabs: vec![initial],
             active_tab: 0,
             view_mode,
+            show_hidden,
         }
     }
 
@@ -173,5 +200,36 @@ mod tests {
         assert!(removed.is_some());
         assert_eq!(pane.active_tab, 1);
         assert_eq!(pane.active_location(), Location::local("/b"));
+    }
+
+    #[test]
+    fn new_defaults_show_hidden_to_false() {
+        let pane = PaneState::new(
+            PaneId(1),
+            TabModel::new(
+                Location::local("/a"),
+                8,
+                SortSpec::default(),
+                Filter::default(),
+            ),
+            ViewMode::Details,
+        );
+        assert!(!pane.show_hidden);
+    }
+
+    #[test]
+    fn new_with_show_hidden_carries_through() {
+        let pane = PaneState::new_with_show_hidden(
+            PaneId(1),
+            TabModel::new(
+                Location::local("/a"),
+                8,
+                SortSpec::default(),
+                Filter::default(),
+            ),
+            ViewMode::Details,
+            true,
+        );
+        assert!(pane.show_hidden);
     }
 }
