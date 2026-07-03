@@ -373,7 +373,7 @@ impl MillerController {
     /// Move the focused row within the focused column by `delta` rows.
     ///
     /// Movement is clamped to the valid range; the focused column is not
-    /// changed.  Per the MVP spec, auto-opening child directories on focus
+    /// changed. By design, auto-opening child directories on focus
     /// movement is **not** implemented — require an explicit right-arrow /
     /// `activate_focused` to descend.
     pub fn move_focus(self: &Arc<Self>, delta: isize) {
@@ -936,7 +936,7 @@ mod tests {
     /// Counting opener that records every path it's asked to open — used to
     /// verify that `set_root_with_opener` routes through the caller's opener
     /// (rather than always falling back to a local `InMemoryLocationViewModel`,
-    /// which was the bug for Miller on remote panes in phase 2.3).
+    /// which was the bug for Miller on remote panes).
     struct CountingOpener {
         target: PathBuf,
         seen: parking_lot::Mutex<Vec<PathBuf>>,
@@ -1029,7 +1029,7 @@ mod tests {
 
     // ── Right-click context menu targeting ────────────────────────────────────
     //
-    // Locks the invariant behind item 5 (Phase 2.9): a right-click on a
+    // Locks the invariant behind gallery/miller context menus: a right-click on a
     // Miller cell must resolve to the entry's on-disk path *and* full
     // `Entry` value without mutating focus.  These are the values the
     // shell handler feeds to `AppShell::open_context_menu_for_entry` —

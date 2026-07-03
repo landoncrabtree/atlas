@@ -90,7 +90,7 @@ impl SavedServer {
     /// absent so an entry stored as `port: None` and a fresh entry
     /// assembled with `port: Some(default)` collapse into a single row
     /// — otherwise the user would see two "same server" entries in the
-    /// palette after upgrading past Phase 2.12.
+    /// palette after upgrading from older saved-server data.
     #[must_use]
     fn dedup_key(&self) -> (BackendKind, String, Option<u16>, Option<String>) {
         (
@@ -122,7 +122,7 @@ impl SavedServersFile {
     /// Canonicalise every entry's `port` field via
     /// [`BackendKind::default_port`]. Called from [`load_from_path`]
     /// so that older `servers.toml` files (persisted before URI
-    /// normalisation landed in Phase 2.12) present as if they had
+    /// normalisation present as if they had
     /// been re-saved: `port: None` becomes `port: Some(22)` for
     /// SFTP, `Some(21)` for FTP, `Some(443)` for WebDAV. S3 and
     /// Local stay `None` (no canonical port).
@@ -166,7 +166,7 @@ pub fn load_from_path(path: &std::path::Path) -> Result<SavedServersFile> {
             // Canonicalise persisted `port: None` entries to the
             // backend default so post-load structs match the shape
             // produced by `atlas_core::RemoteUri::with_default_port`.
-            // Older files written before Phase 2.12 may carry
+            // Older files may carry
             // `port: None` for SFTP entries — without this, dedup and
             // downstream cache-key lookups would treat them as
             // distinct from freshly-assembled `port: Some(22)` URIs.

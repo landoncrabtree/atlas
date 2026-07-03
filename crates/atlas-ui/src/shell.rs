@@ -1130,7 +1130,7 @@ impl AppShell {
 
     /// Resolve the controllers currently occupying Slint slot `index`.
     ///
-    /// Used by the `toggle-dual-pane` callback and Phase 4.1 migration code.
+    /// Used by the `toggle-dual-pane` callback and split-layout migration code.
     #[allow(dead_code)]
     fn ctrl_for_index(&self, index: usize) -> Option<PaneControllers> {
         self.pane_id_for_index(index)
@@ -1949,7 +1949,7 @@ impl AppShell {
     /// Split the focused pane in `direction`. Returns the new [`PaneId`].
     ///
     /// Creates a new pane by splitting the currently focused leaf. The new pane
-    /// inherits the focused pane's current location. After Phase 4 the Slint UI
+    /// inherits the focused pane's current location. After the split-layout migration, the Slint UI
     /// renders N panes, so any number of splits is supported.
     pub fn split_focused(self: &Arc<Self>, direction: SplitDirection) -> Option<PaneId> {
         let leaf_count = self.workspace.read().layout.leaf_count();
@@ -2408,7 +2408,7 @@ impl AppShell {
     }
 
     /// Split the focused pane rightward (horizontal split).
-    #[deprecated(since = "0.0.1", note = "Phase 3: use split_focused")]
+    #[deprecated(since = "0.0.1", note = "use split_focused")]
     pub fn split_focused_or_toggle_dual(self: &Arc<Self>) {
         self.split_focused(SplitDirection::Horizontal);
     }
@@ -2981,7 +2981,7 @@ impl AppShell {
     // DFS-ordered leaves. New code should use the PaneId-based methods.
 
     /// Return the Slint slot index (0 or 1) of the focused pane.
-    #[deprecated(since = "0.0.1", note = "Phase 3: use focused_pane_id()")]
+    #[deprecated(since = "0.0.1", note = "use focused_pane_id()")]
     #[must_use]
     pub fn focused_pane(&self) -> usize {
         let focused = self.focused_pane_id();
@@ -2990,20 +2990,14 @@ impl AppShell {
     }
 
     /// Return whether more than one pane is open.
-    #[deprecated(
-        since = "0.0.1",
-        note = "Phase 3: use split_focused/close_focused_pane"
-    )]
+    #[deprecated(since = "0.0.1", note = "use split_focused/close_focused_pane")]
     #[must_use]
     pub fn is_dual_pane(&self) -> bool {
         self.workspace.read().layout.leaf_count() > 1
     }
 
     /// Enable (split) or disable (close) the second pane.
-    #[deprecated(
-        since = "0.0.1",
-        note = "Phase 3: use split_focused/close_focused_pane"
-    )]
+    #[deprecated(since = "0.0.1", note = "use split_focused/close_focused_pane")]
     pub fn set_dual_pane(self: &Arc<Self>, on: bool) {
         if on {
             if self.workspace.read().layout.leaf_count() < 2 {
@@ -3018,7 +3012,7 @@ impl AppShell {
     }
 
     /// Set the focused pane by Slint slot index (0 or 1).
-    #[deprecated(since = "0.0.1", note = "Phase 3: use set_focused_pane_id")]
+    #[deprecated(since = "0.0.1", note = "use set_focused_pane_id")]
     pub fn set_focused_pane(self: &Arc<Self>, index: usize) {
         if let Some(id) = self.pane_id_for_index(index) {
             self.set_focused_pane_id(id);
@@ -4243,7 +4237,7 @@ impl AppShell {
                 }
                 tracing::info!(count = paths.len(), "fs::Delete (F8) → trash");
                 // F8 always sends to trash (non-destructive default).
-                // Shift+F8 for permanent delete is a post-MVP binding.
+                // Shift+F8 for permanent delete is a follow-up binding.
                 let locations: Vec<Location> = paths.into_iter().map(Location::local).collect();
                 shell.ops.submit_delete(locations, true);
             });
@@ -4252,13 +4246,13 @@ impl AppShell {
             let shell = Arc::clone(self);
             window.on_fs_rename(move || {
                 let focused = shell.focused_pane_id();
-                // TODO(post-MVP): show an inline rename text-input or modal dialog.
+                // TODO: show an inline rename text-input or modal dialog.
                 // For now we log the focused entry and skip the operation.
                 match shell.focused_entry(focused) {
                     Some(path) => {
                         tracing::info!(
                             path = %path.display(),
-                            "fs::Rename (F2): rename dialog not yet implemented (post-MVP)"
+                            "fs::Rename (F2): rename dialog not yet implemented"
                         );
                     }
                     None => {
@@ -4276,7 +4270,7 @@ impl AppShell {
                     return;
                 };
                 // Choose a unique "New Folder" name within the current location.
-                // For remote panes we skip the collision check for MVP and
+                // For remote panes we currently skip the collision check and
                 // rely on the backend to reject duplicates.
                 let target = match &location {
                     Location::Local(local_path) => {
@@ -4442,7 +4436,7 @@ impl AppShell {
                 connect.cancel_delete_saved_server();
             });
         }
-        // ── TOFU host-key prompt callbacks (Phase 2.6) ────────────────────
+        // ── TOFU host-key prompt callbacks ────────────────────────────────────
         {
             let connect = Arc::clone(&self.connect);
             window.on_connect_host_key_trust_once(move || connect.host_key_trust_once());

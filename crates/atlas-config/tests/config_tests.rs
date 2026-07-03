@@ -311,7 +311,7 @@ fn path_helpers() {
     assert_eq!(cf.file_name().and_then(|n| n.to_str()), Some("config.toml"));
 
     let kf = keymap_file_path().expect("keymap_file_path");
-    // Phase 1 moved the keymap to keymaps/default.toml; assert the filename only.
+    // The keymap lives at keymaps/default.toml; assert the filename only.
     assert_eq!(
         kf.file_name().and_then(|n| n.to_str()),
         Some("default.toml")

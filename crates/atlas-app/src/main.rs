@@ -255,7 +255,7 @@ fn main() -> Result<()> {
     shell.set_active_pane_border_px(config.ui.active_pane_border_px);
     // config: reads config.ui.icons.pack — installs the initial icon
     // pack (nerd default; ascii is the cross-platform escape hatch).
-    // Phase 2.11 — see `theming::icons::set_icon_pack` docstring and
+    // Icon-pack live reload — see `theming::icons::set_icon_pack` docstring and
     // `assets/fonts/README.md` for the rationale + live-reload hook.
     shell.set_icon_pack(config.ui.icons.pack);
     // config: reads config.remote.preview (cache_dir, max_bytes,
@@ -754,7 +754,7 @@ fn spawn_config_event_thread(
                         shell.set_animations_enabled(cfg.ui.animations);
                         shell.set_active_pane_border_px(cfg.ui.active_pane_border_px);
 
-                        // ── Icon pack (Phase 2.11) ────────────────────────
+                        // ── Icon pack ──────────────────────────────────────
                         //
                         // Reuses the existing config-reload path rather
                         // than a separate icon-config watcher (convergence
@@ -1346,7 +1346,7 @@ fn build_dispatcher(
         });
     }
 
-    // ── Remote / connect (Cmd+K) — stub, real modal lands in phase 2.2 ────
+    // ── Remote / connect (Cmd+K) ───────────────────────────────────────
     {
         let s = Arc::clone(shell);
         d.register("remote::Connect", move || {
@@ -1396,7 +1396,7 @@ fn spawn_theme_event_thread(
 /// `sharedfontique::FALLBACK_FAMILIES`) covers missing glyphs and unknown
 /// families gracefully. Missing PUA icon glyphs are covered by fonts
 /// registered via `slint::register_font_from_memory` (Symbols Nerd Font
-/// Mono lands via that path in Phase 2.10).
+/// Mono lands via that path).
 ///
 /// Empty strings and non-positive sizes are treated as "unset" and leave
 /// the theme's own defaults in place. Applied both at startup and whenever

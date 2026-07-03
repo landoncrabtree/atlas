@@ -4,7 +4,7 @@
 //!
 //! # Why this test exists
 //!
-//! Phase 2.10 registered the TTF via a top-level `import` in
+//! The TTF is registered via a top-level `import` in
 //! `assets/ui/atlas.slint`. The Slint compiler picks up that import
 //! and generates a `register_font_from_memory` call in the generated
 //! `atlas.rs` under `target/*/build/atlas-ui-*/out/`, with the font

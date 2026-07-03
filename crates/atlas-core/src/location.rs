@@ -203,7 +203,7 @@ impl RemoteUri {
     /// - `atlas-ui::remote::connect::run_connect_saved` — when
     ///   re-opening a `SavedServer` whose persisted `port` field may
     ///   be `None` because it was saved before this normalisation
-    ///   landed (Phase 2.12 fix at the connect controller only).
+    ///   landed in the connect controller only.
     /// - `atlas-ops::remote::cred_key` and other cache-key builders —
     ///   as a belt-and-suspenders defence against future refactors
     ///   that bypass the connect controller.

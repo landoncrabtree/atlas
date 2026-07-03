@@ -7,7 +7,7 @@ description: "End-to-end workflow for adding a new remote-filesystem backend in 
 
 Atlas's remote support is built on a per-scheme submodule pattern under `crates/atlas-remote/src/vm/`. Every backend owns its full stack — connection setup, listing, streaming reads/writes, retry, error mapping — and shares only the pool, retry envelope, and runtime with the others.
 
-**OpenDAL was removed in Phase 2.3.5.** Do not re-introduce a unified remote-fs abstraction or a "just wrap that crate" shortcut. If a backend needs behaviour that would be awkward to express as a `LocationViewModel`, extend the trait or add a capability query — do not compress two backends into one adapter.
+**OpenDAL was removed.** Do not re-introduce a unified remote-fs abstraction or a "just wrap that crate" shortcut. If a backend needs behaviour that would be awkward to express as a `LocationViewModel`, extend the trait or add a capability query — do not compress two backends into one adapter.
 
 ## Registration points
 
@@ -162,7 +162,7 @@ Update:
 
 | Don't | Why |
 |---|---|
-| Introduce a "unified" remote-fs adapter | We removed OpenDAL in Phase 2.3.5 for a reason; every backend has divergent semantics that unified layers erase. |
+| Introduce a "unified" remote-fs adapter | We removed OpenDAL for a reason; every backend has divergent semantics that unified layers erase. |
 | Open a raw client outside the pool | Bypasses eviction, retry, and observability. |
 | Store secrets in `servers.toml` | Secrets belong in the OS keychain via `atlas_remote::secrets`. `servers.toml` gets an opaque handle only. |
 | Spawn a new tokio runtime | Locks the process into duplicate runtimes; use `atlas_remote::runtime::handle()`. |

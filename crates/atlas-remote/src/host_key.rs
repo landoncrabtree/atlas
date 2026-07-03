@@ -101,14 +101,14 @@ type Prompter =
 pub struct HostKeyResolver {
     prompter: Arc<Prompter>,
     /// How long we wait for a decision before defaulting to Cancel. 60 s
-    /// per the Phase 2.6 spec — long enough for a real human to read the
+    /// long enough for a real human to read the
     /// banner, short enough that a forgotten-about prompt eventually times
     /// out and frees the connection.
     timeout: Duration,
 }
 
 impl HostKeyResolver {
-    /// Default per-prompt timeout — 60 s, per the Phase 2.6 spec.
+    /// Default per-prompt timeout — 60 s.
     pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
     /// Construct a resolver from a closure. `prompter` is called from the

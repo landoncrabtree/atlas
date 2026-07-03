@@ -429,12 +429,12 @@ impl ConnectController {
 
     /// SSH-key browse handler — the Slint modal invokes this when the
     /// user clicks the "Browse…" button. Today this is a no-op stub;
-    /// wiring native-file-open here is scheduled for phase 2.5.
+    /// wiring native-file-open here is a follow-up.
     pub fn browse_ssh_key(&self) {
-        tracing::info!("connect: browse SSH key requested (no-op stub — phase 2.5)");
+        tracing::info!("connect: browse SSH key requested (no-op stub)");
     }
 
-    // ── TOFU host-key handling (Phase 2.6) ─────────────────────────────────
+    // ── TOFU host-key handling ─────────────────────────────────────────────
 
     /// Build a [`HostKeyResolver`] whose prompter dispatches into this
     /// controller's state. The returned resolver is cheap to clone —
@@ -668,7 +668,7 @@ impl ConnectController {
         };
         let credentials = credentials_from_saved(&server);
         // Normalise the persisted port to the backend default when
-        // absent. Older `servers.toml` files (pre-Phase 2.12) may
+        // absent. Older `servers.toml` files may
         // carry `port: None` for entries the user saved before URI
         // normalisation moved to `assemble_location`; without this
         // call the run-once path would produce a different pool /
@@ -847,7 +847,7 @@ impl ConnectController {
 
         // Step 2 — probe the connection by listening for the first
         // `Loaded` or `Error` event. Bounded timeout so a black-hole
-        // server can't hang the modal. The TOFU prompt (Phase 2.6) can
+        // server can't hang the modal. The TOFU prompt can
         // pause the handshake for up to 60 s while the user reads and
         // clicks — we detect that state via `host_key_prompt.is_some()`
         // and skip timeout accounting for those ticks.

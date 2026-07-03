@@ -159,7 +159,7 @@ recursively.
 - Zoom / maximise a single pane (tmux's `Ctrl+B z`).
 - Drag-to-detach a tab into its own window.
 
-These are explicitly out of scope for the current design; a future v0.3+
+These are explicitly out of scope for the current design; a future release
 may revisit.
 
 ---
@@ -251,7 +251,7 @@ queue, and the drag-drop routing treat those panes uniformly.
 | S3 (and compatibles) | `s3://bucket[/prefix]` | `atlas_remote::vm::s3` (`object_store`) |
 
 Every backend owns its full stack (connection, listing, streaming,
-retry, error mapping). **OpenDAL was removed in Phase 2.3.5** — there
+retry, error mapping). **OpenDAL was removed** — there
 is no unified remote-fs abstraction. See
 [`.github/instructions/remote-backend-authoring.instructions.md`](../.github/instructions/remote-backend-authoring.instructions.md)
 for the workflow to add a new backend.

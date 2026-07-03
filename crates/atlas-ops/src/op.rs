@@ -175,7 +175,7 @@ pub enum OpEvent {
     },
     /// Conflict requires user resolution. Currently only fires for
     /// local-destination copy/move flows; remote destinations always
-    /// resolve to Overwrite in the MVP adapter.
+    /// resolve to Overwrite in the current adapter.
     Conflict {
         id: OpId,
         source: PathBuf,

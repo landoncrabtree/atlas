@@ -12,7 +12,7 @@
 //!
 //! # Icon pack toggle (`ui.icons.pack`)
 //!
-//! Since Phase 2.11 the module ships two parallel mappings:
+//! The module ships two parallel mappings:
 //!
 //! - [`IconPack::Nerd`] (default) — the LSD-derived Nerd Font PUA glyphs.
 //! - [`IconPack::Ascii`] — a text-only fallback (`[D]`, `[c]`, `[i]`, …).
@@ -78,7 +78,7 @@ impl IconGlyph {
     }
 }
 
-// ── Icon-pack toggle (Phase 2.11) ──────────────────────────────────────────
+// ── Icon-pack toggle ───────────────────────────────────────────────────────
 //
 // The current pack lives in a process-wide [`AtomicU8`]: the shell sets
 // it once at startup from `atlas_config::Icons::pack` (and again on
@@ -1013,7 +1013,7 @@ mod tests {
         }
     }
 
-    // ── ASCII fallback pack (Phase 2.11) ────────────────────────────────
+    // ── ASCII fallback pack ─────────────────────────────────────────────
 
     #[test]
     fn ascii_directory() {

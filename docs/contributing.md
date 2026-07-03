@@ -5,8 +5,8 @@ contribution workflow, commit format, PR standards, and the quality bar.
 
 ## Before you start
 
-- Atlas is **proprietary**. External contributions are accepted at the
-  maintainer's discretion under the terms of the LICENSE.
+- Atlas is MIT-licensed. Contributions are accepted under the terms of
+  [`LICENSE`](../LICENSE).
 - Read [the architecture overview](../.github/instructions/architecture.instructions.md)
   before moving code across crates or adding a new subsystem.
 - Read [the repository-wide Copilot instructions](../.github/copilot-instructions.md);

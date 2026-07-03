@@ -215,7 +215,7 @@ extends a range from the anchor.
 Selection is currently supported in Details and Grid. Miller has a
 hierarchical column-stack model where cross-column multi-select is not
 a well-defined operation; Gallery is single-focus. Extending multi-
-select to those views is deferred to v0.3.
+select to those views is left for a future release.
 
 | Action ID | macOS | Linux | Windows | Context |
 |---|---|---|---|---|
@@ -266,8 +266,8 @@ show different states, and the toggle does **not** persist to
 ### View modes
 
 `cmd-1`…`cmd-9` are taken by tab selection, so view-mode switching uses
-`cmd-alt-*`. **`view::Tree` was removed in Phase 2.9**; the tree view no
-longer ships. `view::Cycle` rotates through the remaining modes:
+`cmd-alt-*`. **`view::Tree` no longer ships**; the tree view no
+longer appears in the rotation. `view::Cycle` rotates through the remaining modes:
 Details → Grid → Gallery → Miller → Details.
 
 | Action ID | macOS | Linux | Windows | Context |

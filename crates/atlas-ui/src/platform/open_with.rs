@@ -345,7 +345,7 @@ mod linux {
     /// KDE-specific `kdialog --openwith` and GNOME's Nautilus DBus
     /// interface would give a better UX per DE but require detecting
     /// the running DE at runtime (checking `XDG_CURRENT_DESKTOP` etc.),
-    /// which is out of scope for MVP — the deferred v0.3+ work is
+    /// which is out of scope for this handler — the deferred work is
     /// tracked in the module docstring.
     pub(super) fn run(path: &Path) -> Result<(), OpenWithError> {
         match build_mimeopen_command(path).status() {
