@@ -1,0 +1,325 @@
+import { Theme } from "../theme.slint";
+
+export component SectionLabel inherits Text {
+    in property <string> label: "";
+
+    text: label;
+    color: Theme.section-label-color;
+    font-size: Theme.section-label-size;
+    font-weight: 600;
+    horizontal-alignment: left;
+}
+
+export component AtlasFieldGroup inherits VerticalLayout {
+    height: Theme.control-height + 18px;
+    spacing: Theme.space-1 + 2px;
+
+    @children
+}
+
+export component AtlasModal inherits Rectangle {
+    in property <bool> visible-modal: false;
+    in property <string> title: "";
+    in property <length> modal-width: 520px;
+    in property <length> modal-height: 320px;
+    in property <length> modal-y: (self.height - modal-height) / 2;
+
+    callback dismissed();
+
+    visible: visible-modal;
+    background: Theme.modal-scrim;
+
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.dismissed(); }
+    }
+
+    panel := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: max(Theme.space-6, root.modal-y);
+        width: min(root.modal-width, parent.width - Theme.space-8 * 2);
+        height: min(root.modal-height, parent.height - Theme.space-8 * 2);
+        background: Theme.modal-bg;
+        border-width: 1px;
+        border-color: Theme.modal-border;
+        border-radius: Theme.modal-radius;
+        drop-shadow-blur: Theme.modal-shadow-blur;
+        drop-shadow-offset-y: Theme.modal-shadow-y;
+        drop-shadow-color: Theme.modal-shadow-color;
+
+        TouchArea { width: 100%; height: 100%; }
+
+        VerticalLayout {
+            padding-left: Theme.space-5;
+            padding-right: Theme.space-5;
+            padding-top: Theme.space-4;
+            padding-bottom: Theme.space-4;
+            spacing: Theme.space-3;
+
+            if root.title != "" : Text {
+                text: root.title;
+                color: Theme.fg;
+                font-size: Theme.modal-title-size;
+                font-weight: 600;
+                horizontal-alignment: left;
+            }
+
+            @children
+        }
+    }
+}
+
+export component AtlasTextField inherits Rectangle {
+    in-out property <string> text: "";
+    in property <string> placeholder: "";
+    in property <bool> password: false;
+    in property <bool> auto-focus: false;
+    out property <bool> focused: input.has-focus;
+
+    callback edited(string);
+    callback accepted();
+    callback escape-pressed();
+
+    height: Theme.control-height;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.field-border-focus : Theme.field-border;
+    border-radius: Theme.field-radius;
+    background: input.has-focus ? Theme.field-bg-focus : Theme.field-bg;
+    clip: true;
+    animate background { duration: Theme.motion-fast; easing: ease-out; }
+    animate border-color { duration: Theme.motion-fast; easing: ease-out; }
+
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { input.focus(); }
+    }
+
+    input := TextInput {
+        init => {
+            if root.auto-focus {
+                self.focus();
+            }
+        }
+        x: Theme.space-3;
+        y: 0px;
+        width: parent.width - Theme.space-3 * 2;
+        height: parent.height;
+        text <=> root.text;
+        color: Theme.fg;
+        font-size: Theme.font-size;
+        vertical-alignment: center;
+        single-line: true;
+        input-type: root.password ? InputType.password : InputType.text;
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.escape-pressed();
+                return accept;
+            }
+            reject;
+        }
+    }
+
+    if root.text == "" : Text {
+        x: Theme.space-3;
+        y: 0px;
+        width: parent.width - Theme.space-3 * 2;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.placeholder-color;
+        font-size: Theme.font-size;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+export component AtlasPrimaryButton inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> enabled: true;
+    in property <length> button-width: 96px;
+
+    callback clicked();
+
+    width: button-width;
+    height: Theme.control-height;
+    border-radius: Theme.button-radius;
+    background: !enabled ? Theme.accent.with-alpha(0.48) : (ta.has-hover ? Theme.accent-hover : Theme.accent);
+    opacity: enabled ? 1.0 : 0.62;
+    drop-shadow-blur: enabled ? 5px : 0px;
+    drop-shadow-offset-y: enabled ? 1px : 0px;
+    drop-shadow-color: Theme.button-shadow-color;
+    animate background { duration: Theme.motion-fast; easing: ease-out; }
+    animate opacity { duration: Theme.motion-fast; easing: ease-out; }
+
+    ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => {
+            if root.enabled { root.clicked(); }
+        }
+    }
+
+    Text {
+        width: 100%;
+        height: 100%;
+        text: root.text;
+        color: Theme.accent-fg;
+        font-size: Theme.button-font-size;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+export component AtlasSecondaryButton inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> enabled: true;
+    in property <length> button-width: 88px;
+
+    callback clicked();
+
+    width: button-width;
+    height: Theme.control-height;
+    border-radius: Theme.button-radius;
+    border-width: 1px;
+    border-color: enabled ? (ta.has-hover ? Theme.secondary-button-border-hover : Theme.secondary-button-border) : Theme.field-border;
+    background: !enabled ? Theme.secondary-button-bg.with-alpha(0.45) : (ta.has-hover ? Theme.secondary-button-bg-hover : Theme.secondary-button-bg);
+    opacity: enabled ? 1.0 : 0.55;
+    animate background { duration: Theme.motion-fast; easing: ease-out; }
+    animate border-color { duration: Theme.motion-fast; easing: ease-out; }
+    animate opacity { duration: Theme.motion-fast; easing: ease-out; }
+
+    ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => {
+            if root.enabled { root.clicked(); }
+        }
+    }
+
+    Text {
+        width: 100%;
+        height: 100%;
+        text: root.text;
+        color: Theme.fg;
+        font-size: Theme.button-font-size;
+        font-weight: 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+export component AtlasSegmentedControl inherits Rectangle {
+    in property <[string]> segments: [];
+    in property <int> selected-index: 0;
+
+    callback selected(int);
+
+    height: Theme.control-height;
+    border-radius: Theme.segmented-radius;
+    border-width: 1px;
+    border-color: Theme.segmented-border;
+    background: Theme.segmented-bg;
+    clip: true;
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        for label[i] in root.segments : seg := Rectangle {
+            property <bool> hovered: false;
+            horizontal-stretch: 1;
+            background: root.selected-index != i && hovered ? Theme.hover-bg : transparent;
+            animate background { duration: Theme.motion-fast; easing: ease-out; }
+
+            if i > 0 : Rectangle {
+                x: 0px;
+                y: 5px;
+                width: 1px;
+                height: parent.height - 10px;
+                background: Theme.segmented-divider;
+            }
+
+            if root.selected-index == i : Rectangle {
+                x: 2px;
+                y: 2px;
+                width: parent.width - 4px;
+                height: parent.height - 4px;
+                border-radius: Theme.segmented-selected-radius;
+                background: Theme.segmented-selected-bg;
+                border-width: 1px;
+                border-color: Theme.segmented-selected-border;
+                drop-shadow-blur: 4px;
+                drop-shadow-offset-y: 1px;
+                drop-shadow-color: Theme.segmented-shadow-color;
+            }
+
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                changed has-hover => { seg.hovered = self.has-hover; }
+                clicked => { root.selected(i); }
+            }
+
+            Text {
+                width: 100%;
+                height: 100%;
+                text: label;
+                color: root.selected-index == i ? Theme.fg : Theme.fg-muted;
+                font-size: Theme.button-font-size;
+                font-weight: root.selected-index == i ? 600 : 400;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+export component AtlasProgressBar inherits Rectangle {
+    in property <float> progress: 0.0;
+    in property <bool> indeterminate: false;
+    in property <bool> error: false;
+
+    height: Theme.progress-height;
+    border-radius: self.height / 2;
+    background: Theme.progress-track;
+    clip: true;
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        height: parent.height;
+        width: root.indeterminate ? parent.width * 0.33 : parent.width * clamp(root.progress, 0.0, 1.0);
+        border-radius: parent.border-radius;
+        background: root.error ? Theme.error : Theme.accent;
+        animate width { duration: Theme.motion-fast; easing: ease-out; }
+    }
+}
+
+export component AtlasList inherits Rectangle {
+    border-width: 1px;
+    border-color: Theme.list-border;
+    border-radius: Theme.list-radius;
+    background: Theme.list-bg;
+    clip: true;
+
+    @children
+}
+
+export component AtlasListRow inherits Rectangle {
+    in property <bool> highlighted: false;
+    in property <bool> muted: false;
+
+    height: Theme.list-row-height;
+    border-radius: Theme.radius-sm;
+    background: highlighted ? Theme.hover-bg : transparent;
+    opacity: muted ? 0.62 : 1.0;
+    animate background { duration: Theme.motion-fast; easing: ease-out; }
+    animate opacity { duration: Theme.motion-fast; easing: ease-out; }
+
+    @children
+}
