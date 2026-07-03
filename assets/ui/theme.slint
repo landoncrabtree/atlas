@@ -108,11 +108,16 @@ export global Theme {
     // These semantic aliases keep modal/menu composition aligned with Apple HIG:
     // compact controls, varied radii, soft borders, hierarchy over nested boxes,
     // and a restrained accent color.
-    out property <color> modal-scrim: #0000005c;
+    // `modal-radius` matches `radius-xl` (14 px) so every top-level sheet —
+    // conflict prompt, progress modal, palette panel, connect modal, bulk
+    // rename — reads with the same soft macOS Sequoia curvature. See
+    // design.instructions.md §Radii: modal chrome uses `radius_xl`; interior
+    // buttons/inputs/lists keep the smaller varied radii (6/5/8).
+    out property <color> modal-scrim: #00000066;
     out property <color> modal-bg: panel-bg-elevated;
     out property <color> modal-border: border.with-alpha(0.72);
     out property <color> modal-shadow-color: #00000040;
-    out property <length> modal-radius: 12px;
+    out property <length> modal-radius: radius-xl;
     out property <length> modal-shadow-blur: 40px;
     out property <length> modal-shadow-y: 10px;
     out property <length> modal-title-size: 15px;
