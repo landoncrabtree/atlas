@@ -165,9 +165,11 @@ jobs:
         # Keep this informational job short enough to catch large regressions
         # without turning runner variance into a gating signal.
         run: |
-          cargo bench -p atlas-fs --benches -- --sample-size 10
-          cargo bench -p atlas-search --benches -- --sample-size 10
-          cargo bench -p atlas-ops --benches -- --sample-size 10
+          for bench in filter lister sort walker view_model; do
+            cargo bench -p atlas-fs --bench "$bench" -- --sample-size 10
+          done
+          cargo bench -p atlas-search --bench fuzzy -- --sample-size 10
+          cargo bench -p atlas-ops --bench copy -- --sample-size 10
       - name: Upload criterion reports
         uses: actions/upload-artifact@v4
         with:
