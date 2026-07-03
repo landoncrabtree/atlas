@@ -32,3 +32,24 @@ globset = "0.4"
 tokio = { workspace = true }
 tempfile = "3"
 crossbeam-channel.workspace = true
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "walker"
+harness = false
+
+[[bench]]
+name = "lister"
+harness = false
+
+[[bench]]
+name = "sort"
+harness = false
+
+[[bench]]
+name = "filter"
+harness = false
+
+[[bench]]
+name = "view_model"
+harness = false
