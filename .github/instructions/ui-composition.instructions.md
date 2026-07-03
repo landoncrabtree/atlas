@@ -14,7 +14,7 @@ This file is the source of truth for that flow. It replaces improvised approache
 Before writing a single Slint or Rust line for a new surface, read:
 
 - `assets/ui/theme.slint` — every token you will consume (`Theme.bg`, `Theme.accent`, `Theme.space_4`, `Theme.radius_lg`, …).
-- `assets/ui/components/` — reusable widgets (`address-bar.slint`, `bulk-rename.slint`, `command-palette.slint`, `connect-server.slint`, `operation-progress.slint`, `ops-panel.slint`, `pane.slint`, `search-panel.slint`, `shortcut-footer.slint`, `tab-bar.slint`, `titlebar.slint`, `breadcrumbs.slint`).
+- `assets/ui/components/` — reusable widgets (`atlas-controls.slint`, `address-bar.slint`, `bulk-rename.slint`, `command-palette.slint`, `connect-server.slint`, `operation-progress.slint`, `ops-panel.slint`, `pane.slint`, `search-panel.slint`, `shortcut-footer.slint`, `tab-bar.slint`, `titlebar.slint`, `breadcrumbs.slint`).
 - The **closest existing surface** to what you are adding — a modal that is 80% like yours already exists in most cases.
 - `.github/instructions/design.instructions.md` — HIG-derived tokens and component grammar. **Every visible property comes from `Theme.*`; no hex, no pixel literals.**
 
@@ -40,15 +40,38 @@ Rust-side controllers live under `crates/atlas-ui/src/<feature>/`:
 
 `crates/atlas-ui/src/shell.rs` is where callbacks are wired via `wire_callbacks`. Keep the wiring dense — one `on_*` closure per Slint callback — and push logic into the feature controller.
 
+## 2.5 Shared modal/menu control library
+
+Before adding or styling a modal/menu control, import from `assets/ui/components/atlas-controls.slint`:
+
+```slint
+import {
+    AtlasFieldGroup, AtlasList, AtlasListRow, AtlasModal, AtlasPrimaryButton,
+    AtlasProgressBar, AtlasSecondaryButton, AtlasSegmentedControl, AtlasTextField,
+    SectionLabel,
+} from "atlas-controls.slint";
+```
+
+Composition rules:
+
+- Use `AtlasModal` for top-level sheet chrome (scrim, 12 px radius, soft shadow, click-outside dismissal).
+- Use `AtlasFieldGroup { SectionLabel { ... } AtlasTextField { ... } }` for compact form rows.
+- Use `AtlasSegmentedControl` for backend/auth pickers; selected state is neutral, not accent.
+- Use exactly one `AtlasPrimaryButton` per modal when there is a true default action. All other actions use `AtlasSecondaryButton`.
+- Use `AtlasProgressBar` for operation progress in both modal and tray rows.
+- Use `AtlasList` / `AtlasListRow` for inset saved-server and operations lists.
+
+Do not duplicate these components with local `Rectangle` styles. If a component needs a new visual affordance, extend `atlas-controls.slint` and the semantic tokens in `theme.slint` first.
+
 ## 3. Adding a new modal — canonical steps
 
 A modal is a Slint component under `assets/ui/components/` that:
 
-1. **Backdrop.** Sits above the workspace with a semi-transparent scrim (`#000000` at ~40% alpha; use the exact treatment from `command-palette.slint`).
-2. **Panel.** Centered rounded rectangle: `panel_bg_elevated` fill, `radius_lg`, width in the 420–620 range depending on content, height fits content.
+1. **Backdrop.** Use `AtlasModal` / `Theme.modal-scrim`; do not hand-roll a new scrim.
+2. **Panel.** Use `AtlasModal`; modal sheets use `Theme.modal-radius` (12 px) and fit content in the 420–620 px range unless the existing surface requires more.
 3. **Tokens only.** Every colour, radius, spacing, font, and duration is `Theme.*`. If a needed token doesn't exist, add it to `theme.slint` (both dark and light schemes) first.
 4. **Escape closes.** Bind `Escape` in a local `FocusScope` to fire `close()`; the caller in `atlas.slint` toggles the modal's visibility off.
-5. **Auto-focus the primary input on open.** Use the `input-focused` mechanism: the modal exposes an `in property <bool> open` (or reuses an existing visibility flag); a `changed open => { text-input.focus(); }` handler flips focus. Reference: `connect-server.slint` `changed open`.
+5. **Auto-focus the primary input on open.** Use `AtlasTextField { auto-focus: true; }` or the existing `input-focused` mechanism. Reference: `connect-server.slint`.
 6. **Bubble `input-focused` up.** The modal must expose a `property <bool> input-focused` that reflects whichever internal `TextInput.has-focus` is currently active. The parent (`atlas.slint`) mirrors this into a root-level bool joined into `keymap-bypass-active`:
 
    ```slint
@@ -85,6 +108,17 @@ A modal is a Slint component under `assets/ui/components/` that:
 7. **Rust controller.** New feature directory under `crates/atlas-ui/src/<feature>/` with `mod.rs` + `controller.rs`. The controller holds per-session state (`parking_lot::RwLock<…>`), spawns any background work through the shared `atlas_remote::runtime::handle()` if it needs tokio, and exposes typed methods (`open()`, `close()`, `submit(…)`).
 8. **Wire callbacks in `shell.rs::wire_callbacks`.** One `on_<something>` closure per Slint callback. Keep the closure body a one-liner that delegates to the controller.
 9. **Live-verify via MCP.** Screenshot the new modal open, escape-closed, tab-navigated, and with a submit path exercised. See `docs/developer-setup.md` §MCP.
+
+### macOS-native visual checks
+
+For modal/menu PRs, verify the following before screenshots:
+
+- No uppercase form labels; use sentence case via `SectionLabel`.
+- Text fields/buttons/segmented controls are compact (~29 px high).
+- Segmented controls are contiguous with dividers; no gapped button rows.
+- Accent appears only on the true primary CTA and progress fill.
+- Interior cards/lists have no drop shadow.
+- Modal radius is larger than button/input radius.
 
 ## 4. Adding a new context menu
 
@@ -200,7 +234,7 @@ pub enum Location {
 Adopted contract:
 
 - **Under ~250 ms** foreground duration (`FOREGROUND_DEFER` in `crates/atlas-ui/src/ops/controller.rs`): no modal. A status toast is sufficient.
-- **≥ 250 ms**: show the operation-progress modal (`assets/ui/components/operation-progress.slint`) centered on the workspace.
+- **≥ 250 ms**: show the operation-progress modal (`assets/ui/components/operation-progress.slint`) centered on the workspace. It composes `AtlasModal`, `AtlasProgressBar`, and secondary buttons.
 - The modal has two buttons:
   - **Cancel** — fires the `CancellationToken` associated with the op; `atlas-ops` propagates the cancel to workers; partially-transferred data is left in a documented "partial" state.
   - **Background** — dismisses the modal but keeps the op running under the ops panel (`assets/ui/components/ops-panel.slint`). Users can reopen the modal from the ops panel.
@@ -217,7 +251,8 @@ Any op that could exceed 250 ms **must** integrate the cancellation token from t
 
 ## Verification checklist before you open a PR
 
-- [ ] Only tokens (`Theme.*`) — no hex, no pixel literals, no ad-hoc fonts.
+- [ ] Only tokens (`Theme.*`) — no hex, no ad-hoc fonts; new modal/menu chrome reuses `atlas-controls.slint`.
+- [ ] macOS-native controls: compact heights, sentence-case labels, neutral segmented selection, restrained accent.
 - [ ] Modal registers into `any-modal-visible` if it's a modal.
 - [ ] Every internal `TextInput` bubbles its focus up to the root's `keymap-bypass-active` disjunction (or reuses `text-focus-pane-id` if it's a pane input).
 - [ ] Rust controller lives under `crates/atlas-ui/src/<feature>/` with `mod.rs` + `controller.rs`.

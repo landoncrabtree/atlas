@@ -24,15 +24,15 @@ The UI recedes; the user's content and choices dominate. No chrome fights for at
 
 Every glyph, label, and control has a single obvious meaning. Legible typography. Meaningful whitespace. Precise iconography.
 
-- **Do**: SF Pro / Inter with a strict type scale, uppercase micro-labels for section headers, 8pt grid spacing.
-- **Don't**: mystery-meat icons, decorative separators, ALL-CAPS body text.
+- **Do**: SF Pro / Inter with a strict type scale, sentence-case section labels, compact controls, purposeful whitespace.
+- **Don't**: mystery-meat icons, decorative separators, loud all-caps form labels.
 
 ### 3. Depth
 
 Layered planes establish hierarchy. Modals float above panels. Panels sit on the workspace. The workspace sits on the window. Depth is expressed through **subtle background differences and blurred materials**, rarely through drop shadows.
 
-- **Do**: 3–6 percent brightness deltas between layers; `Theme.panel_bg` above `Theme.bg`; use a blurred/translucent overlay for palettes and menus.
-- **Don't**: box shadows on flat surfaces; hard borders that duplicate depth.
+- **Do**: 3–6 percent brightness deltas between layers; `Theme.panel_bg` above `Theme.bg`; soft modal shadows only for top-level sheets.
+- **Don't**: nested cards inside modals, hard borders that duplicate depth, shadows on interior groupings.
 
 ### 4. Consistency
 
@@ -57,9 +57,24 @@ Animations are **responsive, not showy**. Under 300ms always. Motion serves comp
 
 ---
 
+## macOS-native modal/menu rules
+
+Atlas surfaces should read like Sonoma/Sequoia sheets: hierarchy over boxes, compact controls, and one clear default action.
+
+- **Hierarchy over boxes.** Prefer labels, whitespace, list materials, and subtle contrast to stacked rounded rectangles.
+- **Restrained accent.** Use `Theme.accent` for the single primary CTA and active progress fill. Segmented-control selection, saved-server lists, and secondary actions are neutral.
+- **Varied radii.** Modal sheets are 12 px, lists/cards 8 px, buttons 6 px, text fields 5 px. Avoid using one radius everywhere.
+- **Compact controls.** Text fields, segmented controls, and buttons are 29 px tall unless a platform-specific surface already defines a different height.
+- **Soft borders.** Field/list borders are semantic aliases around ~15–20% contrast; focus uses a stronger neutral border, not an accent outline.
+- **Sentence-case labels.** Form labels are `Backend`, `Host`, `Authentication` — 12 px semibold, muted. Do not use bold caps for form labels.
+- **Rhythm.** Label → 6 px → control, then 12–20 px before the next section depending on grouping. Do not make every gap identical.
+- **Modal depth.** The outer sheet uses `Theme.modal-radius`, `Theme.modal-scrim`, and a soft wide shadow. Interior cards/lists do not cast shadows.
+
+---
+
 ## Design tokens
 
-Owned by the `Theme` global (Slint) and mirrored by `ThemeTokens` (Rust). Every visible surface reads from Theme; **no hard-coded hex values in components**.
+Base palette/chrome tokens are owned by the `Theme` global (Slint) and mirrored by `ThemeTokens` (Rust). Semantic macOS aliases are derived in `assets/ui/theme.slint` from those base tokens. Every visible surface reads from `Theme.*`; **no hard-coded hex values in components**.
 
 ### Palette
 
@@ -87,6 +102,29 @@ Dark theme (default):
 
 Light theme mirrors semantically (`bg` = `#ffffff`, `panel_bg` = `#f6f8fb`, etc.). Never invert accent hue — keep same blue with tuned brightness.
 
+### macOS semantic aliases
+
+Defined in `assets/ui/theme.slint` as derived `out property` values.
+
+| Token | Value / source | Use |
+|---|---|---|
+| `modal-scrim` | `#0000005c` | Modal backdrop, ~36% dim |
+| `modal-bg` | `panel-bg-elevated` | Sheet surface |
+| `modal-border` | `border.with-alpha(0.72)` | Soft sheet edge |
+| `modal-radius` | `12px` | Modal sheet corners |
+| `modal-shadow-blur` / `modal-shadow-y` | `40px` / `10px` | Soft sheet lift |
+| `control-height` | `29px` | Buttons, fields, segmented controls |
+| `field-radius` | `5px` | Text fields |
+| `button-radius` | `6px` | Buttons |
+| `segmented-radius` | `6px` | Segmented control container |
+| `list-radius` | `8px` | Saved-server lists, grouped tray lists |
+| `section-label-size` | `12px` | Sentence-case form section labels |
+| `placeholder-color` | `fg-faint.with-alpha(0.74)` | Low-contrast examples |
+| `field-bg` / `field-border` | theme-derived neutral fill/border | Compact text fields |
+| `secondary-button-*` | theme-derived neutral fill/border | Cancel, Save + Connect, Background |
+| `segmented-*` | theme-derived neutral fills/dividers | Contiguous segmented controls |
+| `progress-height` / `progress-track` | `4px`, neutral track | NSProgressIndicator-style bars |
+
 ### Typography
 
 - **Family** (body): `SF Pro Text` → `SF Pro Display` (large) → `Inter` → `system-ui` fallback.
@@ -96,13 +134,14 @@ Type scale (px):
 
 | Style | Size | Weight | Line-height | Use |
 |---|---|---|---|---|
-| `micro` | 10 | 600 (uppercase, letter-spacing 0.06em) | 1.2 | Section labels, column headers |
+| `micro` | 10 | 600 | 1.2 | Column headers and tiny metadata |
 | `caption` | 11 | 400 | 1.35 | Status bar, hints, timestamps |
 | `small` | 12 | 400 | 1.4 | Secondary body |
+| `section_label` | 12 | 600 | 1.3 | Sentence-case form labels |
 | `body` | 13 | 400 | 1.45 | Primary body — most rows, most labels |
 | `body_emphasis` | 13 | 500 | 1.45 | Emphasized body — selected row name |
-| `title` | 15 | 600 | 1.3 | Panel titles, palette prompt |
-| `headline` | 17 | 600 | 1.25 | Modal titles |
+| `title` | 15 | 600 | 1.3 | Modal titles, panel titles |
+| `headline` | 17 | 600 | 1.25 | Larger empty-state headings |
 | `display` | 22 | 700 | 1.2 | Empty-state hero text |
 
 Weights above 700 are prohibited (they read as heavy on macOS).
@@ -125,13 +164,16 @@ Use `space_2` for tight groups, `space_4` for panel padding, `space_6` between s
 
 Never use square corners for interactive elements.
 
+macOS modal/menu aliases intentionally vary radius by role: `modal-radius` 12, `list-radius` 8, `button-radius` 6, `field-radius` 5.
+
 ### Elevation
 
-Prefer background contrast over shadows. When a shadow is truly needed (modals, tooltips), use a **single subtle drop**:
+Prefer background contrast over shadows. When a shadow is truly needed (top-level modals, tooltips), use a **single subtle drop**:
 
-- Modal overlay backdrop: `#000000 40%` fill covering the workspace.
-- Modal panel: no shadow (rely on backdrop) OR `0 8 24 rgba(0,0,0,0.35)` if the modal must float on a bright pane.
-- Palette results item hover: no shadow — use `hover_bg` instead.
+- Modal overlay backdrop: `Theme.modal-scrim` covering the workspace.
+- Modal panel: `Theme.modal-shadow-blur` (40), `Theme.modal-shadow-y` (10), `Theme.modal-shadow-color` (~25% black).
+- Interior cards/lists: no shadow — use `Theme.list-bg`, separators, and whitespace.
+- Palette/list row hover: no shadow — use `hover_bg` instead.
 
 ### Chrome heights
 
@@ -145,6 +187,8 @@ Prefer background contrast over shadows. When a shadow is truly needed (modals, 
 | Status bar | 24 |
 | Address bar | 30 |
 | Palette input | 44 |
+| macOS control | 29 |
+| Progress bar | 4 |
 
 ### Motion
 
@@ -161,6 +205,24 @@ Do NOT animate scroll position, cursor, or focused-row indicator movement — th
 ---
 
 ## Component patterns
+
+### Shared macOS controls
+
+`assets/ui/components/atlas-controls.slint` is the shared library for modal/menu controls. Use it before drawing local rectangles:
+
+| Component | Compose with |
+|---|---|
+| `AtlasModal` | Top-level sheet chrome: scrim, 12 px radius, soft shadow, title slot, click-outside dismissal |
+| `SectionLabel` | Sentence-case section labels (`Backend`, `Host`, `Authentication`) |
+| `AtlasFieldGroup` | Label/control grouping with the canonical 6 px label gap |
+| `AtlasTextField` | 29 px compact text input, soft neutral border, low-contrast placeholder |
+| `AtlasSegmentedControl` | Contiguous picker with hairline dividers and neutral selected pill |
+| `AtlasPrimaryButton` | Single accent CTA in a modal (`Connect`, destructive confirmations only when semantic) |
+| `AtlasSecondaryButton` | Cancel, Save + Connect, Background, Browse, Clear Completed |
+| `AtlasProgressBar` | 4 px rounded NSProgressIndicator-style track/fill |
+| `AtlasList` / `AtlasListRow` | Inset saved-server lists and operations rows |
+
+Do not create another modal chrome, progress bar, segmented control, or button style unless this component library cannot express the interaction.
 
 ### Titlebar
 
@@ -260,9 +322,10 @@ There is exactly **one** canonical pattern for keyboard routing between modals a
 
 For operations whose foreground duration exceeds ~250 ms (`FOREGROUND_DEFER` in `atlas-ui::ops::controller`), we show a small centered progress modal instead of a status-bar toast:
 
-- Panel: `panel_bg_elevated`, `radius_lg`, ~420 wide.
-- Rows: op summary in `body`, per-file progress in `caption` `fg_muted`, primary bar `accent`, secondary spinner while the queue drains.
-- Buttons: **Cancel** (fires the shared `CancellationToken`), **Background** (dismisses the modal but keeps the op running under the ops panel).
+- Panel: `AtlasModal`, ~420 wide, no nested card.
+- Rows: op summary in `title`, per-file progress in `caption` `fg_muted`.
+- Progress: `AtlasProgressBar`; track is neutral, the bar fill is the only accent region.
+- Buttons: **Cancel** and **Background** both use `AtlasSecondaryButton`; neither is an accent CTA.
 - Under 250 ms: no modal at all — a status toast is enough.
 
 ### Command palette + goto anywhere
@@ -276,10 +339,11 @@ For operations whose foreground duration exceeds ~250 ms (`FOREGROUND_DEFER` in 
 
 ### Connect-server modal (Cmd+K)
 
-- Same overlay + panel treatment as palette (`panel_bg_elevated`, `radius_lg`, ~560 wide).
-- Header row with backend selector (SFTP / FTP / WebDAV / S3) as a segmented control; the active pill uses `accent_soft` fill.
-- Body: form inputs share the address-bar treatment; secret fields render as `••••` and never persist to `servers.toml` — they go into the OS keychain under the `com.atlas.credentials` namespace.
-- Footer: **Save & Connect** (primary), **Connect once** (secondary), **Cancel**.
+- Use `AtlasModal`, `AtlasFieldGroup`, `SectionLabel`, `AtlasTextField`, `AtlasSegmentedControl`, `AtlasList`, and button components.
+- Backend and authentication selectors are contiguous segmented controls; selected state is neutral, not accent.
+- Body inputs are 29 px compact fields with friendly placeholders (`files.example.com`, `user@example.com`, `/home/user`).
+- Saved Servers is an inset `AtlasList`, not a detached giant card.
+- Footer: **Connect** is the only `AtlasPrimaryButton`. **Save + Connect** and **Cancel** are secondary.
 - On first SFTP connection to an unknown host, the modal transitions to a **host-key prompt** panel showing the fingerprint + comparison hint; Accept persists into `~/.config/atlas/known_hosts` (OpenSSH format), Reject aborts.
 - Every input bubbles focus state to the root chord dispatcher via the `input-focused` bool — see [`ui-composition.instructions.md`](ui-composition.instructions.md) §5.
 
@@ -293,10 +357,11 @@ For operations whose foreground duration exceeds ~250 ms (`FOREGROUND_DEFER` in 
 
 ### Ops panel
 
-- Docked bottom, 200 tall when open, translucent `panel_bg_elevated`, 1-px top `border`.
-- Row height 44 (needs the progress bar). Progress bar height 4, `radius_xs`, filled `accent`, unfilled `panel_bg`.
-- Cancel/Dismiss icon-only, revealed on hover.
-- Terminal (done/failed) rows fade to 60% opacity after 5 s.
+- Bottom-right docked tray, ~236 tall when open, `Theme.modal-bg`, `Theme.modal-radius`, and a restrained shadow.
+- Width caps around 760 px so the menu reads like a native utility tray instead of a full-width drawer.
+- Interior rows live in `AtlasList`; row height is 52 px for progress detail.
+- Progress uses `AtlasProgressBar`; only the progress fill uses accent.
+- Cancel/Dismiss icon-only controls are revealed on hover. Terminal rows fade to 60% opacity.
 
 ### Search side panel
 
@@ -310,12 +375,15 @@ For operations whose foreground duration exceeds ~250 ms (`FOREGROUND_DEFER` in 
 
 - **No duplicate branding** in the content area. The window title bar shows "Atlas"; nothing else should.
 - **No bright colors** outside the semantic set. If you want a "cool green", it goes through `success`.
-- **No shadows on flat panels** in dark mode. Contrast alone.
+- **No accent floods.** One primary CTA per modal; segmented selections and secondary actions stay neutral.
+- **No shadows on interior panels** in dark mode. Contrast alone inside a modal/menu.
 - **No inline styles.** Every visible property comes from `Theme.*`.
 - **No animations exceeding 300 ms**.
 - **No bold weights above 700**.
 - **No square corners on interactive elements.**
-- **No pixel values inside components** — always tokens.
+- **No all-caps form labels** (`HOST`, `AUTHENTICATION`) in modal/menu forms.
+- **No rounded-rects inside rounded-rects** unless the inner element is a true list/input/button.
+- **No ad-hoc shared dimensions inside components** — promote reusable geometry to tokens.
 - **No unique fonts per component.** One family for body, one for mono.
 - **No copy-paste theming.** If two components look alike, share a sub-component.
 
