@@ -9,10 +9,10 @@ Atlas has a small but non-zero set of tests that flake under specific conditions
 
 - `atlas-watch::test_*` — macOS FSEvents drops `Create` / `Modify` events under parallel test load.
 - `atlas-config::watcher_reload_and_error` — FSEvents debouncer timing on macOS under load.
-- `theming::watcher::hot_reload_on_file_change` — same FSEvents debouncer race, tested against the themes directory.
+- `theming::watcher::hot_reload_on_file_change` — same FSEvents debouncer race, tested against the themes directory. **Can occasionally exhaust all 4 nextest retries within a single run** (e.g. [run 28665808289](https://github.com/landoncrabtree/atlas/actions/runs/28665808289/job/85017127646)); a full workflow re-run typically clears it. Do not treat as a regression unless it fails a second full re-run.
 - `views::miller::controller::set_root_opens_one_column` — Miller controller waits on an async load that occasionally exceeds the fixture timeout on cold caches.
 
-CI runs `cargo nextest run --workspace --locked --retries 3 --no-fail-fast`, so these retry automatically and do not fail the pipeline unless they fail 4 times in a row. Locally, mirror that with `cargo nextest run --workspace --retries 3`. If a test fails on both attempts, or fails without the retry envelope, treat it as a real bug.
+CI runs `cargo nextest run --workspace --locked --retries 3 --no-fail-fast`, so these retry automatically and do not fail the pipeline unless they fail 4 times in a row. Locally, mirror that with `cargo nextest run --workspace --retries 3`. If a test fails on both attempts, or fails without the retry envelope, treat it as a real bug — with the noted exception that `hot_reload_on_file_change` has been observed to burn all 4 retries in a single macOS-runner job; re-run the full workflow before escalating.
 
 ## Protocol
 

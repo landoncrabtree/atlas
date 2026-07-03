@@ -26,7 +26,7 @@ pub(crate) mod watched;
 
 pub use entry::{Entry, EntryKind, Metadata};
 pub use filter::{CompiledFilter, Filter};
-pub use lister::{list_directory, ListEvent, ListRequest};
+pub use lister::{list_directory, ListEvent, ListHandle, ListRequest};
 pub use sort::{compare, sort_in_place, SortKey, SortOrder, SortSpec};
 pub use view_model::{InMemoryLocationViewModel, LocationViewModel, OpenOptions, ViewModelEvent};
 pub use walker::{walk, WalkHandle, WalkRequest};

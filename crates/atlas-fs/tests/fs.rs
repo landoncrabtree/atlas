@@ -60,7 +60,7 @@ fn list_directory_returns_visible_entries() {
         follow_symlinks: false,
         include_hidden: false,
     });
-    let (entries, errors) = collect(rx);
+    let (entries, errors) = collect(rx.into_receiver());
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     let n = names(&entries);
     assert!(n.contains("alpha.txt"));
@@ -77,7 +77,7 @@ fn list_directory_includes_hidden_when_requested() {
         follow_symlinks: false,
         include_hidden: true,
     });
-    let (entries, _) = collect(rx);
+    let (entries, _) = collect(rx.into_receiver());
     assert!(names(&entries).contains(".hidden"));
 }
 
@@ -88,7 +88,7 @@ fn list_directory_missing_path_emits_error_then_done() {
         follow_symlinks: false,
         include_hidden: false,
     });
-    let (entries, errors) = collect(rx);
+    let (entries, errors) = collect(rx.into_receiver());
     assert!(entries.is_empty());
     assert_eq!(errors.len(), 1);
 }

@@ -125,9 +125,14 @@ regressions:
   against the assertion window.
 - `theming::watcher::hot_reload_on_file_change` — same FSEvents
   debouncer race as above, tested against the themes directory.
+  Can occasionally exhaust all 4 nextest retries within a single run
+  (see e.g. run [`28665808289`][flake-hot-reload]); a full workflow
+  re-run typically clears it.
 - `views::miller::controller::set_root_opens_one_column` — Miller
   controller waits on an async load that occasionally exceeds the
   fixture timeout on cold caches.
+
+[flake-hot-reload]: https://github.com/landoncrabtree/atlas/actions/runs/28665808289/job/85017127646
 
 Follow the protocol in
 [`.github/skills/fix-flaky-test/SKILL.md`](../.github/skills/fix-flaky-test/SKILL.md)
