@@ -1,8 +1,27 @@
 //! Conflict resolution policies and helpers.
+//!
+//! # Backend awareness
+//!
+//! [`resolve_conflict`] (sync) handles the local-destination case: it
+//! probes `dest.exists()` and generates rename candidates via the
+//! local filesystem. Cross-backend flows in [`crate::execute`] can
+//! therefore not reuse it verbatim — they need to stat a remote path
+//! and generate a rename candidate without touching the local
+//! filesystem. See the `resolve_cross_backend_conflict` helper in
+//! [`crate::execute`] for the async, backend-aware variant.
+//!
+//! # Prompt policy safety on async threads
+//!
+//! [`resolve_conflict`] performs a blocking [`crossbeam_channel::Receiver::recv`]
+//! when `policy == ConflictPolicy::Prompt`. Callers on a tokio runtime
+//! must therefore route through [`resolve_conflict_async`] which
+//! offloads the recv to `spawn_blocking` — otherwise the runtime
+//! worker would stall until the UI answered.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
+use atlas_core::AtlasError;
 
 use crate::op::{OpEvent, OpId};
 
@@ -125,4 +144,52 @@ pub(crate) fn resolve_conflict(
                 .map_err(|error| atlas_core::AtlasError::Other(anyhow!(error.to_string())))
         }
     }
+}
+
+/// Async wrapper around [`resolve_conflict`] safe to call from a tokio
+/// runtime thread.
+///
+/// For non-prompt policies this is a straight passthrough. For the
+/// `Prompt` case the blocking `recv()` runs inside
+/// [`tokio::task::spawn_blocking`] so the runtime worker isn't stalled
+/// waiting for the UI to answer.
+pub(crate) async fn resolve_conflict_async(
+    id: OpId,
+    source: PathBuf,
+    dest: PathBuf,
+    policy: ConflictPolicy,
+    event_tx: crossbeam_channel::Sender<OpEvent>,
+) -> atlas_core::Result<ConflictDecision> {
+    if policy != ConflictPolicy::Prompt {
+        return resolve_conflict(id, &source, &dest, policy, &event_tx);
+    }
+    tokio::task::spawn_blocking(move || resolve_conflict(id, &source, &dest, policy, &event_tx))
+        .await
+        .map_err(|err| AtlasError::Other(anyhow!(err)))?
+}
+
+/// Build a Prompt-style responder pair without owning a policy value.
+///
+/// Cross-backend flows that manage their own existence-probe already
+/// know the destination is occupied; they only need the recv side of
+/// the responder to await a user decision. Using this helper keeps
+/// `Cancelled → send OpEvent::Conflict → recv` symmetric with the
+/// sync path in [`resolve_conflict`], and lets the caller await the
+/// answer on [`tokio::task::spawn_blocking`].
+pub(crate) fn emit_prompt(
+    id: OpId,
+    source: PathBuf,
+    dest: PathBuf,
+    event_tx: &crossbeam_channel::Sender<OpEvent>,
+) -> atlas_core::Result<crossbeam_channel::Receiver<ConflictDecision>> {
+    let (resolver, rx) = ConflictResponder::pair();
+    event_tx
+        .send(OpEvent::Conflict {
+            id,
+            source,
+            dest,
+            resolver,
+        })
+        .map_err(|error| AtlasError::Other(anyhow!(error.to_string())))?;
+    Ok(rx)
 }

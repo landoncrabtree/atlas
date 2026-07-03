@@ -23,7 +23,7 @@ pub mod remote;
 pub(crate) mod runtime;
 pub mod undo;
 
-pub use conflict::{ConflictDecision, ConflictPolicy, ConflictResponder};
+pub use conflict::{rename_with_suffix, ConflictDecision, ConflictPolicy, ConflictResponder};
 pub use execute::execute_op;
 pub use op::{OpEvent, OpId, OpKind, OpKindDescriptor, OpStatus, Operation, ProgressSnapshot};
 pub use queue::{OperationQueue, QueueOptions};

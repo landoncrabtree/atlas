@@ -492,11 +492,16 @@ where
 }
 
 /// Recursively copy a remote source subtree into a remote destination.
+///
+/// `dst_path` is the destination path on `dst`'s backend — usually
+/// `dst.root`, but callers can pass a renamed path if the base
+/// destination collides.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn copy_remote_tree_to_remote(
     id: OpId,
     src: &RemoteHandle,
     dst: &RemoteHandle,
+    dst_path: &str,
     event_tx: &Sender<OpEvent>,
     op_arc: &Arc<parking_lot::Mutex<Operation>>,
     flags: &AtomicU8,
@@ -506,12 +511,12 @@ pub(crate) async fn copy_remote_tree_to_remote(
         .map_err(|err| map_remote_error(&src.display, err))?;
     // Create the root directory at the destination first.
     dst.vm
-        .create_dir(&dst.root)
+        .create_dir(dst_path)
         .await
         .map_err(|err| map_remote_error(&dst.display, err))?;
     increment_items(op_arc, 1);
     let src_root = trim_trailing_slash(&src.root);
-    let dst_root = trim_trailing_slash(&dst.root);
+    let dst_root = trim_trailing_slash(dst_path);
     copy_walk_entries(
         id, &entries, src, &src_root, dst, &dst_root, event_tx, op_arc, flags,
     )
@@ -520,21 +525,25 @@ pub(crate) async fn copy_remote_tree_to_remote(
 }
 
 /// Recursively copy a local source subtree into a remote destination.
+///
+/// `dst_path` is the destination path on the remote backend —
+/// callers pass a renamed path when the base destination collides.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn copy_local_tree_to_remote(
     id: OpId,
     src_root: &std::path::Path,
     dst: &RemoteHandle,
+    dst_path: &str,
     event_tx: &Sender<OpEvent>,
     op_arc: &Arc<parking_lot::Mutex<Operation>>,
     flags: &AtomicU8,
 ) -> Result<(), AtlasError> {
     dst.vm
-        .create_dir(&dst.root)
+        .create_dir(dst_path)
         .await
         .map_err(|err| map_remote_error(&dst.display, err))?;
     increment_items(op_arc, 1);
-    let dst_root_trim = trim_trailing_slash(&dst.root);
+    let dst_root_trim = trim_trailing_slash(dst_path);
     let root_owned = src_root.to_path_buf();
     let entries = tokio::task::spawn_blocking(move || collect_local_walk(&root_owned))
         .await
@@ -561,7 +570,9 @@ pub(crate) async fn copy_local_tree_to_remote(
     Ok(())
 }
 
-/// Recursively copy a remote source subtree into a local directory.
+/// Recursively copy a remote source subtree into a local directory
+/// at `dst_root`. Callers pass a renamed `dst_root` when the base
+/// destination collides.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn copy_remote_tree_to_local(
     id: OpId,
