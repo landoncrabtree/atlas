@@ -432,3 +432,276 @@ fn cancel_mid_local_to_sftp_copy() -> Result<()> {
 /// Silence dead-code warnings on helpers that not every test uses.
 #[allow(dead_code)]
 fn _use_all(_: PathBuf, _: Duration) {}
+
+// ── Cross-backend conflict-policy tests ─────────────────────────────
+//
+// These exercise the four ConflictDecision variants against
+// cross-backend copy paths. Same-backend Local→Local goes through
+// the local primitives (already tested in `ops_tests.rs::conflict_*`);
+// the cases below cover Local↔Remote and Remote↔Remote transitions.
+
+fn wait_for_conflict<F>(
+    queue: &OperationQueue,
+    events: &crossbeam_channel::Receiver<OpEvent>,
+    id: u64,
+    respond: F,
+) -> (OpStatus, Vec<OpEvent>)
+where
+    F: FnOnce(atlas_ops::ConflictResponder),
+{
+    let mut seen = Vec::new();
+    let mut respond = Some(respond);
+    let deadline = Instant::now() + OP_TIMEOUT;
+    loop {
+        if let Ok(event) = events.recv_timeout(Duration::from_millis(50)) {
+            if let OpEvent::Conflict { resolver, .. } = &event {
+                if let Some(cb) = respond.take() {
+                    cb(resolver.clone());
+                }
+            }
+            seen.push(event);
+        }
+        let op = queue.get(id).expect("operation present");
+        if matches!(
+            op.status,
+            OpStatus::Done | OpStatus::Failed | OpStatus::Cancelled
+        ) {
+            while let Ok(ev) = events.try_recv() {
+                seen.push(ev);
+            }
+            return (op.status, seen);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "op {id} timed out in status {:?}",
+            op.status
+        );
+    }
+}
+
+#[test]
+fn local_to_sftp_prompt_overwrite() -> Result<()> {
+    skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    let temp = TempDir::new().context("tempdir")?;
+
+    // Prime a colliding file on the mock so the conflict trigger fires.
+    write_file(&server.root_dir().join("collide.txt"), b"old-remote");
+    let source = temp.path().join("collide.txt");
+    write_file(&source, b"new-local");
+
+    let (queue, events) = small_queue();
+    let id = queue.submit(OpKind::Copy {
+        sources: vec![Location::local(source)],
+        dest_dir: sftp_location(&server, "atlas", "/"),
+        policy: atlas_ops::ConflictPolicy::Prompt,
+    });
+    let (status, _) = wait_for_conflict(&queue, &events, id, |resolver| {
+        resolver.resolve(atlas_ops::ConflictDecision::Overwrite);
+    });
+    assert_eq!(status, OpStatus::Done);
+    // Local content should have replaced the remote.
+    assert_eq!(
+        read_file(&server.root_dir().join("collide.txt")),
+        b"new-local"
+    );
+    Ok(())
+}
+
+#[test]
+fn local_to_sftp_prompt_skip_leaves_remote_untouched() -> Result<()> {
+    skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    let temp = TempDir::new().context("tempdir")?;
+
+    write_file(&server.root_dir().join("keep.txt"), b"original-remote");
+    let source = temp.path().join("keep.txt");
+    write_file(&source, b"local-override");
+
+    let (queue, events) = small_queue();
+    let id = queue.submit(OpKind::Copy {
+        sources: vec![Location::local(source)],
+        dest_dir: sftp_location(&server, "atlas", "/"),
+        policy: atlas_ops::ConflictPolicy::Prompt,
+    });
+    let (status, _) = wait_for_conflict(&queue, &events, id, |resolver| {
+        resolver.resolve(atlas_ops::ConflictDecision::Skip);
+    });
+    assert_eq!(status, OpStatus::Done);
+    // Remote content should be untouched — Skip means "no write".
+    assert_eq!(
+        read_file(&server.root_dir().join("keep.txt")),
+        b"original-remote"
+    );
+    Ok(())
+}
+
+#[test]
+fn local_to_sftp_prompt_cancel_cancels_op() -> Result<()> {
+    skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    let temp = TempDir::new().context("tempdir")?;
+
+    write_file(&server.root_dir().join("halt.txt"), b"original");
+    let source = temp.path().join("halt.txt");
+    write_file(&source, b"never-arrives");
+
+    let (queue, events) = small_queue();
+    let id = queue.submit(OpKind::Copy {
+        sources: vec![Location::local(source)],
+        dest_dir: sftp_location(&server, "atlas", "/"),
+        policy: atlas_ops::ConflictPolicy::Prompt,
+    });
+    let (status, _) = wait_for_conflict(&queue, &events, id, |resolver| {
+        resolver.resolve(atlas_ops::ConflictDecision::Cancel);
+    });
+    assert_eq!(status, OpStatus::Cancelled);
+    // Remote file untouched.
+    assert_eq!(read_file(&server.root_dir().join("halt.txt")), b"original");
+    Ok(())
+}
+
+#[test]
+fn local_to_sftp_rename_with_suffix_places_suffixed_sibling() -> Result<()> {
+    skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    let temp = TempDir::new().context("tempdir")?;
+
+    // Existing colliding remote file.
+    write_file(&server.root_dir().join("note.txt"), b"original-remote");
+    let source = temp.path().join("note.txt");
+    write_file(&source, b"new-local");
+
+    let (queue, events) = small_queue();
+    let id = queue.submit(OpKind::Copy {
+        sources: vec![Location::local(source)],
+        dest_dir: sftp_location(&server, "atlas", "/"),
+        policy: atlas_ops::ConflictPolicy::RenameWithSuffix,
+    });
+    let (status, _) = wait_for_terminal(&queue, &events, id);
+    assert_eq!(status, OpStatus::Done);
+    // Original untouched.
+    assert_eq!(
+        read_file(&server.root_dir().join("note.txt")),
+        b"original-remote"
+    );
+    // Suffixed sibling created.
+    assert_eq!(
+        read_file(&server.root_dir().join("note (copy).txt")),
+        b"new-local"
+    );
+    Ok(())
+}
+
+#[test]
+fn sftp_to_local_prompt_overwrite_replaces_local_file() -> Result<()> {
+    skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    let temp = TempDir::new().context("tempdir")?;
+
+    write_file(&server.root_dir().join("pull.txt"), b"remote-fresh");
+    let dest_dir = temp.path().join("landing");
+    fs::create_dir_all(&dest_dir)?;
+    write_file(&dest_dir.join("pull.txt"), b"local-stale");
+
+    let (queue, events) = small_queue();
+    let id = queue.submit(OpKind::Copy {
+        sources: vec![sftp_location(&server, "atlas", "/pull.txt")],
+        dest_dir: Location::local(&dest_dir),
+        policy: atlas_ops::ConflictPolicy::Prompt,
+    });
+    let (status, _) = wait_for_conflict(&queue, &events, id, |resolver| {
+        resolver.resolve(atlas_ops::ConflictDecision::Overwrite);
+    });
+    assert_eq!(status, OpStatus::Done);
+    assert_eq!(read_file(&dest_dir.join("pull.txt")), b"remote-fresh");
+    Ok(())
+}
+
+#[test]
+fn sftp_to_local_rename_with_suffix_places_suffixed_local_sibling() -> Result<()> {
+    skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    let temp = TempDir::new().context("tempdir")?;
+
+    write_file(&server.root_dir().join("shared.txt"), b"remote-content");
+    let dest_dir = temp.path().join("landing");
+    fs::create_dir_all(&dest_dir)?;
+    write_file(&dest_dir.join("shared.txt"), b"local-keep");
+
+    let (queue, events) = small_queue();
+    let id = queue.submit(OpKind::Copy {
+        sources: vec![sftp_location(&server, "atlas", "/shared.txt")],
+        dest_dir: Location::local(&dest_dir),
+        policy: atlas_ops::ConflictPolicy::RenameWithSuffix,
+    });
+    let (status, _) = wait_for_terminal(&queue, &events, id);
+    assert_eq!(status, OpStatus::Done);
+    // Original local untouched.
+    assert_eq!(read_file(&dest_dir.join("shared.txt")), b"local-keep");
+    // Suffixed sibling landed on local.
+    assert_eq!(
+        read_file(&dest_dir.join("shared (copy).txt")),
+        b"remote-content"
+    );
+    Ok(())
+}
+
+#[test]
+fn sftp_to_sftp_prompt_skip_leaves_target_untouched() -> Result<()> {
+    skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    let src_dir = server.root_dir().join("srcdir");
+    let dst_dir = server.root_dir().join("dstdir");
+    fs::create_dir_all(&src_dir)?;
+    fs::create_dir_all(&dst_dir)?;
+    write_file(&src_dir.join("payload.bin"), b"src-bytes");
+    write_file(&dst_dir.join("payload.bin"), b"pre-existing-dst");
+
+    let (queue, events) = small_queue();
+    let id = queue.submit(OpKind::Copy {
+        sources: vec![sftp_location(&server, "atlas", "/srcdir/payload.bin")],
+        dest_dir: sftp_location(&server, "atlas", "/dstdir"),
+        policy: atlas_ops::ConflictPolicy::Prompt,
+    });
+    let (status, _) = wait_for_conflict(&queue, &events, id, |resolver| {
+        resolver.resolve(atlas_ops::ConflictDecision::Skip);
+    });
+    assert_eq!(status, OpStatus::Done);
+    assert_eq!(read_file(&dst_dir.join("payload.bin")), b"pre-existing-dst");
+    Ok(())
+}
+
+#[test]
+fn cross_backend_hardcoded_overwrite_regression() -> Result<()> {
+    // Regression: prior to threading policy through `copy_single`,
+    // cross-backend copy always resolved to `ConflictPolicy::Overwrite`
+    // regardless of what the caller asked for. This test proves the
+    // fix: submitting with `Skip` at a colliding remote destination
+    // must NOT clobber the destination. If this ever regresses the
+    // remote file would end up equal to the local source.
+    skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    let temp = TempDir::new().context("tempdir")?;
+
+    write_file(&server.root_dir().join("guard.txt"), b"do-not-overwrite");
+    let source = temp.path().join("guard.txt");
+    write_file(&source, b"would-clobber");
+
+    let (queue, events) = small_queue();
+    let id = queue.submit(OpKind::Copy {
+        sources: vec![Location::local(source)],
+        dest_dir: sftp_location(&server, "atlas", "/"),
+        policy: atlas_ops::ConflictPolicy::Skip,
+    });
+    let (status, _) = wait_for_terminal(&queue, &events, id);
+    assert_eq!(status, OpStatus::Done);
+    // If the `let _ = policy` hardcode still lived, this assert would fail.
+    assert_eq!(
+        read_file(&server.root_dir().join("guard.txt")),
+        b"do-not-overwrite",
+        "cross-backend copy must honor ConflictPolicy::Skip; if this fails, \
+         the `let _ = policy` hardcode has regressed"
+    );
+    Ok(())
+}
