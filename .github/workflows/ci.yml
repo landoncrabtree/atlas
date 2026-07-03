@@ -96,7 +96,7 @@ jobs:
         # (`theming::watcher`, `views::miller::controller`,
         # `atlas-watch::test_*`, `atlas-config::watcher_reload_and_error`)
         # without silencing them via `#[ignore]`. See
-        # `.github/skills/fix-flaky-test/SKILL.md`.
+        # `.github/skills/testing/SKILL.md`.
         uses: taiki-e/install-action@nextest
       - name: Clippy (continue on failure to surface all issues)
         id: clippy
@@ -143,7 +143,8 @@ jobs:
     # artifact so a maintainer can pull the raw report and eyeball for
     # regressions between PRs. Deliberately NOT a gating check:
     # criterion medians are runner-dependent and would produce noisy
-    # merge blocks. See `docs/perf/README.md` for how to interpret.
+    # merge blocks. See `.github/skills/write-benches/SKILL.md` for how to
+    # interpret.
     name: perf-check (informational)
     runs-on: ubuntu-latest
     # Only run on PRs — on push-to-main this would double-run against
@@ -160,14 +161,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: perf-check
-      - name: Run criterion benches with a short profile time
-        # `--profile-time 3` runs each bench once for ~3s (instead of
-        # the default 5s + warm-up). Enough to catch large regressions
-        # in the CI window without blowing the runner's 6-hour budget.
+      - name: Run criterion benches with a short sample size
+        # Criterion 0.5's default runner accepts `--sample-size`, not
+        # `--profile-time`. Keep this informational job short enough to
+        # catch large regressions without turning runner variance into a
+        # gating signal.
         run: |
-          cargo bench -p atlas-fs --benches -- --profile-time 3
-          cargo bench -p atlas-search --benches -- --profile-time 3
-          cargo bench -p atlas-ops --benches -- --profile-time 3
+          cargo bench -p atlas-fs --benches -- --sample-size 10
+          cargo bench -p atlas-search --benches -- --sample-size 10
+          cargo bench -p atlas-ops --benches -- --sample-size 10
       - name: Upload criterion reports
         uses: actions/upload-artifact@v4
         with:
