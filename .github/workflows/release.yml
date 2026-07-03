@@ -35,6 +35,12 @@ jobs:
       - name: Build app bundle
         run: dist/build-app.sh
 
+      - name: Verify app icon metadata
+        run: |
+          test -f target/dist/Atlas.app/Contents/Resources/atlas.icns
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" \
+            target/dist/Atlas.app/Contents/Info.plist | grep -qx atlas
+
       - name: Sign (if credentials present)
         if: env.ATLAS_SIGNING_IDENTITY != ''
         env:
@@ -101,16 +107,45 @@ jobs:
       - name: Package tarball
         run: |
           mkdir -p target/dist
-          cp target/release/atlas target/dist/atlas
-          cp README.md LICENSE 2>/dev/null target/dist/ || true
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(cargo pkgid -p atlas-app | sed -E 's/.*#(.*)/\1/')"
+          fi
+          PACKAGE_DIR="atlas-${VERSION}-linux-x86_64"
+          rm -rf "target/dist/${PACKAGE_DIR}"
+          mkdir -p \
+            "target/dist/${PACKAGE_DIR}/bin" \
+            "target/dist/${PACKAGE_DIR}/share/applications"
+          cp target/release/atlas "target/dist/${PACKAGE_DIR}/bin/atlas"
+          cp README.md "target/dist/${PACKAGE_DIR}/README.md"
+          cp LICENSE "target/dist/${PACKAGE_DIR}/LICENSE"
+          cp assets/branding/atlas.desktop \
+            "target/dist/${PACKAGE_DIR}/share/applications/atlas.desktop"
+          cp dist/install-linux.sh \
+            "target/dist/${PACKAGE_DIR}/install-linux.sh"
+          chmod +x "target/dist/${PACKAGE_DIR}/install-linux.sh"
+          for size in 16 22 24 32 48 64 96 128 192 256 512; do
+            install -Dm644 "assets/branding/linux/${size}x${size}.png" \
+              "target/dist/${PACKAGE_DIR}/share/icons/hicolor/${size}x${size}/apps/atlas.png"
+          done
           cd target/dist
-          tar czf atlas-linux-x86_64.tar.gz atlas $(ls README.md LICENSE 2>/dev/null || true)
+          tar czf "${PACKAGE_DIR}.tar.gz" "${PACKAGE_DIR}"
+          for required in \
+            "${PACKAGE_DIR}/bin/atlas" \
+            "${PACKAGE_DIR}/share/applications/atlas.desktop" \
+            "${PACKAGE_DIR}/share/icons/hicolor/512x512/apps/atlas.png" \
+            "${PACKAGE_DIR}/install-linux.sh" \
+            "${PACKAGE_DIR}/README.md" \
+            "${PACKAGE_DIR}/LICENSE"; do
+            tar tzf "${PACKAGE_DIR}.tar.gz" | grep -qx "${required}"
+          done
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: atlas-linux
-          path: target/dist/atlas-linux-x86_64.tar.gz
+          path: target/dist/atlas-*-linux-x86_64.tar.gz
 
   build-windows:
     name: build (windows)
