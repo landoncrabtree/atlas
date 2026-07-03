@@ -237,21 +237,33 @@ fn is_excluded(path: &Path) -> bool {
 
 impl PathIndex for WalkerPathIndex {
     fn candidates(&self, query: &str, limit: usize) -> Vec<PathBuf> {
-        let query = query.to_lowercase();
+        // Lower-case the query once. Per-candidate work is
+        // allocation-free: `contains_ascii_ci` folds bytes on the fly
+        // rather than allocating a `to_lowercase()` `String` per
+        // path. This fires on every keystroke in the go-to-anywhere
+        // palette, so pre-existing per-entry allocs multiplied by up
+        // to `MAX_CACHED_PATHS` (100k) entries per query.
+        let query_lower = query.to_ascii_lowercase();
         let mut results: Vec<PathBuf> = self
             .cache
             .lock()
             .iter()
             .filter(|path| {
-                if query.is_empty() {
+                if query_lower.is_empty() {
                     return true;
                 }
-
-                path.file_name()
+                let name_hit = path
+                    .file_name()
                     .and_then(|name| name.to_str())
-                    .map(|name| name.to_lowercase().contains(&query))
-                    .unwrap_or(false)
-                    || path.to_string_lossy().to_lowercase().contains(&query)
+                    .is_some_and(|name| contains_ascii_ci(name, &query_lower));
+                if name_hit {
+                    return true;
+                }
+                // Fall back to matching against the full path, still
+                // allocation-free on the per-candidate side. The
+                // `to_string_lossy` cost is unavoidable for non-UTF-8
+                // paths but does not depend on query length.
+                contains_ascii_ci(&path.to_string_lossy(), &query_lower)
             })
             .take(limit)
             .cloned()
@@ -259,6 +271,35 @@ impl PathIndex for WalkerPathIndex {
         results.sort_by_key(|path| path.components().count());
         results
     }
+}
+
+/// Case-insensitive-ASCII substring search that never allocates.
+///
+/// `needle_lower` must already be ASCII-lower-cased.
+fn contains_ascii_ci(haystack: &str, needle_lower: &str) -> bool {
+    let needle = needle_lower.as_bytes();
+    if needle.is_empty() {
+        return true;
+    }
+    let hay = haystack.as_bytes();
+    if hay.len() < needle.len() {
+        return false;
+    }
+    let first = needle[0];
+    let end = hay.len() - needle.len();
+    let mut i = 0usize;
+    while i <= end {
+        if hay[i].to_ascii_lowercase() == first
+            && hay[i..i + needle.len()]
+                .iter()
+                .zip(needle.iter())
+                .all(|(h, n)| h.to_ascii_lowercase() == *n)
+        {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Palette source that emits filesystem paths from a [`PathIndex`].
