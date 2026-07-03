@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Atlas
+Comment=Cross-platform file explorer
+Exec=atlas %F
+Icon=atlas
+Terminal=false
+Categories=Utility;FileManager;
+StartupNotify=true
