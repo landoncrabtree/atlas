@@ -1,7 +1,7 @@
 name: release
 
 # Tag-based releases: push `git tag v0.4.0 && git push --tags`, and this
-# workflow builds signed macOS bundles + Windows exe + Linux binary and
+# workflow builds signed macOS bundles + Linux binary and
 # publishes them to a GitHub Release named after the tag.
 #
 # `workflow_dispatch` also runs the build pipeline manually (via the
@@ -22,6 +22,8 @@ env:
   PUBLISH_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
+  # Windows temporarily disabled — pending debug on a real Windows machine.
+  # Re-enable by adding `windows-latest` back and restoring the .zip artifact step.
   build-macos:
     name: build (macos)
     runs-on: macos-latest
@@ -147,37 +149,9 @@ jobs:
           name: atlas-linux
           path: target/dist/atlas-*-linux-x86_64.tar.gz
 
-  build-windows:
-    name: build (windows)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-windows
-
-      - name: Build release binary
-        run: cargo build --release --bin atlas --locked
-
-      - name: Package zip
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path target\dist | Out-Null
-          Copy-Item target\release\atlas.exe target\dist\atlas.exe
-          if (Test-Path README.md) { Copy-Item README.md target\dist\ }
-          if (Test-Path LICENSE)   { Copy-Item LICENSE   target\dist\ }
-          Compress-Archive -Path target\dist\* -DestinationPath target\dist\atlas-windows-x86_64.zip -Force
-
-      - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: atlas-windows
-          path: target/dist/atlas-windows-x86_64.zip
-
   publish:
     name: publish GitHub Release
-    needs: [build-macos, build-linux, build-windows]
+    needs: [build-macos, build-linux]
     # Only publish on tag pushes. Manual `workflow_dispatch` runs
     # complete the build matrix and leave artifacts on the run page,
     # but skip this job so no release entry is created.
