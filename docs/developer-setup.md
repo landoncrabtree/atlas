@@ -201,8 +201,3 @@ RUST_LOG=atlas=debug cargo run -p atlas-app
 # Then use MCP: take_screenshot, send_keybind("cmd+d"), take_screenshot.
 ```
 
-## Licensing note (Slint)
-
-Atlas is proprietary. Before distribution, the project must hold a Slint license
-track compatible with proprietary shipping (Royalty-Free Desktop License when
-eligible, or commercial license). See <https://slint.dev/pricing>.
