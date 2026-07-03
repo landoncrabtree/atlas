@@ -1,11 +1,11 @@
 ---
 applyTo: "**/*.rs,**/*.slint,**/Cargo.toml"
-description: "Atlas performance goals, principles, anti-patterns, and benchmark methodology. Apply to all Rust, Slint, and dependency-graph changes."
+description: "Atlas performance goals, principles, and anti-patterns. Apply to all Rust, Slint, and dependency-graph changes."
 ---
 
 # Performance
 
-Performance is a defining feature of Atlas, not an afterthought. This document codifies our **goals**, **principles**, and the **benchmark methodology** we use to defend them.
+Performance is a defining feature of Atlas, not an afterthought. This document codifies our **goals**, **principles**, and **anti-patterns**.
 
 > Status: targets are aspirational and tracked toward MVP. Benchmark numbers will be filled in as the harness lands.
 
@@ -75,45 +75,9 @@ Search over remote panes debounces every input change (`search.debounce_ms`, def
 | `clone()` of large strings to satisfy the borrow checker | Use `&str` or `Cow<'_, str>` |
 | Unbounded channels for downstream backpressure-sensitive work | Use `bounded(N)` and let producers slow down |
 
-## Benchmark methodology
+## Benchmarking and perf reviews
 
-When the harness lands, expect:
-
-- **`cargo bench`** suites in each crate (`crates/<crate>/benches/`) using `criterion`.
-- A top-level `bench/` workspace member with end-to-end scenarios:
-  - `bench/cold-launch`: spawns the binary, measures time to a known "ready" marker.
-  - `bench/large-dir`: opens a tempfile-built tree of N files, measures time-to-first-batch and time-to-fully-loaded.
-  - `bench/index-build`: walks a 1M-file generated tree into the daemon's index, measures throughput and disk size.
-  - `bench/content-search`: runs ripgrep-equivalent searches, compares against `rg` on the same fixture.
-- Tracing-based **flame charts** via `tracing-flame` for ad-hoc profiling.
-- Regression tracking: results saved to a CSV/JSON, plotted in CI.
-
-Hardware baseline: M-series MacBook Air (the slowest of our targets) and a recent x86_64 Linux laptop. Numbers reported on both.
-
-## Profiling commands
-
-```bash
-# CPU sampling with samply (cross-platform)
-cargo install samply
-samply record cargo run --release -p atlas-app
-
-# Tracing with tokio-console (daemon only)
-RUSTFLAGS="--cfg tokio_unstable" cargo run --release -p atlas-indexd
-
-# Flame chart via tracing-flame
-ATLAS_FLAME=on cargo run --release -p atlas-app
-# Then convert: inferno-flamegraph < tracing.folded > flame.svg
-
-# Allocation profiling (Linux)
-heaptrack cargo run --release -p atlas-app
-```
-
-## Performance reviews
-
-Any PR touching a hot path (FS walker, content search, thumbnail pipeline, view virtualization, IPC) should include:
-
-1. The benchmark scenario most affected.
-2. Numbers before and after.
-3. A flame chart screenshot if the change is non-trivial.
-
-If a PR regresses a benchmark by more than 5% without explicit justification, it's blocked.
+Measure before optimizing hot paths. Benchmark setup, Criterion commands,
+flamegraph/profiling commands, result assessment, hot-vs-cold classification,
+and perf commit format live in
+[`.github/skills/write-benches/SKILL.md`](../skills/write-benches/SKILL.md).

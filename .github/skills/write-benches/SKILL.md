@@ -116,6 +116,29 @@ relevant medians, confidence intervals, and raw report paths in the PR body or a
 `docs/perf/results-<date>.md` historical note when the work is part of a perf
 audit.
 
+## Profiling hot paths
+
+Use a profiler when a hot-path change is non-trivial or the benchmark does not
+explain where time moved:
+
+```bash
+# CPU sampling with samply (cross-platform)
+cargo install samply
+samply record cargo run --release -p atlas-app
+
+# Tracing with tokio-console (daemon only)
+RUSTFLAGS="--cfg tokio_unstable" cargo run --release -p atlas-indexd
+
+# Flame chart via tracing-flame
+ATLAS_FLAME=on cargo run --release -p atlas-app
+# Then convert: inferno-flamegraph < tracing.folded > flame.svg
+
+# Allocation profiling (Linux)
+heaptrack cargo run --release -p atlas-app
+```
+
+Attach or summarize the trace when it changes the decision.
+
 ## Assessing results
 
 A meaningful improvement is usually a median change greater than **5%** with the

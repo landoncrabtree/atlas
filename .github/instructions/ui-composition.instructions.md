@@ -251,11 +251,11 @@ Any op that could exceed 250 ms **must** integrate the cancellation token from t
 
 ## 10. Testing conventions
 
-- **Unit tests** live inline under `#[cfg(test)] mod tests { … }` next to the code they cover. One test per behavior; behavior-focused names.
-- **Integration tests** live under `crates/<crate>/tests/`. Use `tempfile::TempDir` for filesystem fixtures.
-- **Mock servers** (SFTP, FTP, WebDAV, S3) spawn via `crates/atlas-remote/tests/common/mock.rs`. Skip with `MOCK_SERVERS_SKIP=1` when you have no Python + `uv` available. See `docs/developer-setup.md` §Mock servers.
-- **Live UI verification** via the `computer-use-*` MCP tools (screenshots, keybind sequencing, click, type). Every UI PR ships with a screenshot. See `docs/developer-setup.md` §computer-use MCP.
-- **Snapshot tests** where appropriate — Slint doesn't ship native snapshot testing yet; take a screenshot before + after and eyeball it, or use `insta` at the Rust boundary.
+General test placement, nextest commands, mock-server gates, and flaky triage
+live in [`.github/skills/testing/SKILL.md`](../skills/testing/SKILL.md).
+UI-specific verification still requires a live `computer-use-*` screenshot for
+visible Slint changes; see [`docs/developer-setup.md`](../../docs/developer-setup.md#computer-use-mcp-for-ui-verification)
+for MCP setup.
 
 ## Verification checklist before you open a PR
 
