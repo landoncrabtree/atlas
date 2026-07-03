@@ -26,7 +26,7 @@
 
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -38,6 +38,7 @@ use atlas_ops::{
     ConflictDecision, ConflictPolicy, OpEvent, OpId, OpKind, OpKindDescriptor, OperationQueue,
     QueueOptions,
 };
+use atlas_remote::StreamProgress;
 use crossbeam_channel::Receiver;
 use parking_lot::RwLock;
 use slint::{ModelRc, SharedString, VecModel};
@@ -78,6 +79,166 @@ pub struct OpsController {
     started_at: RwLock<AHashMap<OpId, Instant>>,
     /// Weak handle to the Slint window for property updates.
     window: RwLock<slint::Weak<AtlasWindow>>,
+    /// Monotonic id source for controller-managed rows (preview
+    /// downloads) that don't ride the `OperationQueue`. The queue
+    /// itself assigns `1..next_queue_id`; controller ids live in the
+    /// high half of the space starting at [`CONTROLLER_ID_BASE`] to
+    /// avoid collision.
+    preview_id_seq: AtomicU64,
+    /// Cancellation flags for controller-managed rows. Consulted by
+    /// [`Self::cancel`] before delegating to the queue, so the ops
+    /// panel's per-row cancel button works for preview downloads
+    /// too.
+    preview_cancels: RwLock<AHashMap<OpId, Arc<AtomicBool>>>,
+    /// Pending conflict resolutions. Populated when
+    /// [`OpEvent::Conflict`] fires and the UI is asked to answer.
+    /// Cleared once the modal callback delivers a decision (or the
+    /// op finishes / is cancelled). See [`Self::submit_conflict`].
+    pending_conflicts: RwLock<Vec<PendingConflict>>,
+    /// Per-op decision cache for the "Apply to all" modal checkbox.
+    /// A non-empty entry means every subsequent conflict for that op
+    /// resolves immediately with the cached decision instead of
+    /// re-prompting the user.
+    apply_to_all: RwLock<AHashMap<OpId, ConflictDecision>>,
+}
+
+/// A conflict awaiting user input.
+///
+/// Kept in FIFO order so a burst of `OpEvent::Conflict` events fills
+/// the queue and the modal drains one at a time. `resolver.resolve(...)`
+/// unblocks the ops-thread once the user answers.
+struct PendingConflict {
+    op_id: OpId,
+    resolver: atlas_ops::ConflictResponder,
+    prompt: ConflictPrompt,
+}
+
+/// Snapshot pushed into Slint when a conflict prompt arrives.
+///
+/// Every visible cell of the modal is derived from this struct — the
+/// controller re-computes it via [`OpsController::build_conflict_snapshot`]
+/// after every modal state change.
+#[derive(Debug, Clone)]
+pub struct ConflictPrompt {
+    /// File name in question (e.g. `README.md`).
+    pub name: String,
+    /// Absolute-ish display of the source location.
+    pub source_display: String,
+    /// Absolute-ish display of the destination.
+    pub dest_display: String,
+    /// True when the source was modified more recently than the
+    /// destination. Drives Finder-parity phrasing.
+    pub source_is_newer: bool,
+    /// True when the destination was modified more recently than
+    /// the source. Drives Finder-parity phrasing when replacing an
+    /// older file with a newer one still applies to the opposite
+    /// direction.
+    pub source_is_older: bool,
+}
+
+/// Base id for controller-managed synthetic operations. See
+/// [`OpsController::preview_id_seq`]. We reserve the top bit of the
+/// `u64` id space to prevent collision with queue-assigned ids
+/// (which start at 1 and increment on every submit).
+const CONTROLLER_ID_BASE: OpId = 0x8000_0000_0000_0000;
+
+/// Handle returned by [`OpsController::start_preview_download`].
+///
+/// The caller feeds `progress_tx` into
+/// [`atlas_remote::stream::stream_copy`] and periodically checks
+/// [`Self::is_cancelled`]. On completion / failure the handle must
+/// be resolved via [`Self::complete`], [`Self::fail`], or
+/// [`Self::cancelled`] — dropping it without a resolution leaves a
+/// "running" row in the ops panel.
+///
+/// The handle intentionally borrows the shared `progress_tx`;
+/// callers may `clone()` it and pass into `stream_copy` as
+/// `Some(&sender)`.
+pub struct PreviewDownloadHandle {
+    /// Stable id used to key the row and cancel state on the
+    /// controller. Lies in the [`CONTROLLER_ID_BASE`] range so it
+    /// never collides with a queue-assigned id.
+    pub id: OpId,
+    /// Sender the caller passes to `stream_copy`. Progress deltas
+    /// flow via a background bridge into `OpEvent::Progress`-style
+    /// row updates.
+    pub progress_tx: crossbeam_channel::Sender<StreamProgress>,
+    /// Cancellation flag flipped by the panel's cancel button.
+    pub cancel: Arc<AtomicBool>,
+    controller: std::sync::Weak<OpsController>,
+    /// Set on terminal transition to prevent double-finalisation.
+    finalised: AtomicBool,
+}
+
+impl PreviewDownloadHandle {
+    /// Fast-path predicate the streaming loop calls between chunks.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Mark the download successful. The row transitions to a
+    /// terminal "Done" state and fades out on the standard 5s timer.
+    pub fn complete(&self) {
+        self.finalise(|row| {
+            row.status = "Done".to_owned();
+            row.progress = 1.0;
+            row.current_path.clear();
+            row.eta.clear();
+            row.is_terminal = true;
+            row.is_error = false;
+        });
+    }
+
+    /// Mark the download failed with a human-readable message.
+    pub fn fail(&self, error: impl Into<String>) {
+        let error = error.into();
+        self.finalise(move |row| {
+            row.status = format!("Failed: {error}");
+            row.eta.clear();
+            row.is_terminal = true;
+            row.is_error = true;
+        });
+    }
+
+    /// Mark the download cancelled — expected after the user hits
+    /// the row's cancel button.
+    pub fn cancelled(&self) {
+        self.finalise(|row| {
+            row.status = "Cancelled".to_owned();
+            row.eta.clear();
+            row.is_terminal = true;
+            row.is_error = false;
+        });
+    }
+
+    fn finalise(&self, mutate: impl FnOnce(&mut super::models::OpRow)) {
+        if self.finalised.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(ctrl) = self.controller.upgrade() else {
+            return;
+        };
+        ctrl.finalise_preview_row(self.id, mutate);
+    }
+}
+
+impl Drop for PreviewDownloadHandle {
+    fn drop(&mut self) {
+        // Guarantee no dangling "running" rows if the caller forgot
+        // to finalise. Emit a Failed status so users know the op
+        // didn't complete cleanly.
+        if !self.finalised.swap(true, Ordering::SeqCst) {
+            if let Some(ctrl) = self.controller.upgrade() {
+                ctrl.finalise_preview_row(self.id, |row| {
+                    row.status = "Failed: preview handle dropped without completion".to_owned();
+                    row.eta.clear();
+                    row.is_terminal = true;
+                    row.is_error = true;
+                });
+            }
+        }
+    }
 }
 
 impl OpsController {
@@ -95,6 +256,10 @@ impl OpsController {
             pending: RwLock::new(AHashMap::default()),
             started_at: RwLock::new(AHashMap::default()),
             window: RwLock::new(slint::Weak::default()),
+            preview_id_seq: AtomicU64::new(0),
+            preview_cancels: RwLock::new(AHashMap::default()),
+            pending_conflicts: RwLock::new(Vec::new()),
+            apply_to_all: RwLock::new(AHashMap::default()),
         });
 
         let ctrl_weak = Arc::downgrade(&ctrl);
@@ -119,24 +284,28 @@ impl OpsController {
     /// Submit a Copy operation.
     ///
     /// `sources` are the locations to copy; `dest_dir` is the destination
-    /// directory. Conflicts default to [`ConflictPolicy::RenameWithSuffix`]
-    /// (non-destructive).
+    /// directory. Conflicts default to [`ConflictPolicy::Prompt`]
+    /// (Finder-parity) — the shell surfaces the `AtlasConflictModal`
+    /// with Keep Both · Stop · Replace when a collision occurs.
+    /// Callers wanting the silent-rename behaviour (bulk automation,
+    /// tests) can use [`Self::submit_copy_with_policy`] with an
+    /// explicit [`ConflictPolicy::RenameWithSuffix`].
     pub fn submit_copy(&self, sources: Vec<Location>, dest_dir: Location) {
         self.queue.submit(OpKind::Copy {
             sources,
             dest_dir,
-            policy: ConflictPolicy::RenameWithSuffix,
+            policy: ConflictPolicy::Prompt,
         });
     }
 
     /// Submit a Move operation.
     ///
-    /// Conflicts default to [`ConflictPolicy::RenameWithSuffix`].
+    /// Conflicts default to [`ConflictPolicy::Prompt`] (Finder-parity).
     pub fn submit_move(&self, sources: Vec<Location>, dest_dir: Location) {
         self.queue.submit(OpKind::Move {
             sources,
             dest_dir,
-            policy: ConflictPolicy::RenameWithSuffix,
+            policy: ConflictPolicy::Prompt,
         });
     }
 
@@ -166,10 +335,289 @@ impl OpsController {
         });
     }
 
+    /// Submit a Copy operation with an explicit conflict policy.
+    ///
+    /// Callers pick `ConflictPolicy::Prompt` when they want the
+    /// conflict modal to surface for every colliding destination;
+    /// the plain [`Self::submit_copy`] defaults to
+    /// [`ConflictPolicy::RenameWithSuffix`] which is safe but silent.
+    pub fn submit_copy_with_policy(
+        &self,
+        sources: Vec<Location>,
+        dest_dir: Location,
+        policy: ConflictPolicy,
+    ) {
+        self.queue.submit(OpKind::Copy {
+            sources,
+            dest_dir,
+            policy,
+        });
+    }
+
+    /// Submit a Move operation with an explicit conflict policy.
+    pub fn submit_move_with_policy(
+        &self,
+        sources: Vec<Location>,
+        dest_dir: Location,
+        policy: ConflictPolicy,
+    ) {
+        self.queue.submit(OpKind::Move {
+            sources,
+            dest_dir,
+            policy,
+        });
+    }
+
+    // ── preview downloads ────────────────────────────────────────────────────
+    //
+    // Remote-file preview downloads reuse the ops-panel UI without
+    // going through the queue: they already have their own reader /
+    // writer plumbing inside `PreviewCache`, they only need progress
+    // + cancel affordances. `start_preview_download` allocates a
+    // controller-managed OpId, inserts an OpRow, and spawns a
+    // background bridge that pumps `StreamProgress` events into row
+    // updates. Cancellation flips an atomic shared with the caller.
+
+    /// Register a preview download as an ops-panel row and return a
+    /// [`PreviewDownloadHandle`] the caller feeds to
+    /// [`atlas_remote::stream::stream_copy`].
+    ///
+    /// `display_name` is the file's basename (e.g. `readme.txt`);
+    /// `source_display` is the source URI for the panel's source
+    /// column (`sftp://user@host/pub/readme.txt`); `total_bytes` is
+    /// the expected content length.
+    ///
+    /// The row is inserted only after `FOREGROUND_DEFER` unless the
+    /// caller opts in via [`Self::start_preview_download_immediate`].
+    /// Small / fast downloads never surface a row; that's why the
+    /// cache-hit fast path stays instant.
+    pub fn start_preview_download(
+        self: &Arc<Self>,
+        display_name: impl Into<String>,
+        source_display: impl Into<String>,
+        total_bytes: u64,
+    ) -> PreviewDownloadHandle {
+        self.spawn_preview_row(display_name.into(), source_display.into(), total_bytes)
+    }
+
+    fn spawn_preview_row(
+        self: &Arc<Self>,
+        display_name: String,
+        source_display: String,
+        total_bytes: u64,
+    ) -> PreviewDownloadHandle {
+        let id =
+            CONTROLLER_ID_BASE.saturating_add(self.preview_id_seq.fetch_add(1, Ordering::Relaxed));
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.preview_cancels.write().insert(id, Arc::clone(&cancel));
+
+        // Insert an initial row + `started_at` timestamp so ETA
+        // calculations use the same clock as queue-managed rows.
+        let title = format!("Downloading {display_name}");
+        let row = super::models::OpRow {
+            id,
+            title,
+            status: "Running".to_owned(),
+            kind: "Copy".to_owned(),
+            source_summary: source_display,
+            dest_summary: display_name.clone(),
+            progress: 0.0,
+            bytes_total_raw: total_bytes,
+            current_path: display_name,
+            ..super::models::OpRow::default()
+        };
+        self.rows.write().push(row);
+        self.started_at.write().insert(id, Instant::now());
+        self.push_to_ui();
+
+        // Bridge thread: drain StreamProgress events into row updates.
+        let (progress_tx, progress_rx) = crossbeam_channel::unbounded::<StreamProgress>();
+        let weak = Arc::downgrade(self);
+        std::thread::Builder::new()
+            .name("atlas-preview-progress".to_owned())
+            .spawn(move || preview_progress_bridge(weak, id, progress_rx))
+            .expect("failed to spawn atlas-preview-progress thread");
+
+        PreviewDownloadHandle {
+            id,
+            progress_tx,
+            cancel,
+            controller: Arc::downgrade(self),
+            finalised: AtomicBool::new(false),
+        }
+    }
+
+    fn apply_preview_progress(&self, id: OpId, event: &StreamProgress) {
+        let elapsed = self
+            .started_at
+            .read()
+            .get(&id)
+            .map(Instant::elapsed)
+            .unwrap_or_default();
+        self.update_row(id, |row| {
+            row.bytes_done_raw = event.bytes_transferred;
+            if let Some(total) = event.total_bytes {
+                row.bytes_total_raw = total;
+            }
+            if row.bytes_total_raw > 0 {
+                row.progress = row.bytes_done_raw as f32 / row.bytes_total_raw as f32;
+            }
+            row.eta = format_eta(elapsed, row.progress);
+        });
+    }
+
+    fn finalise_preview_row(&self, id: OpId, mutate: impl FnOnce(&mut super::models::OpRow)) {
+        self.update_row(id, mutate);
+        self.preview_cancels.write().remove(&id);
+        self.clear_foreground_if(id);
+        self.push_to_ui();
+        self.push_modal_state();
+    }
+
+    // ── conflict prompt integration ──────────────────────────────────────────
+
+    /// Deliver the user's decision to the oldest pending conflict.
+    ///
+    /// If `apply_to_all` is true, cache the decision keyed by that
+    /// conflict's op id — subsequent [`OpEvent::Conflict`] events on
+    /// the same op will resolve immediately without prompting.
+    pub fn resolve_current_conflict(&self, decision: ConflictDecision, apply_to_all: bool) {
+        let popped = {
+            let mut queue = self.pending_conflicts.write();
+            if queue.is_empty() {
+                None
+            } else {
+                Some(queue.remove(0))
+            }
+        };
+        let Some(pending) = popped else {
+            tracing::debug!("resolve_current_conflict: no pending conflict");
+            return;
+        };
+        if apply_to_all {
+            self.apply_to_all
+                .write()
+                .insert(pending.op_id, decision.clone());
+        }
+        pending.resolver.resolve(decision);
+        self.push_conflict_state();
+    }
+
+    /// Semantic wrapper: user picked "Keep Both". Computes a
+    /// non-colliding renamed destination sibling based on the
+    /// pending conflict's stored `dest` PathBuf (works for local
+    /// paths and URI-shaped PathBufs alike — the ops layer's
+    /// backend-aware rename applies the basename to the correct
+    /// parent regardless).
+    pub fn conflict_keep_both(&self, apply_to_all: bool) {
+        let dest = self.peek_pending_dest();
+        let decision = match dest {
+            Some(dest) => {
+                let parent = dest.parent().unwrap_or_else(|| std::path::Path::new("/"));
+                let name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("copy");
+                // NB: for URI-shaped PathBufs `rename_with_suffix`
+                // still produces a usable basename because
+                // `Path::parent`/`file_name` treat `/` as separator.
+                // The extra `.exists()` calls are benign no-ops
+                // (URIs never match), so we get suffix index 1 on
+                // the first hit — the ops layer's stat-loop
+                // handles collision detection on the real backend.
+                ConflictDecision::RenameTo(atlas_ops::rename_with_suffix(parent, name))
+            }
+            None => ConflictDecision::RenameTo(std::path::PathBuf::new()),
+        };
+        self.resolve_current_conflict(decision, apply_to_all);
+    }
+
+    /// Semantic wrapper: user picked "Stop" (cancels the whole op).
+    pub fn conflict_stop(&self, apply_to_all: bool) {
+        self.resolve_current_conflict(ConflictDecision::Cancel, apply_to_all);
+    }
+
+    /// Semantic wrapper: user picked "Replace" (overwrite).
+    pub fn conflict_replace(&self, apply_to_all: bool) {
+        self.resolve_current_conflict(ConflictDecision::Overwrite, apply_to_all);
+    }
+
+    /// Peek at the oldest pending conflict's dest PathBuf without
+    /// dequeuing it. Used to compute Keep-Both rename candidates.
+    fn peek_pending_dest(&self) -> Option<std::path::PathBuf> {
+        self.pending_conflicts
+            .read()
+            .first()
+            .map(|p| std::path::PathBuf::from(p.prompt.dest_display.as_str()))
+    }
+
+    /// Access the current conflict prompt payload for tests + shell
+    /// wiring. `None` when no prompt is queued.
+    #[must_use]
+    pub fn conflict_prompt(&self) -> Option<ConflictPrompt> {
+        self.pending_conflicts
+            .read()
+            .first()
+            .map(|c| c.prompt.clone())
+    }
+
+    fn push_conflict_state(&self) {
+        let prompt = self.conflict_prompt();
+        let window = self.window.read().clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(win) = window.upgrade() else {
+                return;
+            };
+            match prompt {
+                Some(p) => {
+                    win.set_conflict_modal_visible(true);
+                    win.set_conflict_modal_name(SharedString::from(p.name));
+                    win.set_conflict_modal_source(SharedString::from(p.source_display));
+                    win.set_conflict_modal_dest(SharedString::from(p.dest_display));
+                    win.set_conflict_modal_source_newer(p.source_is_newer);
+                    win.set_conflict_modal_source_older(p.source_is_older);
+                }
+                None => {
+                    win.set_conflict_modal_visible(false);
+                }
+            }
+        });
+    }
+
+    fn record_conflict(
+        &self,
+        id: OpId,
+        source: std::path::PathBuf,
+        dest: std::path::PathBuf,
+        resolver: atlas_ops::ConflictResponder,
+    ) {
+        // Apply-to-all short-circuit: reuse the cached decision, no
+        // new prompt, no queue interaction.
+        if let Some(decision) = self.apply_to_all.read().get(&id).cloned() {
+            resolver.resolve(decision);
+            return;
+        }
+        let prompt = build_conflict_prompt(&source, &dest);
+        {
+            self.pending_conflicts.write().push(PendingConflict {
+                op_id: id,
+                resolver,
+                prompt,
+            });
+        }
+        self.push_conflict_state();
+    }
+
     // ── lifecycle ─────────────────────────────────────────────────────────────
 
     /// Request cancellation of the operation identified by `id`.
+    ///
+    /// Preview downloads (controller-managed rows in the
+    /// [`CONTROLLER_ID_BASE`] range) flip their cancellation atomic
+    /// so the streaming loop breaks between chunks; queue-managed
+    /// ops delegate to [`OperationQueue::cancel`].
     pub fn cancel(&self, id: OpId) {
+        if let Some(flag) = self.preview_cancels.read().get(&id).cloned() {
+            flag.store(true, Ordering::SeqCst);
+            return;
+        }
         self.queue.cancel(id);
     }
 
@@ -348,15 +796,10 @@ impl OpsController {
                 dest,
                 resolver,
             } => {
-                // Auto-skip on conflict prompt (safe default; no overwrite without explicit UI).
-                // TODO: surface a conflict-resolution modal.
-                tracing::warn!(
-                    op_id = id,
-                    source = %source.display(),
-                    dest = %dest.display(),
-                    "ops conflict — auto-skipping (no conflict dialog yet)"
-                );
-                resolver.resolve(ConflictDecision::Skip);
+                // Route to the conflict modal via the pending queue.
+                // If the user checked "Apply to all" on a prior
+                // conflict for this op, we resolve immediately.
+                self.record_conflict(id, source, dest, resolver);
             }
             OpEvent::Completed { id } => {
                 self.update_row(id, |row| {
@@ -369,6 +812,8 @@ impl OpsController {
                 });
                 self.clear_foreground_if(id);
                 self.pending.write().remove(&id);
+                self.apply_to_all.write().remove(&id);
+                self.drop_conflicts_for(id);
                 self.push_to_ui();
                 self.push_modal_state();
             }
@@ -381,6 +826,8 @@ impl OpsController {
                 });
                 self.clear_foreground_if(id);
                 self.pending.write().remove(&id);
+                self.apply_to_all.write().remove(&id);
+                self.drop_conflicts_for(id);
                 self.push_to_ui();
                 self.push_modal_state();
             }
@@ -393,6 +840,8 @@ impl OpsController {
                 });
                 self.clear_foreground_if(id);
                 self.pending.write().remove(&id);
+                self.apply_to_all.write().remove(&id);
+                self.drop_conflicts_for(id);
                 self.push_to_ui();
                 self.push_modal_state();
             }
@@ -429,6 +878,16 @@ impl OpsController {
         if *fg == Some(id) {
             *fg = None;
         }
+    }
+
+    /// Drop any pending conflicts belonging to `id`. Called on every
+    /// terminal event so a race between "op cancelled" and "user
+    /// clicked a modal button" doesn't leave an orphan responder.
+    fn drop_conflicts_for(&self, id: OpId) {
+        let mut queue = self.pending_conflicts.write();
+        queue.retain(|p| p.op_id != id);
+        drop(queue);
+        self.push_conflict_state();
     }
 
     /// Spawn a short-lived timer thread that, after [`FOREGROUND_DEFER`] has
@@ -535,9 +994,13 @@ impl OpsController {
         }
     }
 
-    /// Return a snapshot of the current rows (for testing).
-    #[cfg(test)]
-    pub(crate) fn rows_snapshot(&self) -> Vec<OpRow> {
+    /// Return a snapshot of the current rows.
+    ///
+    /// Exposed to integration tests (via `atlas_ui::ops::OpsController::rows_snapshot`)
+    /// so preview-download flows and other side-effectful surfaces
+    /// can be asserted against without reaching into private state.
+    #[must_use]
+    pub fn rows_snapshot(&self) -> Vec<super::models::OpRow> {
         self.rows.read().clone()
     }
 
@@ -643,6 +1106,74 @@ fn build_modal_detail(row: &OpRow) -> String {
 impl Default for OpsController {
     fn default() -> Self {
         panic!("OpsController must be created via OpsController::new()");
+    }
+}
+
+/// Background bridge: pump [`StreamProgress`] events from a preview
+/// download into the controller's row state.
+fn preview_progress_bridge(
+    ctrl: std::sync::Weak<OpsController>,
+    id: OpId,
+    rx: crossbeam_channel::Receiver<StreamProgress>,
+) {
+    let mut last_push = Instant::now() - Duration::from_secs(1);
+    while let Ok(event) = rx.recv() {
+        let Some(ctrl) = ctrl.upgrade() else {
+            break;
+        };
+        ctrl.apply_preview_progress(id, &event);
+        // Debounce UI pushes to match the queue-managed progress
+        // cadence — otherwise a fast local stream can hammer the
+        // Slint event loop at chunk-rate.
+        let now = Instant::now();
+        if now.duration_since(last_push) >= DEBOUNCE {
+            last_push = now;
+            ctrl.push_to_ui();
+            ctrl.push_modal_state();
+        }
+    }
+    // Final push so the last chunk is reflected on-screen; the
+    // caller's `complete/fail/cancelled` will still terminate the row.
+    if let Some(ctrl) = ctrl.upgrade() {
+        ctrl.push_to_ui();
+    }
+}
+
+/// Compute a [`ConflictPrompt`] from the paths reported in
+/// [`OpEvent::Conflict`]. Determines the source-vs-dest mtime
+/// relation so the modal can select Finder-parity phrasing.
+///
+/// `source` and `dest` are lossy display paths on local backends and
+/// full URIs on remote backends. We only need the basename for the
+/// modal's primary sentence.
+fn build_conflict_prompt(source: &std::path::Path, dest: &std::path::Path) -> ConflictPrompt {
+    let name = dest
+        .file_name()
+        .or_else(|| source.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_owned();
+    // Only local backends have `SystemTime` mtimes accessible via
+    // `symlink_metadata`. Remote paths surface as URIs which
+    // `symlink_metadata` won't find, so both sides degrade to "no
+    // mtime known" and the modal falls back to the neutral phrasing.
+    let source_mtime = std::fs::symlink_metadata(source)
+        .ok()
+        .and_then(|m| m.modified().ok());
+    let dest_mtime = std::fs::symlink_metadata(dest)
+        .ok()
+        .and_then(|m| m.modified().ok());
+    let (source_is_newer, source_is_older) = match (source_mtime, dest_mtime) {
+        (Some(s), Some(d)) if s > d => (true, false),
+        (Some(s), Some(d)) if s < d => (false, true),
+        _ => (false, false),
+    };
+    ConflictPrompt {
+        name,
+        source_display: source.to_string_lossy().into_owned(),
+        dest_display: dest.to_string_lossy().into_owned(),
+        source_is_newer,
+        source_is_older,
     }
 }
 
@@ -956,5 +1487,250 @@ mod tests {
             split_source_dest(&mkdir),
             (String::new(), "/tmp/x".to_owned())
         );
+    }
+
+    // ── Conflict-modal wiring ────────────────────────────────────────────
+    //
+    // These exercise the controller-side machinery that surfaces
+    // OpEvent::Conflict as a modal prompt and translates the button
+    // choice back into a ConflictDecision.
+
+    #[test]
+    fn build_conflict_prompt_selects_source_newer_when_mtime_lt() {
+        let src = tempfile::tempdir().expect("tempdir");
+        let dst = tempfile::tempdir().expect("tempdir");
+        // Write dest FIRST so its mtime is older.
+        let dest_path = dst.path().join("README.md");
+        std::fs::write(&dest_path, b"old").expect("write");
+        std::thread::sleep(Duration::from_millis(50));
+        let source_path = src.path().join("README.md");
+        std::fs::write(&source_path, b"new").expect("write");
+
+        let prompt = build_conflict_prompt(&source_path, &dest_path);
+        assert_eq!(prompt.name, "README.md");
+        assert!(prompt.source_is_newer, "source should be flagged newer");
+        assert!(!prompt.source_is_older, "source must not also be older");
+    }
+
+    #[test]
+    fn build_conflict_prompt_selects_source_older_when_mtime_gt_dest() {
+        let src = tempfile::tempdir().expect("tempdir");
+        let dst = tempfile::tempdir().expect("tempdir");
+        // Write source FIRST so it's older.
+        let source_path = src.path().join("README.md");
+        std::fs::write(&source_path, b"old").expect("write");
+        std::thread::sleep(Duration::from_millis(50));
+        let dest_path = dst.path().join("README.md");
+        std::fs::write(&dest_path, b"new").expect("write");
+
+        let prompt = build_conflict_prompt(&source_path, &dest_path);
+        assert!(prompt.source_is_older, "source should be flagged older");
+        assert!(!prompt.source_is_newer);
+    }
+
+    #[test]
+    fn build_conflict_prompt_falls_back_to_neutral_for_remote_uris() {
+        // Remote paths surface as URI-shaped PathBufs that
+        // `symlink_metadata` cannot resolve; both flags must be
+        // false so the modal uses neutral phrasing.
+        let source = std::path::PathBuf::from("sftp://user@host/foo/README.md");
+        let dest = std::path::PathBuf::from("s3://bucket/README.md");
+        let prompt = build_conflict_prompt(&source, &dest);
+        assert!(!prompt.source_is_newer);
+        assert!(!prompt.source_is_older);
+        assert_eq!(prompt.name, "README.md");
+    }
+
+    #[test]
+    fn conflict_prompt_flows_through_ops_controller() {
+        // Submit a Copy with Prompt policy at a colliding destination.
+        // The controller must surface a ConflictPrompt and, once
+        // resolved via `conflict_replace`, unblock the op — no
+        // resurrection of the pre-fix "auto-skip on Prompt" bug.
+        let ctrl = OpsController::new();
+        let src_dir = tempfile::tempdir().expect("tempdir");
+        let dst_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(src_dir.path().join("clash.txt"), b"new").expect("src");
+        std::fs::write(dst_dir.path().join("clash.txt"), b"old").expect("dst");
+
+        ctrl.submit_copy_with_policy(
+            vec![Location::local(src_dir.path().join("clash.txt"))],
+            Location::local(dst_dir.path()),
+            ConflictPolicy::Prompt,
+        );
+
+        // Wait for the prompt to arrive.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let prompt = loop {
+            if let Some(p) = ctrl.conflict_prompt() {
+                break p;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no conflict prompt appeared within 3s"
+            );
+            wait(20);
+        };
+        assert_eq!(prompt.name, "clash.txt");
+
+        // Respond with Replace → the op should complete and the
+        // destination content should equal the new source.
+        ctrl.conflict_replace(false);
+        wait(300);
+        let rows = ctrl.rows_snapshot();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_terminal, "expected op to reach terminal state");
+        assert_eq!(
+            std::fs::read(dst_dir.path().join("clash.txt")).unwrap(),
+            b"new"
+        );
+    }
+
+    #[test]
+    fn apply_to_all_caches_decision_for_subsequent_conflicts() {
+        let ctrl = OpsController::new();
+        let src_dir = tempfile::tempdir().expect("tempdir");
+        let dst_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(src_dir.path().join("a.txt"), b"a-new").expect("a");
+        std::fs::write(src_dir.path().join("b.txt"), b"b-new").expect("b");
+        std::fs::write(dst_dir.path().join("a.txt"), b"a-old").expect("da");
+        std::fs::write(dst_dir.path().join("b.txt"), b"b-old").expect("db");
+
+        ctrl.submit_copy_with_policy(
+            vec![
+                Location::local(src_dir.path().join("a.txt")),
+                Location::local(src_dir.path().join("b.txt")),
+            ],
+            Location::local(dst_dir.path()),
+            ConflictPolicy::Prompt,
+        );
+
+        // Wait for FIRST prompt.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if ctrl.conflict_prompt().is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "no first prompt");
+            wait(20);
+        }
+        // Answer with Replace + Apply To All. Subsequent conflicts
+        // for this op must NOT surface additional prompts.
+        ctrl.conflict_replace(true);
+
+        // Wait for op to finish. Along the way we must NEVER see
+        // another prompt appear (Apply-To-All short-circuit).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut extra_prompts = 0;
+        loop {
+            let rows = ctrl.rows_snapshot();
+            if rows.iter().all(|r| r.is_terminal) && !rows.is_empty() {
+                break;
+            }
+            if ctrl.conflict_prompt().is_some() {
+                extra_prompts += 1;
+            }
+            assert!(Instant::now() < deadline, "op did not terminate in 5s");
+            wait(20);
+        }
+        assert_eq!(
+            extra_prompts, 0,
+            "Apply-To-All must suppress subsequent prompts"
+        );
+        assert_eq!(
+            std::fs::read(dst_dir.path().join("a.txt")).unwrap(),
+            b"a-new"
+        );
+        assert_eq!(
+            std::fs::read(dst_dir.path().join("b.txt")).unwrap(),
+            b"b-new"
+        );
+    }
+
+    // ── Preview-download progress ────────────────────────────────────────
+
+    #[test]
+    fn preview_download_handle_creates_row_and_completes() {
+        let ctrl = OpsController::new();
+        let handle =
+            ctrl.start_preview_download("readme.txt", "sftp://user@host/pub/readme.txt", 1_024_000);
+        // Row should exist immediately (start_preview_download is
+        // sync; the bridge thread only handles progress).
+        let rows = ctrl.rows_snapshot();
+        let row = rows
+            .iter()
+            .find(|r| r.id == handle.id)
+            .expect("preview row present");
+        assert!(row.title.starts_with("Downloading"));
+        assert!(!row.is_terminal);
+        assert_eq!(row.bytes_total_raw, 1_024_000);
+
+        // Push a progress event and drop the sender so the bridge exits.
+        handle
+            .progress_tx
+            .send(atlas_remote::StreamProgress {
+                bytes_transferred: 512_000,
+                total_bytes: Some(1_024_000),
+            })
+            .expect("progress send");
+        wait(120);
+        let row = ctrl
+            .rows_snapshot()
+            .into_iter()
+            .find(|r| r.id == handle.id)
+            .expect("preview row still present");
+        assert!(
+            row.bytes_done_raw >= 512_000,
+            "progress must land on the row"
+        );
+
+        handle.complete();
+        wait(50);
+        let row = ctrl
+            .rows_snapshot()
+            .into_iter()
+            .find(|r| r.id == handle.id)
+            .expect("row present");
+        assert!(row.is_terminal);
+        assert!(!row.is_error);
+        assert_eq!(row.status, "Done");
+    }
+
+    #[test]
+    fn preview_download_cancel_flag_is_observed_by_caller() {
+        let ctrl = OpsController::new();
+        let handle = ctrl.start_preview_download("big.bin", "sftp://host/big.bin", 1_000_000);
+        assert!(!handle.is_cancelled());
+
+        // The panel's per-row cancel button routes through
+        // `OpsController::cancel(id)`; verify it flips the flag
+        // for controller-managed rows without a queue round-trip.
+        ctrl.cancel(handle.id);
+        assert!(
+            handle.is_cancelled(),
+            "cancel must be observable to the caller"
+        );
+        handle.cancelled();
+        wait(30);
+        let rows = ctrl.rows_snapshot();
+        let row = rows.iter().find(|r| r.id == handle.id).expect("row");
+        assert!(row.is_terminal);
+        assert_eq!(row.status, "Cancelled");
+    }
+
+    #[test]
+    fn preview_download_dropped_handle_terminates_row_as_failed() {
+        // Guardrail: if a caller forgets to call complete/fail/cancelled
+        // the Drop impl must not leave a "running" row dangling.
+        let ctrl = OpsController::new();
+        let id = {
+            let handle = ctrl.start_preview_download("orphan.bin", "sftp://host/o.bin", 42);
+            handle.id
+        }; // handle dropped here
+        wait(30);
+        let rows = ctrl.rows_snapshot();
+        let row = rows.iter().find(|r| r.id == id).expect("row present");
+        assert!(row.is_terminal, "drop must terminate the row");
+        assert!(row.is_error, "unresolved drop is a failure");
     }
 }

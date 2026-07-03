@@ -16,6 +16,7 @@ import { RightDockPanel } from "components/right-dock-panel.slint";
 import { OperationProgress } from "components/operation-progress.slint";
 import { BulkRenameModal, RenamePreview } from "components/bulk-rename.slint";
 import { ConnectServerModal, SavedServerRow } from "components/connect-server.slint";
+import { AtlasConflictModal } from "components/conflict-modal.slint";
 import { TabEntry } from "components/tab-bar.slint";
 import { EntryRowItem, ColumnSpec } from "views/details/column.slint";
 import { MillerColData } from "views/miller/miller-state.slint";
@@ -305,6 +306,26 @@ export component AtlasWindow inherits Window {
     in property <float> op-modal-progress: 0.0;
     in property <bool> op-modal-indeterminate: false;
 
+    // ── Conflict-resolution modal (Finder-parity, on ConflictPolicy::Prompt) ──
+    //
+    // Pushed by `OpsController::push_conflict_state` when
+    // `OpEvent::Conflict` fires and the user hasn't opted into
+    // "Apply to all" for this op. Every field is populated from the
+    // controller's `ConflictPrompt`; the modal is purely a view.
+    //
+    // Buttons dispatch:
+    //   `conflict-keep-both` → RenameTo(suffixed)
+    //   `conflict-stop`      → Cancel (bails the whole op)
+    //   `conflict-replace`   → Overwrite
+    // `conflict-apply-to-all-toggle` flips the sticky checkbox.
+    in property <bool> conflict-modal-visible: false;
+    in property <string> conflict-modal-name: "";
+    in property <string> conflict-modal-source: "";
+    in property <string> conflict-modal-dest: "";
+    in property <bool> conflict-modal-source-newer: false;
+    in property <bool> conflict-modal-source-older: false;
+    in-out property <bool> conflict-modal-apply-to-all: false;
+
     // ── Global callbacks ──────────────────────────────────────────────────────
 
     callback palette-query-changed(string);
@@ -410,6 +431,16 @@ export component AtlasWindow inherits Window {
     callback op-modal-cancel();
     /// Modal `Background` — hides the modal, op keeps running in the panel.
     callback op-modal-background();
+
+    // ── Conflict-modal callbacks ──────────────────────────────────────────
+    /// User picked "Keep Both" (non-destructive; RenameTo).
+    callback conflict-keep-both();
+    /// User picked "Stop" (cancels the whole op).
+    callback conflict-stop();
+    /// User picked "Replace" (Overwrite).
+    callback conflict-replace();
+    /// User toggled the "Apply to all remaining conflicts" checkbox.
+    callback conflict-apply-to-all-toggle();
     /// Trigger deletion (to trash) of the current pane's selection.
     callback fs-delete();
     /// Trigger rename of the focused entry (F2 by default).
@@ -773,7 +804,7 @@ export component AtlasWindow inherits Window {
         // as soon as the last modal/right-dock panel closes (Slint's
         // `changed` handler only works on properties in the current element,
         // so we mirror the root properties into a local one first).
-        property <bool> any-modal-visible: root.palette-visible || root.bulk-rename-visible || root.op-modal-visible || root.connect-modal-visible;
+        property <bool> any-modal-visible: root.palette-visible || root.bulk-rename-visible || root.op-modal-visible || root.connect-modal-visible || root.conflict-modal-visible;
         property <bool> any-overlay-visible: any-modal-visible || root.right-dock-visible;
         changed any-overlay-visible => {
             if !any-overlay-visible { self.focus(); }
@@ -825,6 +856,7 @@ export component AtlasWindow inherits Window {
             // user bound to `escape` globally.
             if event.text == Key.Escape {
                 if is-dragging          { root.drag-cancel();          return accept; }
+                if conflict-modal-visible { root.conflict-stop();      return accept; }
                 if palette-visible      { root.palette-dismiss();      return accept; }
                 if bulk-rename-visible  { root.bulk-rename-cancel();   return accept; }
                 if connect-modal-visible{ root.connect-cancel();       return accept; }
@@ -832,7 +864,14 @@ export component AtlasWindow inherits Window {
             }
 
             // Enter defaults to "Background" for the progress modal so a
-            // reflex Return keystroke never cancels an in-flight op.
+            // reflex Return keystroke never cancels an in-flight op. The
+            // conflict modal follows Finder: Return activates the safe
+            // default (Stop) — the primary CTA — protecting the user
+            // from an accidental Replace on the primary keystroke.
+            if conflict-modal-visible && (event.text == Key.Return || event.text == "\n") {
+                root.conflict-stop();
+                return accept;
+            }
             if op-modal-visible && (event.text == Key.Return || event.text == "\n") {
                 root.op-modal-background();
                 return accept;
@@ -1150,6 +1189,29 @@ export component AtlasWindow inherits Window {
             indeterminate: root.op-modal-indeterminate;
             cancel => { root.op-modal-cancel(); }
             send-to-background => { root.op-modal-background(); }
+        }
+
+        // Finder-parity conflict modal — surfaces on
+        // `OpEvent::Conflict` when the op ran under
+        // `ConflictPolicy::Prompt` and the "Apply to all" cache
+        // doesn't already have a decision for it. See
+        // `ops::controller::OpsController::record_conflict`.
+        AtlasConflictModal {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            visible-modal: root.conflict-modal-visible;
+            item-name: root.conflict-modal-name;
+            source-display: root.conflict-modal-source;
+            dest-display: root.conflict-modal-dest;
+            source-is-newer: root.conflict-modal-source-newer;
+            source-is-older: root.conflict-modal-source-older;
+            apply-to-all <=> root.conflict-modal-apply-to-all;
+            keep-both => { root.conflict-keep-both(); }
+            stop => { root.conflict-stop(); }
+            replace => { root.conflict-replace(); }
+            toggle-apply-to-all => { root.conflict-apply-to-all-toggle(); }
         }
 
         CommandPalette {

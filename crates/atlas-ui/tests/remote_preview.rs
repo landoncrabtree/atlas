@@ -326,3 +326,96 @@ fn large_file_preview_streams_via_stream_copy() -> Result<()> {
     assert_eq!(on_disk, payload, "streamed cache line bytes must match");
     Ok(())
 }
+
+/// A large preview download attached to an `OpsController` must
+/// surface as an ops-panel row with visible progress and a terminal
+/// "Done" state on completion. A cache hit on the second open must
+/// NOT emit a new row — the cache-hit fast path stays instant.
+#[test]
+fn large_preview_download_emits_ops_row_and_terminates() -> Result<()> {
+    skip_if_no_python!();
+    let server = MockSftpServer::start_anon()?;
+    // Payload above the streaming threshold so we go through
+    // stream_copy → progress bridge → ops row.
+    let payload_len = 128 * 1024_usize;
+    let payload: Vec<u8> = (0..payload_len)
+        .map(|i| (i as u8).wrapping_mul(29))
+        .collect();
+    std::fs::write(server.root_dir().join("bench.bin"), &payload)?;
+
+    let tmp = TempDir::new()?;
+    let opener = Arc::new(RecordingOpener::default());
+    let cfg = RemotePreview {
+        cache_dir: Some(tmp.path().to_path_buf()),
+        max_bytes: 10_000_000,
+        max_age_secs: 86_400,
+        max_open_bytes: 10_000_000,
+        // Force streaming for any file ≥ 1 KiB.
+        stream_threshold_bytes: 1_024,
+        stream_chunk_bytes: 4_096,
+        write_back_enabled: false,
+        write_back_debounce_ms: 500,
+    };
+    let cache = PreviewCache::with_opener(cfg, opener.clone());
+
+    // Attach an OpsController so preview surfaces a row.
+    let ops = atlas_ui::ops::OpsController::new();
+    cache.attach_ops_controller(Arc::downgrade(&ops));
+
+    let entry = Entry {
+        name: "bench.bin".into(),
+        path: PathBuf::from("bench.bin"),
+        kind: EntryKind::File,
+        metadata: Metadata {
+            size: payload_len as u64,
+            ..Metadata::default()
+        },
+    };
+    let mut file_uri = server.uri("anon");
+    file_uri.path = "/bench.bin".into();
+
+    // First activate — should download AND emit a "Downloading …" row.
+    let outcome = cache.open_remote_file(file_uri.clone(), BackendKind::Sftp, entry.clone());
+    match outcome {
+        PreviewOutcome::Downloading => {}
+        other => panic!("expected Downloading first time, got {other:?}"),
+    }
+    let start = std::time::Instant::now();
+    let mut saw_row = false;
+    let mut terminated = false;
+    while start.elapsed() < Duration::from_secs(15) {
+        let rows = ops.rows_snapshot();
+        let preview_row = rows.iter().find(|r| r.title.starts_with("Downloading"));
+        if let Some(row) = preview_row {
+            saw_row = true;
+            if row.is_terminal {
+                terminated = true;
+                assert!(!row.is_error, "preview row must not be a failure");
+                assert_eq!(row.status, "Done");
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(saw_row, "expected a 'Downloading' row while streaming");
+    assert!(
+        terminated,
+        "expected the download row to reach a terminal state"
+    );
+
+    // Cache-hit second open — MUST NOT add another row.
+    let rows_before_hit = ops.rows_snapshot().len();
+    let outcome = cache.open_remote_file(file_uri, BackendKind::Sftp, entry);
+    match outcome {
+        PreviewOutcome::CachedOpen(_) => {}
+        other => panic!("expected CachedOpen on second activate, got {other:?}"),
+    }
+    // Small sleep so any spurious row would have shown up by now.
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        ops.rows_snapshot().len(),
+        rows_before_hit,
+        "cache hit must be silent — no new ops row"
+    );
+    Ok(())
+}

@@ -1,0 +1,192 @@
+import { Theme } from "../theme.slint";
+import {
+    AtlasModal, AtlasPrimaryButton, AtlasSecondaryButton,
+} from "atlas-controls.slint";
+
+// Finder-parity conflict prompt shown when Copy/Move hits a colliding
+// destination under `ConflictPolicy::Prompt`.
+//
+// Design refs (design.instructions.md):
+// - "Modal depth" — reuses `AtlasModal` (12 px radius, modal-scrim,
+//   soft drop-shadow). No nested boxes.
+// - "Restrained accent" — the safe default (Stop) is the single
+//   `AtlasPrimaryButton`; Keep Both / Replace stay neutral. Replace
+//   is destructive but Finder styles it neutral, not accented.
+// - "Sentence-case labels" — no all-caps titles.
+//
+// Chord routing (ui-composition.instructions.md §5):
+// - The modal owns no TextInput, so it doesn't need the
+//   `input-focused` bubble. Escape and Enter are handled by the root
+//   FocusScope: Escape maps to Stop, Enter activates whatever button
+//   is emphasised (primary = Stop).
+export component AtlasConflictModal inherits Rectangle {
+    // ── inputs ────────────────────────────────────────────────────────────
+    in property <bool> visible-modal: false;
+    /// File name in question (`README.md`).
+    in property <string> item-name: "";
+    /// Full source path/URI. Used by the second paragraph hint.
+    in property <string> source-display: "";
+    /// Full destination path/URI. Used by the second paragraph hint.
+    in property <string> dest-display: "";
+    /// True when the source file mtime is newer than the dest mtime.
+    in property <bool> source-is-newer: false;
+    /// True when the source file mtime is older than the dest mtime.
+    /// Only one of `source-is-newer` / `source-is-older` can be true;
+    /// both false → neutral Finder phrasing.
+    in property <bool> source-is-older: false;
+    /// User-facing "apply to all" preference. The modal owns display;
+    /// Rust owns the persistent flag.
+    in-out property <bool> apply-to-all: false;
+    // Internal derived property — kept at component root so the `if`
+    // guard below can reference it (Slint disallows `property` inside
+    // a nested layout).
+    property <bool> apply-to-all-visible: true;
+
+    // ── outputs ───────────────────────────────────────────────────────────
+    callback keep-both();
+    callback stop();
+    callback replace();
+    callback toggle-apply-to-all();
+
+    width: 100%;
+    height: 100%;
+
+    // Finder text mapping:
+    //   source newer than dest → "…replace it with the newer one you're copying?"
+    //   source older than dest → "A newer item named 'X' already exists in this location.
+    //                              Do you want to replace it with the older one you're copying?"
+    //   neither known          → "…replace it with the item you're copying?"
+    property <string> primary-line:
+        root.source-is-older
+            ? "A newer item named \"" + root.item-name + "\" already exists in this location."
+            : "An item named \"" + root.item-name + "\" already exists in this location.";
+    property <string> secondary-line:
+        root.source-is-newer
+            ? "Do you want to replace it with the newer one you're copying?"
+            : root.source-is-older
+                ? "Do you want to replace it with the older one you're copying?"
+                : "Do you want to replace it with the item you're copying?";
+
+    AtlasModal {
+        width: 100%;
+        height: 100%;
+        visible-modal: root.visible-modal;
+        title: "";
+        // Modal sheet width slightly narrower than the palette (560)
+        // and matching Finder's compact confirmation sheet.
+        modal-width: 460px;
+        // Height grows with the "Apply to all" affordance; keeps the
+        // sheet compact for the common no-apply-to-all case.
+        modal-height: root.apply-to-all-visible ? 232px : 202px;
+        dismissed => { root.stop(); }
+
+        // ── body copy ──────────────────────────────────────────────────
+        VerticalLayout {
+            spacing: Theme.space-2;
+
+            // Primary line: `title` style (15px semibold) per the design
+            // token scale. Wraps for long file names.
+            Text {
+                text: root.primary-line;
+                color: Theme.fg;
+                font-size: Theme.modal-title-size;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+
+            // Secondary line: `body` style (13px regular). Muted so the
+            // primary question doesn't compete with the buttons below.
+            Text {
+                text: root.secondary-line;
+                color: Theme.fg;
+                font-size: Theme.font-size;
+                wrap: word-wrap;
+            }
+        }
+
+        // ── "Apply to all" toggle (progressive-disclosure hint) ────────
+        // Follows the design guideline "Show what the user needs; hide
+        // the rest until asked" — the toggle only appears if there are
+        // (or might be) more conflicts to come. For MVP we show it
+        // unconditionally so bulk copies can opt out of re-prompting.
+        if root.apply-to-all-visible : Rectangle {
+            height: 22px;
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                alignment: start;
+
+                // 14 px check-box (neutral segmented style, no accent
+                // flood) — matches the palette's neutral-selected
+                // segmented control convention.
+                Rectangle {
+                    width: 14px;
+                    height: 14px;
+                    y: (parent.height - self.height) / 2;
+                    border-width: 1px;
+                    border-color: Theme.field-border;
+                    border-radius: 3px;
+                    background: root.apply-to-all
+                        ? Theme.segmented-selected-bg
+                        : Theme.field-bg;
+
+                    if root.apply-to-all : Text {
+                        text: "✓";
+                        color: Theme.fg;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+
+                    TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        clicked => { root.toggle-apply-to-all(); }
+                    }
+                }
+                Text {
+                    text: "Apply to all remaining conflicts";
+                    color: Theme.fg-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    TouchArea {
+                        clicked => { root.toggle-apply-to-all(); }
+                    }
+                }
+            }
+        }
+
+        // ── button row ─────────────────────────────────────────────────
+        //
+        // Order (left → right): Keep Both · Stop · Replace.
+        //
+        // Stop is the primary (single accent CTA in the modal) because
+        // it is the safe default: taking no destructive action while
+        // stopping the whole operation. Keep Both and Replace stay
+        // neutral per design.instructions.md's "Restrained accent"
+        // rule — Replace is destructive but Finder never emphasises
+        // it, and neither do we.
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            alignment: end;
+
+            AtlasSecondaryButton {
+                button-width: 100px;
+                text: "Keep Both";
+                clicked => { root.keep-both(); }
+            }
+            AtlasPrimaryButton {
+                button-width: 84px;
+                text: "Stop";
+                clicked => { root.stop(); }
+            }
+            AtlasSecondaryButton {
+                button-width: 96px;
+                text: "Replace";
+                clicked => { root.replace(); }
+            }
+        }
+    }
+}

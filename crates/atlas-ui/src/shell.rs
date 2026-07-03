@@ -944,6 +944,11 @@ impl AppShell {
         connect.attach_window(window.as_weak());
         let clipboard = crate::clipboard::ClipboardController::new(Arc::clone(&ops));
         let preview = crate::remote::PreviewCache::new(atlas_config::RemotePreview::default());
+        // Attach the ops controller so large preview downloads
+        // surface as ops-panel rows with progress + cancel. Small
+        // downloads (< stream_threshold_bytes) never enter the
+        // streaming branch, so the fast path stays instant.
+        preview.attach_ops_controller(Arc::downgrade(&ops));
 
         // Construct the shell cyclically so controllers can hold a weak
         // reference to it (used to route publish_* calls back into the cache).
@@ -4164,6 +4169,57 @@ impl AppShell {
             let ops = Arc::clone(&self.ops);
             window.on_op_modal_background(move || {
                 ops.background_current_foreground();
+            });
+        }
+        // ── Conflict modal wiring ─────────────────────────────────────────────
+        //
+        // OpsController::record_conflict enqueues a pending conflict and
+        // pushes state via `push_conflict_state`. The buttons below deliver
+        // the user's decision via semantic wrappers that translate to
+        // `ConflictDecision` (computing a fresh rename candidate for
+        // Keep Both); `resolve_current_conflict` internally unblocks the
+        // ops worker and (optionally) caches the decision keyed by op id
+        // so subsequent conflicts short-circuit.
+        {
+            let ops = Arc::clone(&self.ops);
+            let window_weak = window.as_weak();
+            window.on_conflict_keep_both(move || {
+                let apply_to_all = window_weak
+                    .upgrade()
+                    .map(|w| w.get_conflict_modal_apply_to_all())
+                    .unwrap_or(false);
+                ops.conflict_keep_both(apply_to_all);
+            });
+        }
+        {
+            let ops = Arc::clone(&self.ops);
+            let window_weak = window.as_weak();
+            window.on_conflict_stop(move || {
+                let apply_to_all = window_weak
+                    .upgrade()
+                    .map(|w| w.get_conflict_modal_apply_to_all())
+                    .unwrap_or(false);
+                ops.conflict_stop(apply_to_all);
+            });
+        }
+        {
+            let ops = Arc::clone(&self.ops);
+            let window_weak = window.as_weak();
+            window.on_conflict_replace(move || {
+                let apply_to_all = window_weak
+                    .upgrade()
+                    .map(|w| w.get_conflict_modal_apply_to_all())
+                    .unwrap_or(false);
+                ops.conflict_replace(apply_to_all);
+            });
+        }
+        {
+            let window_weak = window.as_weak();
+            window.on_conflict_apply_to_all_toggle(move || {
+                if let Some(win) = window_weak.upgrade() {
+                    let now = !win.get_conflict_modal_apply_to_all();
+                    win.set_conflict_modal_apply_to_all(now);
+                }
             });
         }
 

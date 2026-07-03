@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use atlas_core::{AtlasError, Location, Result as AtlasResult};
 
-use crate::conflict::ConflictPolicy;
+use crate::conflict::{emit_prompt, resolve_conflict_async, ConflictDecision, ConflictPolicy};
 use crate::op::{OpEvent, OpId, OpKind, Operation};
 use crate::primitives::copy::{copy_items, count_path};
 use crate::primitives::delete::delete_paths;
@@ -41,7 +41,7 @@ use crate::remote::{
     self, copy_local_file_to_remote, copy_local_tree_to_remote, copy_remote_file_to_local,
     copy_remote_file_to_remote, copy_remote_tree_to_local, copy_remote_tree_to_remote, count_local,
     count_remote, delete_remote, emit_initial_progress, mkdir_remote, open_remote, rename_remote,
-    RemoteCounts,
+    RemoteCounts, RemoteHandle,
 };
 use crate::undo::UndoEntry;
 
@@ -150,10 +150,8 @@ async fn execute_copy(
 
     // Seed progress totals with an upfront enumeration.
     let mut totals = RemoteCounts::default();
-    let mut per_source_totals = Vec::with_capacity(sources.len());
     for source in &sources {
         let counts = count_source(source).await?;
-        per_source_totals.push(counts);
         totals.items = totals.items.saturating_add(counts.items);
         totals.bytes = totals.bytes.saturating_add(counts.bytes);
     }
@@ -176,8 +174,6 @@ async fn execute_copy(
             .map_err(|source| AtlasError::io(Some(local.to_path_buf()), source))?;
     }
 
-    let _ = policy; // Cross-backend conflict handling currently resolves to overwrite.
-
     for source in sources.iter() {
         let file_name = source.file_name().ok_or_else(|| {
             AtlasError::InvalidPath(format!(
@@ -186,7 +182,7 @@ async fn execute_copy(
             ))
         })?;
         let target = dest_dir.join(&file_name);
-        copy_single(id, source, &target, &flags, &event_tx, &op_arc).await?;
+        copy_single(id, source, &target, policy, &flags, &event_tx, &op_arc).await?;
     }
     Ok(())
 }
@@ -201,10 +197,12 @@ async fn count_source(source: &Location) -> AtlasResult<RemoteCounts> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn copy_single(
     id: OpId,
     source: &Location,
     target: &Location,
+    policy: ConflictPolicy,
     flags: &Arc<AtomicU8>,
     event_tx: &crossbeam_channel::Sender<OpEvent>,
     op_arc: &Arc<parking_lot::Mutex<Operation>>,
@@ -212,7 +210,11 @@ async fn copy_single(
     match (source, target) {
         (Location::Local(src_path), Location::Local(dst_path)) => {
             // Delegate back to the local primitive for full parity
-            // (permissions, symlinks, per-item conflict prompts).
+            // (permissions, symlinks, per-item conflict prompts). The
+            // primitive's own dispatch will re-check destination
+            // existence against `policy`, so we pass it through
+            // verbatim rather than hardcoding Overwrite as prior code
+            // did.
             let src_owned = src_path.clone();
             let dst_owned = dst_path.clone();
             let event_tx = event_tx.clone();
@@ -225,7 +227,7 @@ async fn copy_single(
                     dst_owned
                         .parent()
                         .unwrap_or_else(|| std::path::Path::new("/")),
-                    ConflictPolicy::Overwrite,
+                    policy,
                     &flags,
                     &event_tx,
                     &op_arc,
@@ -237,17 +239,43 @@ async fn copy_single(
         }
         (Location::Local(src_path), Location::Remote(_, _)) => {
             let dst_handle = open_remote(target).await?;
+            let final_dst_path = match resolve_remote_dst_conflict(
+                id,
+                source,
+                target,
+                &dst_handle,
+                policy,
+                event_tx,
+            )
+            .await?
+            {
+                ResolvedDst::Skip => {
+                    record_skipped(source, op_arc);
+                    return Ok(());
+                }
+                ResolvedDst::Cancel => return Err(AtlasError::Cancelled),
+                ResolvedDst::Write(path) => path,
+            };
             let meta = tokio::fs::metadata(src_path)
                 .await
                 .map_err(|source| AtlasError::io(Some(src_path.clone()), source))?;
             if meta.is_dir() {
-                copy_local_tree_to_remote(id, src_path, &dst_handle, event_tx, op_arc, flags).await
+                copy_local_tree_to_remote(
+                    id,
+                    src_path,
+                    &dst_handle,
+                    &final_dst_path,
+                    event_tx,
+                    op_arc,
+                    flags,
+                )
+                .await
             } else {
                 copy_local_file_to_remote(
                     id,
                     src_path,
                     &dst_handle,
-                    &dst_handle.root,
+                    &final_dst_path,
                     event_tx,
                     op_arc,
                     flags,
@@ -259,19 +287,30 @@ async fn copy_single(
         }
         (Location::Remote(_, _), Location::Local(dst_path)) => {
             let src_handle = open_remote(source).await?;
+            let final_dst_path =
+                match resolve_local_dst_conflict(id, source, target, policy, event_tx).await? {
+                    ResolvedLocalDst::Skip => {
+                        record_skipped(source, op_arc);
+                        return Ok(());
+                    }
+                    ResolvedLocalDst::Cancel => return Err(AtlasError::Cancelled),
+                    ResolvedLocalDst::Write(path) => path,
+                };
             let stat = src_handle
                 .vm
                 .stat(&src_handle.root)
                 .await
                 .map_err(|err| remote::translate_remote_error(&src_handle.display, err))?;
+            let _ = dst_path;
             if matches!(stat.mode(), atlas_remote::RemoteMode::Dir) {
-                copy_remote_tree_to_local(id, &src_handle, dst_path, event_tx, op_arc, flags).await
+                copy_remote_tree_to_local(id, &src_handle, &final_dst_path, event_tx, op_arc, flags)
+                    .await
             } else {
                 copy_remote_file_to_local(
                     id,
                     &src_handle,
                     &src_handle.root,
-                    dst_path,
+                    &final_dst_path,
                     Some(stat.content_length()),
                     event_tx,
                     op_arc,
@@ -285,21 +324,46 @@ async fn copy_single(
         (Location::Remote(_, _), Location::Remote(_, _)) => {
             let src_handle = open_remote(source).await?;
             let dst_handle = open_remote(target).await?;
+            let final_dst_path = match resolve_remote_dst_conflict(
+                id,
+                source,
+                target,
+                &dst_handle,
+                policy,
+                event_tx,
+            )
+            .await?
+            {
+                ResolvedDst::Skip => {
+                    record_skipped(source, op_arc);
+                    return Ok(());
+                }
+                ResolvedDst::Cancel => return Err(AtlasError::Cancelled),
+                ResolvedDst::Write(path) => path,
+            };
             let stat = src_handle
                 .vm
                 .stat(&src_handle.root)
                 .await
                 .map_err(|err| remote::translate_remote_error(&src_handle.display, err))?;
             if matches!(stat.mode(), atlas_remote::RemoteMode::Dir) {
-                copy_remote_tree_to_remote(id, &src_handle, &dst_handle, event_tx, op_arc, flags)
-                    .await
+                copy_remote_tree_to_remote(
+                    id,
+                    &src_handle,
+                    &dst_handle,
+                    &final_dst_path,
+                    event_tx,
+                    op_arc,
+                    flags,
+                )
+                .await
             } else {
                 copy_remote_file_to_remote(
                     id,
                     &src_handle,
                     &src_handle.root,
                     &dst_handle,
-                    &dst_handle.root,
+                    &final_dst_path,
                     Some(stat.content_length()),
                     event_tx,
                     op_arc,
@@ -310,6 +374,228 @@ async fn copy_single(
                 Ok(())
             }
         }
+    }
+}
+
+/// Resolution outcome for a cross-backend destination on a remote
+/// backend. `Write(path)` carries the remote path (URI path portion)
+/// the caller should write to — either the original destination or a
+/// renamed sibling.
+enum ResolvedDst {
+    Skip,
+    Write(String),
+    Cancel,
+}
+
+/// Resolution outcome for a cross-backend destination on the local
+/// filesystem.
+enum ResolvedLocalDst {
+    Skip,
+    Write(std::path::PathBuf),
+    Cancel,
+}
+
+/// Probe the remote destination and translate `policy` into a
+/// concrete write path. Returns `Cancel` when the user picked "Stop"
+/// via the prompt flow — the caller propagates that as
+/// [`AtlasError::Cancelled`] so the queue emits `OpEvent::Cancelled`.
+async fn resolve_remote_dst_conflict(
+    id: OpId,
+    source: &Location,
+    target: &Location,
+    dst_handle: &RemoteHandle,
+    policy: ConflictPolicy,
+    event_tx: &crossbeam_channel::Sender<OpEvent>,
+) -> AtlasResult<ResolvedDst> {
+    let dst_path = dst_handle.root.clone();
+    if !remote_path_exists(dst_handle, &dst_path).await {
+        return Ok(ResolvedDst::Write(dst_path));
+    }
+    let (source_display, dest_display) = display_paths(source, target);
+    let decision = match policy {
+        ConflictPolicy::Skip => ConflictDecision::Skip,
+        ConflictPolicy::Overwrite => ConflictDecision::Overwrite,
+        ConflictPolicy::RenameWithSuffix => {
+            ConflictDecision::RenameTo(rename_with_suffix_remote(dst_handle, &dst_path).await?)
+        }
+        ConflictPolicy::Prompt => {
+            let rx = emit_prompt(id, source_display.clone(), dest_display.clone(), event_tx)?;
+            tokio::task::spawn_blocking(move || rx.recv())
+                .await
+                .map_err(|err| AtlasError::Other(anyhow::anyhow!(err)))?
+                .map_err(|err| AtlasError::Other(anyhow::anyhow!(err)))?
+        }
+    };
+    Ok(match decision {
+        ConflictDecision::Skip => ResolvedDst::Skip,
+        ConflictDecision::Overwrite => ResolvedDst::Write(dst_path),
+        ConflictDecision::Cancel => ResolvedDst::Cancel,
+        ConflictDecision::RenameTo(path) => {
+            // The prompt path may hand us a PathBuf synthesised from a
+            // local display string. For remote destinations we only
+            // need the basename — join it back onto the remote parent.
+            let renamed = translate_remote_rename(&dst_path, &path)?;
+            ResolvedDst::Write(renamed)
+        }
+    })
+}
+
+/// Probe the local destination and translate `policy` into a
+/// concrete write path.
+async fn resolve_local_dst_conflict(
+    id: OpId,
+    source: &Location,
+    target: &Location,
+    policy: ConflictPolicy,
+    event_tx: &crossbeam_channel::Sender<OpEvent>,
+) -> AtlasResult<ResolvedLocalDst> {
+    let dst_path = target
+        .as_local()
+        .ok_or_else(|| {
+            AtlasError::InvalidPath(format!(
+                "expected local destination, got {}",
+                target.display_path()
+            ))
+        })?
+        .to_path_buf();
+    let exists = {
+        let probe = dst_path.clone();
+        tokio::task::spawn_blocking(move || probe.exists())
+            .await
+            .map_err(|err| AtlasError::Other(anyhow::anyhow!(err)))?
+    };
+    if !exists {
+        return Ok(ResolvedLocalDst::Write(dst_path));
+    }
+    let (source_display, dest_display) = display_paths(source, target);
+    let decision = resolve_conflict_async(
+        id,
+        source_display.clone(),
+        dest_display.clone(),
+        policy,
+        event_tx.clone(),
+    )
+    .await?;
+    Ok(match decision {
+        ConflictDecision::Skip => ResolvedLocalDst::Skip,
+        ConflictDecision::Overwrite => ResolvedLocalDst::Write(dst_path),
+        ConflictDecision::Cancel => ResolvedLocalDst::Cancel,
+        ConflictDecision::RenameTo(path) => ResolvedLocalDst::Write(path),
+    })
+}
+
+/// True when a remote path exists on `dst_handle`. Any error from
+/// `stat()` is treated as "does not exist" — we optimistically assume
+/// the write path is clear. A subsequent hard error on write will
+/// surface as `OpEvent::Failed` with the real cause.
+async fn remote_path_exists(dst_handle: &RemoteHandle, path: &str) -> bool {
+    dst_handle.vm.stat(path).await.is_ok()
+}
+
+/// Generate a fresh non-colliding remote path using the `(copy N)`
+/// suffix pattern. Iterates via `stat()` on the destination backend
+/// until an unused name is found. Bounded by `MAX_RENAME_ATTEMPTS`
+/// to avoid an unbounded loop on a hostile backend.
+async fn rename_with_suffix_remote(
+    dst_handle: &RemoteHandle,
+    dst_path: &str,
+) -> AtlasResult<std::path::PathBuf> {
+    const MAX_RENAME_ATTEMPTS: u32 = 1024;
+    let (parent, name) = split_remote_parent(dst_path)?;
+    let (stem, ext) = split_stem_ext(&name);
+    for index in 1..=MAX_RENAME_ATTEMPTS {
+        let candidate_name = if index == 1 {
+            match ext {
+                Some(e) if !e.is_empty() => format!("{stem} (copy).{e}"),
+                _ => format!("{stem} (copy)"),
+            }
+        } else {
+            match ext {
+                Some(e) if !e.is_empty() => format!("{stem} (copy {index}).{e}"),
+                _ => format!("{stem} (copy {index})"),
+            }
+        };
+        let candidate = if parent == "/" {
+            format!("/{candidate_name}")
+        } else {
+            format!("{parent}/{candidate_name}")
+        };
+        if !remote_path_exists(dst_handle, &candidate).await {
+            // Encode the remote path as a PathBuf for the callers'
+            // uniform ConflictDecision::RenameTo signature.
+            return Ok(std::path::PathBuf::from(candidate));
+        }
+    }
+    Err(AtlasError::InvalidPath(format!(
+        "no available remote rename suffix within {MAX_RENAME_ATTEMPTS} tries for {dst_path}"
+    )))
+}
+
+fn split_remote_parent(path: &str) -> AtlasResult<(String, String)> {
+    let trimmed = path.trim_end_matches('/');
+    let idx = trimmed
+        .rfind('/')
+        .ok_or_else(|| AtlasError::InvalidPath(format!("remote path has no parent: {path}")))?;
+    let parent = if idx == 0 {
+        "/".to_owned()
+    } else {
+        trimmed[..idx].to_owned()
+    };
+    let name = trimmed[idx + 1..].to_owned();
+    if name.is_empty() {
+        return Err(AtlasError::InvalidPath(format!(
+            "remote path has empty basename: {path}"
+        )));
+    }
+    Ok((parent, name))
+}
+
+fn split_stem_ext(name: &str) -> (&str, Option<&str>) {
+    let path = std::path::Path::new(name);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    let ext = path.extension().and_then(|s| s.to_str());
+    (stem, ext)
+}
+
+fn translate_remote_rename(
+    original_remote_path: &str,
+    renamed_pathbuf: &std::path::Path,
+) -> AtlasResult<String> {
+    let basename = renamed_pathbuf
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            AtlasError::InvalidPath(format!(
+                "rename decision has no basename: {}",
+                renamed_pathbuf.display()
+            ))
+        })?;
+    let (parent, _) = split_remote_parent(original_remote_path)?;
+    Ok(if parent == "/" {
+        format!("/{basename}")
+    } else {
+        format!("{parent}/{basename}")
+    })
+}
+
+fn display_paths(source: &Location, target: &Location) -> (std::path::PathBuf, std::path::PathBuf) {
+    (
+        std::path::PathBuf::from(source.display_path()),
+        std::path::PathBuf::from(target.display_path()),
+    )
+}
+
+/// Record that `source` was skipped due to a conflict decision.
+///
+/// Bumps the items-done counter so the ops panel reflects that the
+/// item was accounted for; a per-source skipped-file annotation is a
+/// follow-up.
+fn record_skipped(source: &Location, op_arc: &Arc<parking_lot::Mutex<Operation>>) {
+    tracing::info!(source = %source.display_path(), "cross-backend copy: destination conflict resolved as Skip");
+    let mut op = op_arc.lock();
+    op.progress.items_done = op.progress.items_done.saturating_add(1);
+    if op.progress.items_total < op.progress.items_done {
+        op.progress.items_total = op.progress.items_done;
     }
 }
 
@@ -383,7 +669,6 @@ async fn execute_move(
             .map_err(|source| AtlasError::io(Some(local.to_path_buf()), source))?;
     }
 
-    let _ = policy;
     for source in sources.iter() {
         let file_name = source.file_name().ok_or_else(|| {
             AtlasError::InvalidPath(format!(
@@ -392,7 +677,11 @@ async fn execute_move(
             ))
         })?;
         let target = dest_dir.join(&file_name);
-        // Same-backend move → native rename.
+        // Same-backend move → native rename. This bypasses the
+        // conflict check because backend-level rename semantics
+        // (SFTP rename, S3 rename-as-copy) already return an error
+        // on collision; the Prompt policy only makes sense for the
+        // cross-backend fallback below.
         if source.same_backend_as(&target) && source.is_remote() {
             let src_handle = open_remote(source).await?;
             let dst_handle = open_remote(&target).await?;
@@ -403,8 +692,10 @@ async fn execute_move(
                 op.progress.current_path = Some(std::path::PathBuf::from(source.display_path()));
             }
         } else {
-            // Cross-backend move → copy + delete src.
-            copy_single(id, source, &target, &flags, &event_tx, &op_arc).await?;
+            // Cross-backend move → copy + delete src. The policy is
+            // honoured on the copy leg; if the user picks Skip or
+            // Cancel we never touch the source.
+            copy_single(id, source, &target, policy, &flags, &event_tx, &op_arc).await?;
             delete_single(source, &flags, &op_arc).await?;
         }
     }
