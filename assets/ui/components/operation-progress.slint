@@ -4,7 +4,19 @@ import {
 } from "atlas-controls.slint";
 
 // Small Finder-style progress modal shown while a "foreground" file operation
-// is in flight. Fast ops (<250ms) never surface here — Rust defers promotion.
+// is in flight. Fast ops (<250 ms) never surface here — Rust defers promotion.
+//
+// Layout mirrors Finder's compact copy progress sheet (~440×144 px):
+// icon on the left, title + subtitle stacked to the right, a 4 px
+// NSProgressIndicator-style bar in the middle band, and a right-
+// aligned neutral button pair (Cancel · Background) at the bottom.
+//
+// Design refs (design.instructions.md):
+// - §Operation-progress modal: 420–460 wide, no nested card, both
+//   buttons neutral (neither is a primary CTA on a cancel dialog).
+// - §Modal chrome: `modal-radius` = `radius-xl` (14 px) aligns with
+//   the conflict modal and palette so every sheet reads with the
+//   same corner curvature.
 export component OperationProgress inherits Rectangle {
     in property <bool> visible-modal: false;
     in property <string> icon-glyph: "";
@@ -25,18 +37,27 @@ export component OperationProgress inherits Rectangle {
         height: 100%;
         visible-modal: root.visible-modal;
         title: "";
-        modal-width: 420px;
+        // 440 px wide keeps the sheet compact while giving the title
+        // room to elide gracefully on 40-char file names. 148 px tall
+        // fits the icon row + progress bar + button row without any
+        // ad-hoc padding.
+        modal-width: 440px;
         modal-height: 148px;
         dismissed => { root.send-to-background(); }
 
+        // ── icon + title row ────────────────────────────────────────────
         HorizontalLayout {
             spacing: Theme.space-3;
             alignment: start;
 
+            // Op glyph — filled by Rust with a Nerd Font PUA codepoint
+            // (copy/move/trash). Rendered with the icon font family so
+            // it doesn't tofu on the user's default body font.
             Text {
                 text: root.icon-glyph;
-                color: Theme.fg;
-                font-size: 21px;
+                font-family: Theme.icon-font-family;
+                color: Theme.fg-muted;
+                font-size: 22px;
                 vertical-alignment: center;
                 width: 28px;
                 horizontal-alignment: center;
@@ -47,23 +68,31 @@ export component OperationProgress inherits Rectangle {
                 spacing: 2px;
                 alignment: center;
 
+                // Title — `body_emphasis` weight (500) so it reads as
+                // active without being heavy. 13 px matches the body
+                // scale; the Finder progress sheet uses ~13 pt system
+                // regular, so the emphasis here nudges hierarchy over
+                // the muted subtitle beneath.
                 Text {
                     text: root.title-text;
                     color: Theme.fg;
-                    font-size: Theme.modal-title-size;
-                    font-weight: 600;
+                    font-size: Theme.font-size;
+                    font-weight: 500;
                     overflow: elide;
                 }
 
+                // Subtitle — `caption` (11 px, fg-muted). The file
+                // counter or per-file summary lives here.
                 Text {
                     text: root.subtitle-text;
                     color: Theme.fg-muted;
-                    font-size: 12px;
+                    font-size: 11px;
                     overflow: elide;
                 }
             }
         }
 
+        // ── progress bar + detail line ──────────────────────────────────
         VerticalLayout {
             spacing: Theme.space-1;
 
@@ -80,18 +109,24 @@ export component OperationProgress inherits Rectangle {
             }
         }
 
+        // ── button row ──────────────────────────────────────────────────
+        //
+        // Both actions are neutral per design.instructions.md §Operation-
+        // progress modal — a cancel/background dialog has no single
+        // truly-primary action, so accent color stays reserved for the
+        // progress-bar fill above.
         HorizontalLayout {
             spacing: Theme.space-2;
             alignment: end;
 
             AtlasSecondaryButton {
-                button-width: 92px;
+                button-width: 88px;
                 text: "Cancel";
                 clicked => { root.cancel(); }
             }
 
             AtlasSecondaryButton {
-                button-width: 112px;
+                button-width: 108px;
                 text: "Background";
                 clicked => { root.send-to-background(); }
             }
