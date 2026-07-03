@@ -162,10 +162,8 @@ jobs:
         with:
           key: perf-check
       - name: Run criterion benches with a short sample size
-        # Criterion 0.5's default runner accepts `--sample-size`, not
-        # `--profile-time`. Keep this informational job short enough to
-        # catch large regressions without turning runner variance into a
-        # gating signal.
+        # Keep this informational job short enough to catch large regressions
+        # without turning runner variance into a gating signal.
         run: |
           cargo bench -p atlas-fs --benches -- --sample-size 10
           cargo bench -p atlas-search --benches -- --sample-size 10
