@@ -62,8 +62,8 @@ Animations are **responsive, not showy**. Under 300ms always. Motion serves comp
 Atlas surfaces should read like Sonoma/Sequoia sheets: hierarchy over boxes, compact controls, and one clear default action.
 
 - **Hierarchy over boxes.** Prefer labels, whitespace, list materials, and subtle contrast to stacked rounded rectangles.
-- **Restrained accent.** Use `Theme.accent` for the single primary CTA and active progress fill. Segmented-control selection, saved-server lists, and secondary actions are neutral.
-- **Varied radii.** Modal sheets are 12 px, lists/cards 8 px, buttons 6 px, text fields 5 px. Avoid using one radius everywhere.
+- **Restrained accent.** Use `Theme.accent` for the single primary CTA and active progress fill. Segmented-control selection, saved-server lists, and secondary actions are neutral. **Confirmation modals — replace-item prompts, cancel dialogs — keep every button neutral;** accent color is reserved for actions that are unambiguously "the right one" (Connect, Rename N files, Save). See §Confirmation modals below.
+- **Varied radii.** Modal sheets are `radius-xl` (14 px), lists/cards `radius-md` (8 px), buttons `radius-sm` (6 px), text fields `field-radius` (5 px). Avoid using one radius everywhere.
 - **Compact controls.** Text fields, segmented controls, and buttons are 29 px tall unless a platform-specific surface already defines a different height.
 - **Soft borders.** Field/list borders are semantic aliases around ~15–20% contrast; focus uses a stronger neutral border, not an accent outline.
 - **Sentence-case labels.** Form labels are `Backend`, `Host`, `Authentication` — 12 px semibold, muted. Do not use bold caps for form labels.
@@ -108,10 +108,10 @@ Defined in `assets/ui/theme.slint` as derived `out property` values.
 
 | Token | Value / source | Use |
 |---|---|---|
-| `modal-scrim` | `#0000005c` | Modal backdrop, ~36% dim |
+| `modal-scrim` | `#00000066` | Modal backdrop, ~40% dim |
 | `modal-bg` | `panel-bg-elevated` | Sheet surface |
 | `modal-border` | `border.with-alpha(0.72)` | Soft sheet edge |
-| `modal-radius` | `12px` | Modal sheet corners |
+| `modal-radius` | `radius-xl` (14 px) | Modal sheet corners |
 | `modal-shadow-blur` / `modal-shadow-y` | `40px` / `10px` | Soft sheet lift |
 | `control-height` | `29px` | Buttons, fields, segmented controls |
 | `field-radius` | `5px` | Text fields |
@@ -160,11 +160,11 @@ Use `space_2` for tight groups, `space_4` for panel padding, `space_6` between s
 | `radius_sm` | 6 | Buttons, inputs, rows |
 | `radius_md` | 8 | Cards, palette items |
 | `radius_lg` | 10 | Modals, tooltips |
-| `radius_xl` | 14 | The window itself if we ever draw it |
+| `radius_xl` | 14 | Modal sheets, palette panel, floating menus |
 
 Never use square corners for interactive elements.
 
-macOS modal/menu aliases intentionally vary radius by role: `modal-radius` 12, `list-radius` 8, `button-radius` 6, `field-radius` 5.
+macOS modal/menu aliases intentionally vary radius by role: `modal-radius` = `radius_xl` (14), `list-radius` 8, `button-radius` 6, `field-radius` 5. Every top-level sheet in Atlas — conflict prompt, operation-progress, palette, connect, bulk-rename — reads with the same soft macOS Sequoia curvature; interior controls keep the smaller varied radii per HIG.
 
 ### Elevation
 
@@ -322,20 +322,34 @@ There is exactly **one** canonical pattern for keyboard routing between modals a
 
 For operations whose foreground duration exceeds ~250 ms (`FOREGROUND_DEFER` in `atlas-ui::ops::controller`), we show a small centered progress modal instead of a status-bar toast:
 
-- Panel: `AtlasModal`, ~420 wide, no nested card.
-- Rows: op summary in `title`, per-file progress in `caption` `fg_muted`.
+- Panel: `AtlasModal`, ~440 wide × 148 tall, no nested card.
+- Icon column: 22 px kind glyph in `Theme.icon-font-family`, muted color — chrome, not accent.
+- Rows: op title in `body_emphasis` (500 weight, 13 px), per-file subtitle in `caption` `fg_muted`.
 - Progress: `AtlasProgressBar`; track is neutral, the bar fill is the only accent region.
-- Buttons: **Cancel** and **Background** both use `AtlasSecondaryButton`; neither is an accent CTA.
+- Buttons: **Cancel** and **Background** both use `AtlasSecondaryButton`; neither is an accent CTA (cancel dialogs have no single truly-primary action).
 - Under 250 ms: no modal at all — a status toast is enough.
+
+### Confirmation modals (replace-item, destructive prompts)
+
+Confirmation modals follow Apple's compact replace-item sheet pattern (see Finder's "An item already exists" prompt as the canonical reference):
+
+- Panel: `AtlasModal`, ~460 wide × ~172 tall (Finder-compact — packs a single-paragraph body next to an icon without ever growing past three lines for typical names).
+- **Horizontal icon + body row.** A 48 px kind glyph (Nerd Font, muted) sits on the left; a warning-triangle badge (`\u{f071}` in `Theme.warning`) is overlaid at the bottom-right to signal "this needs a decision". The body flows to the right as one wrapped sentence in `body` (13 px, 400) — no forced line break between statement and question.
+- **All buttons neutral.** Replace-item and cancel-op dialogs have no single truly-primary action: Stop is the safe default, but Replace and Keep Both are both legitimate. Per §macOS-native modal/menu rules, use `AtlasSecondaryButton` for every action and let the user's read of the sentence pick the right one. Accent color is reserved for actions where "the right choice" is unambiguous (Connect, Rename N files, Save).
+- **Progressive disclosure.** "Apply to all remaining conflicts" (and equivalent batch hints) live at the far left of the button row as a `caption`-weight (11 pt, `fg_muted`) checkbox, visually recessive so they don't compete with the primary decision.
+- **Focus lands on the safe default** (Stop / Cancel). Escape maps to the safe default too.
 
 ### Command palette + goto anywhere
 
-- Overlay: `#000000` at 40% alpha covering the workspace.
-- Panel: `panel_bg_elevated`, `radius_lg`, 560-px wide, centered horizontally, 20% from the top.
-- Prompt input: 44 tall, no border, `title` style. Placeholder in `fg_faint`.
-- Result row: 40 tall, 16-px padding, hover `hover_bg`, selected `accent_soft` background + `accent` left rail (2 px).
-- Result title in `body`, subtitle in `caption` `fg_muted`.
-- Kbd chips (e.g. `⌘⇧P`): mono font, 11 px, `panel_bg` fill, `radius_xs`, 4-px padding.
+Reference: macOS Spotlight (⌘ Space) and Raycast. The palette sits **on** the workspace with a subtle scrim; it is not a dimmed modal cell.
+
+- Overlay: `Theme.modal-scrim` (40 % black) covering the workspace.
+- Panel: `Theme.modal-bg`, `radius-xl` (14 px) — matching every other polish-pass modal — soft `modal-shadow-*` drop, `modal-border` edge, 560 px wide, centered horizontally, 20 % from the top.
+- Input row: 48 px tall, no border. A small `nf-fa-search` (`\u{f002}`) glyph in `fg_faint` anchors the left; query text at 16 px regular. Placeholder in `fg_faint`.
+- Divider: single 1 px hairline in `Theme.border` between input and results — barely visible.
+- Result row: 44 px, 12 px horizontal padding, category glyph column on the left (18 px). Hover fill is `hover_bg`; selected row is `accent_soft` background + 2 px `accent` left rail.
+- Result title in `body` (bumps to `body_emphasis` weight 500 when selected), subtitle in `caption` `fg_muted`.
+- Kbd chips (e.g. `⌘⇧P`): mono font, 11 px, `panel_bg` fill, `radius_xs`, 4 px padding.
 
 ### Connect-server modal (Cmd+K)
 
@@ -349,11 +363,12 @@ For operations whose foreground duration exceeds ~250 ms (`FOREGROUND_DEFER` in 
 
 ### Bulk rename modal
 
-- Same overlay + panel treatment as palette but wider (620) and taller (variable up to 500).
-- Header row: `headline` style title + `caption` count of items.
-- Inputs: standard address-bar treatment.
-- Preview table: same visual grammar as Details. Conflicts row: `error` fg on the "proposed" cell.
-- Confirm button: primary style. Disabled: 40% alpha.
+- Same overlay + panel treatment as palette but wider (620) and taller (variable up to 500). Chrome uses `AtlasModal` (`modal-radius` = `radius-xl`).
+- Header row: 15 px semibold "Rename" title + a muted `body` (12 px, `fg-muted`) items counter on the same line — sentence case, no bold caps.
+- Inputs: `SectionLabel` ("Find", "Replace with") + `AtlasTextField` — 29 px compact fields, soft neutral border, low-contrast placeholder. Escape on either field cancels.
+- Toggle pills (Regex, Case insensitive): `Theme.secondary-button-bg`/`border`; selected state uses the neutral `segmented-selected-bg` fill — no accent flood on toggles.
+- Preview table: wrapped in a neutral list container (`list-bg` / `list-border` / `list-radius`). Same Details-view row grammar; conflict rows tinted with `Theme.error` at low alpha; `is-unchanged` rows dimmed to 45 %.
+- Confirm button: `AtlasPrimaryButton` — this modal has exactly one truly-primary action (commit the rename), which is unambiguous, so accent is correct here. Cancel is `AtlasSecondaryButton`.
 
 ### Ops panel
 

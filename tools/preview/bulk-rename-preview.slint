@@ -1,0 +1,40 @@
+// Preview harness for BulkRenameModal.
+
+import "../../assets/fonts/SymbolsNerdFontMono-Regular.ttf";
+import { BulkRenameModal, RenamePreview } from "../../assets/ui/components/bulk-rename.slint";
+import { Theme } from "../../assets/ui/theme.slint";
+
+export component BulkRenamePreview inherits Window {
+    title: "Atlas bulk rename — preview";
+    width: 1200px;
+    height: 780px;
+    background: Theme.bg;
+
+    Rectangle {
+        x: Theme.space-4; y: Theme.space-4;
+        width: root.width - Theme.space-4 * 2;
+        height: root.height - Theme.space-4 * 2;
+        background: Theme.panel-bg;
+        border-radius: Theme.radius-md;
+    }
+
+    BulkRenameModal {
+        visible-modal: true;
+        pattern: "IMG_";
+        replacement: "vacation-";
+        use-regex: false;
+        case-insensitive: false;
+        conflict-count: 0;
+        change-count: 6;
+        preview-rows: [
+            { original: "IMG_0001.jpg",  proposed: "vacation-0001.jpg", is-conflict: false, is-unchanged: false },
+            { original: "IMG_0002.jpg",  proposed: "vacation-0002.jpg", is-conflict: false, is-unchanged: false },
+            { original: "IMG_0003.png",  proposed: "vacation-0003.png", is-conflict: false, is-unchanged: false },
+            { original: "IMG_0004.heic", proposed: "vacation-0004.heic", is-conflict: false, is-unchanged: false },
+            { original: "sunset.jpg",    proposed: "sunset.jpg",         is-conflict: false, is-unchanged: true  },
+            { original: "IMG_0005.raw",  proposed: "vacation-0005.raw",  is-conflict: false, is-unchanged: false },
+            { original: "IMG_0006.jpg",  proposed: "vacation-0006.jpg",  is-conflict: false, is-unchanged: false },
+            { original: "IMG_0007.jpg",  proposed: "vacation-0007.jpg",  is-conflict: false, is-unchanged: false },
+        ];
+    }
+}

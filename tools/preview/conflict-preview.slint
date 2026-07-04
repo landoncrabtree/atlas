@@ -1,0 +1,57 @@
+// Preview harness for AtlasConflictModal. Renders the modal in its
+// two variants (source-newer, source-older) so we can capture visual
+// proof without launching the full Atlas app.
+//
+// Usage:
+//   slint-viewer tools/preview/conflict-preview.slint
+//
+// The pane behind the modal renders a plausible workspace backdrop so
+// the sheet reads at its real visual weight (scrim + shadow visible).
+
+import "../../assets/fonts/SymbolsNerdFontMono-Regular.ttf";
+import { AtlasConflictModal } from "../../assets/ui/components/conflict-modal.slint";
+import { Theme } from "../../assets/ui/theme.slint";
+
+export component ConflictPreview inherits Window {
+    in property <bool> source-is-older: false;
+    title: "Atlas conflict modal — preview";
+    width: 1200px;
+    height: 780px;
+    background: Theme.bg;
+
+    // Simulated workspace behind the modal so the scrim + shadow read.
+    Rectangle {
+        x: Theme.space-4; y: Theme.space-4;
+        width: root.width - Theme.space-4 * 2;
+        height: root.height - Theme.space-4 * 2;
+        background: Theme.panel-bg;
+        border-radius: Theme.radius-md;
+
+        for row[i] in [
+            "README.md", "Cargo.toml", "src", "tests", "docs",
+            "assets", "target", ".gitignore", "LICENSE"
+        ] : Rectangle {
+            y: i * 32px + Theme.space-4;
+            x: Theme.space-4;
+            width: 400px;
+            height: 30px;
+            Text {
+                text: row;
+                color: Theme.fg;
+                font-size: 13px;
+                vertical-alignment: center;
+                x: Theme.space-3;
+            }
+        }
+    }
+
+    AtlasConflictModal {
+        visible-modal: true;
+        item-name: "README.md";
+        source-display: "/Users/me/atlas/README.md";
+        dest-display: "/Users/me/mirror/README.md";
+        source-is-newer: !root.source-is-older;
+        source-is-older: root.source-is-older;
+        apply-to-all: false;
+    }
+}

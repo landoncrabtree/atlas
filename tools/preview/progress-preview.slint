@@ -1,0 +1,49 @@
+// Preview harness for OperationProgress. Renders the modal with a
+// plausible workspace backdrop so scrim + shadow read at their real
+// visual weight.
+
+import "../../assets/fonts/SymbolsNerdFontMono-Regular.ttf";
+import { OperationProgress } from "../../assets/ui/components/operation-progress.slint";
+import { Theme } from "../../assets/ui/theme.slint";
+
+export component ProgressPreview inherits Window {
+    title: "Atlas operation progress — preview";
+    width: 1200px;
+    height: 780px;
+    background: Theme.bg;
+
+    Rectangle {
+        x: Theme.space-4; y: Theme.space-4;
+        width: root.width - Theme.space-4 * 2;
+        height: root.height - Theme.space-4 * 2;
+        background: Theme.panel-bg;
+        border-radius: Theme.radius-md;
+
+        for row[i] in [
+            "README.md", "Cargo.toml", "src", "tests", "docs",
+            "assets", "target", ".gitignore", "LICENSE"
+        ] : Rectangle {
+            y: i * 32px + Theme.space-4;
+            x: Theme.space-4;
+            width: 400px;
+            height: 30px;
+            Text {
+                text: row;
+                color: Theme.fg;
+                font-size: 13px;
+                vertical-alignment: center;
+                x: Theme.space-3;
+            }
+        }
+    }
+
+    OperationProgress {
+        visible-modal: true;
+        icon-glyph: "\u{f0c5}";
+        title-text: "Copying files to /Users/me/mirror";
+        subtitle-text: "Item 42 of 128";
+        detail-text: "README.md — 8.3 MB / 12 MB";
+        progress: 0.62;
+        indeterminate: false;
+    }
+}

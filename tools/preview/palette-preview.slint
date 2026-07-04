@@ -1,0 +1,56 @@
+// Preview harness for CommandPalette.
+
+import "../../assets/fonts/SymbolsNerdFontMono-Regular.ttf";
+import { CommandPalette, PaletteEntry } from "../../assets/ui/components/command-palette.slint";
+import { Theme } from "../../assets/ui/theme.slint";
+
+export component PalettePreview inherits Window {
+    title: "Atlas command palette — preview";
+    width: 1200px;
+    height: 780px;
+    background: Theme.bg;
+
+    // Simulated workspace backdrop.
+    Rectangle {
+        x: Theme.space-4; y: Theme.space-4;
+        width: root.width - Theme.space-4 * 2;
+        height: root.height - Theme.space-4 * 2;
+        background: Theme.panel-bg;
+        border-radius: Theme.radius-md;
+
+        for row[i] in [
+            "README.md", "Cargo.toml", "src", "tests", "docs",
+            "assets", "target", ".gitignore", "LICENSE",
+            "atlas.slint", "theme.slint",
+        ] : Rectangle {
+            y: i * 30px + Theme.space-4;
+            x: Theme.space-4;
+            width: 400px;
+            height: 28px;
+            Text {
+                text: row;
+                color: Theme.fg;
+                font-size: 13px;
+                vertical-alignment: center;
+                x: Theme.space-3;
+            }
+        }
+    }
+
+    CommandPalette {
+        width: 100%;
+        height: 100%;
+        query: "";
+        selected-index: 1;
+        results: [
+            { title: "Open Folder…",         subtitle: "Navigate to a directory",        action-id: "fs::OpenFolder" },
+            { title: "New Folder",           subtitle: "⌘⇧N · Create a new folder",     action-id: "fs::NewFolder" },
+            { title: "Toggle Dual Pane",     subtitle: "⌘\\ · Split the workspace",     action-id: "workspace::ToggleDualPane" },
+            { title: "Rename",               subtitle: "F2 · Rename the selected item", action-id: "fs::Rename" },
+            { title: "Bulk Rename…",         subtitle: "⇧⌘F2 · Rename many items",       action-id: "rename::OpenBulk" },
+            { title: "Connect to Server…",   subtitle: "⌘K · SFTP, FTP, WebDAV, S3",     action-id: "remote::Connect" },
+            { title: "Search Files",         subtitle: "⌘F · Find in the current pane",  action-id: "search::Toggle" },
+            { title: "Toggle Ops Panel",     subtitle: "⌘J · Show running operations",   action-id: "ops::Toggle" },
+        ];
+    }
+}

@@ -280,6 +280,11 @@ export component AtlasWindow inherits Window {
     /// Mirrors ConnectServerModal.input-focused. Read by the root FocusScope
     /// to enable keymap bypass while a TextInput in the modal has focus.
     property <bool> connect-modal-input-focused: false;
+    /// Mirrors BulkRenameModal.input-focused. Same purpose as
+    /// `connect-modal-input-focused`; keeps Cmd+A / Cmd+C / Cmd+V
+    /// routed to the Find/Replace TextInputs while a rename modal is
+    /// up. See ui-composition.instructions.md §5.
+    property <bool> bulk-rename-modal-input-focused: false;
 
     /// Shared right-side dock surface: 0=hidden, 1=Find/Search, 2=Operations.
     in property <int> right-dock-surface: 0;
@@ -827,7 +832,7 @@ export component AtlasWindow inherits Window {
         // Composite gate passed to the Rust dispatcher: `true` restricts
         // context to `[Global]` so Pane bindings return false and the
         // key falls through to whatever TextInput currently owns focus.
-        property <bool> keymap-bypass-active: any-modal-visible || root.right-dock-visible || text-focus-pane-id != -1 || root.connect-modal-input-focused;
+        property <bool> keymap-bypass-active: any-modal-visible || root.right-dock-visible || text-focus-pane-id != -1 || root.connect-modal-input-focused || root.bulk-rename-modal-input-focused;
 
         // Ticks up whenever Rust wants the root FocusScope to re-grab focus
         // (e.g. after the AddressBar's TextInput cancels or submits). We rely
@@ -1249,6 +1254,9 @@ export component AtlasWindow inherits Window {
             toggle-case => { root.bulk-rename-toggle-case(); }
             confirm => { root.bulk-rename-confirm(); }
             cancel => { root.bulk-rename-cancel(); }
+            changed input-focused => {
+                root.bulk-rename-modal-input-focused = self.input-focused;
+            }
         }
 
         // ── Connect-to-Server modal (Cmd+K) ────────────────────────────────

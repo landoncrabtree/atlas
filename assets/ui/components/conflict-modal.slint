@@ -1,32 +1,44 @@
 import { Theme } from "../theme.slint";
 import {
-    AtlasModal, AtlasPrimaryButton, AtlasSecondaryButton,
+    AtlasModal, AtlasSecondaryButton,
 } from "atlas-controls.slint";
 
 // Finder-parity conflict prompt shown when Copy/Move hits a colliding
 // destination under `ConflictPolicy::Prompt`.
 //
+// Layout modeled on macOS Sequoia Finder's replace-item sheet
+// (~460×180 px): document icon on the left with a warning-triangle
+// badge; single-paragraph body on the right; a right-aligned row of
+// three neutral buttons at the bottom. The "Apply to all" checkbox
+// sits on the same button row at the left, visually recessive.
+//
 // Design refs (design.instructions.md):
-// - "Modal depth" — reuses `AtlasModal` (12 px radius, modal-scrim,
-//   soft drop-shadow). No nested boxes.
-// - "Restrained accent" — the safe default (Stop) is the single
-//   `AtlasPrimaryButton`; Keep Both / Replace stay neutral. Replace
-//   is destructive but Finder styles it neutral, not accented.
-// - "Sentence-case labels" — no all-caps titles.
+// - "Restrained accent" — accent is reserved for a single truly-primary
+//   action. Confirmation modals like this one keep every button
+//   neutral, matching Apple's confirm sheets. See §Confirmation
+//   modals.
+// - "Modal depth" — reuses `AtlasModal` (`modal-radius` = `radius-xl`,
+//   modal-scrim, soft drop-shadow). No nested boxes.
+// - "Sentence-case labels" — single sentence body, no forced break
+//   between statement and question.
 //
 // Chord routing (ui-composition.instructions.md §5):
 // - The modal owns no TextInput, so it doesn't need the
 //   `input-focused` bubble. Escape and Enter are handled by the root
-//   FocusScope: Escape maps to Stop, Enter activates whatever button
-//   is emphasised (primary = Stop).
+//   FocusScope: Escape maps to Stop; Enter activates Stop as the safe
+//   default focus target.
 export component AtlasConflictModal inherits Rectangle {
     // ── inputs ────────────────────────────────────────────────────────────
     in property <bool> visible-modal: false;
     /// File name in question (`README.md`).
     in property <string> item-name: "";
-    /// Full source path/URI. Used by the second paragraph hint.
+    /// Full source path/URI. Currently unused by the compact layout but
+    /// preserved on the interface for callers/tests that may want to
+    /// surface it in a future disclosure hint (Finder shows the source
+    /// path in a hover popover, not inline).
     in property <string> source-display: "";
-    /// Full destination path/URI. Used by the second paragraph hint.
+    /// Full destination path/URI. Same shape as `source-display` — see
+    /// note above.
     in property <string> dest-display: "";
     /// True when the source file mtime is newer than the dest mtime.
     in property <bool> source-is-newer: false;
@@ -37,9 +49,9 @@ export component AtlasConflictModal inherits Rectangle {
     /// User-facing "apply to all" preference. The modal owns display;
     /// Rust owns the persistent flag.
     in-out property <bool> apply-to-all: false;
-    // Internal derived property — kept at component root so the `if`
-    // guard below can reference it (Slint disallows `property` inside
-    // a nested layout).
+    // Kept as a property (not inlined into an `if`) so future gating —
+    // "only show when a batch has more items pending" — has a single
+    // hook.
     property <bool> apply-to-all-visible: true;
 
     // ── outputs ───────────────────────────────────────────────────────────
@@ -51,76 +63,137 @@ export component AtlasConflictModal inherits Rectangle {
     width: 100%;
     height: 100%;
 
-    // Finder text mapping:
-    //   source newer than dest → "…replace it with the newer one you're copying?"
-    //   source older than dest → "A newer item named 'X' already exists in this location.
-    //                              Do you want to replace it with the older one you're copying?"
-    //   neither known          → "…replace it with the item you're copying?"
-    property <string> primary-line:
+    // Finder text mapping (rendered as one wrapped sentence so the sheet
+    // reads like a native macOS confirmation, not two stacked
+    // paragraphs):
+    //   source newer than dest → "An item named 'X' already exists in
+    //                              this location. Do you want to replace
+    //                              it with the newer one you're copying?"
+    //   source older than dest → "A newer item named 'X' already exists
+    //                              in this location. Do you want to
+    //                              replace it with the older one you're
+    //                              copying?"
+    //   neither known          → "An item named 'X' already exists in
+    //                              this location. Do you want to replace
+    //                              it?"
+    property <string> message-text:
         root.source-is-older
-            ? "A newer item named \"" + root.item-name + "\" already exists in this location."
-            : "An item named \"" + root.item-name + "\" already exists in this location.";
-    property <string> secondary-line:
-        root.source-is-newer
-            ? "Do you want to replace it with the newer one you're copying?"
-            : root.source-is-older
-                ? "Do you want to replace it with the older one you're copying?"
-                : "Do you want to replace it with the item you're copying?";
+            ? "A newer item named \"" + root.item-name + "\" already exists in this location. Do you want to replace it with the older one you're copying?"
+            : root.source-is-newer
+                ? "An item named \"" + root.item-name + "\" already exists in this location. Do you want to replace it with the newer one you're copying?"
+                : "An item named \"" + root.item-name + "\" already exists in this location. Do you want to replace it?";
 
     AtlasModal {
         width: 100%;
         height: 100%;
         visible-modal: root.visible-modal;
         title: "";
-        // Modal sheet width slightly narrower than the palette (560)
-        // and matching Finder's compact confirmation sheet.
+        // Compact Finder-parity dimensions: 460 px wide (packs the
+        // single-paragraph body next to the icon without wrapping to
+        // more than three lines for typical file names) × 172 px tall
+        // (icon row + button row + generous padding). Matches
+        // design.instructions.md §Confirmation modals.
         modal-width: 460px;
-        // Height grows with the "Apply to all" affordance; keeps the
-        // sheet compact for the common no-apply-to-all case.
-        modal-height: root.apply-to-all-visible ? 232px : 202px;
+        modal-height: 172px;
         dismissed => { root.stop(); }
 
-        // ── body copy ──────────────────────────────────────────────────
-        VerticalLayout {
-            spacing: Theme.space-2;
+        // ── icon + body row ────────────────────────────────────────────
+        //
+        // Horizontal arrangement matching Finder's Sequoia layout: the
+        // document glyph anchors the message on the left; the wrapped
+        // sentence flows to its right and takes the remaining width.
+        HorizontalLayout {
+            spacing: Theme.space-3;
+            alignment: start;
 
-            // Primary line: `title` style (15px semibold) per the design
-            // token scale. Wraps for long file names.
-            Text {
-                text: root.primary-line;
-                color: Theme.fg;
-                font-size: Theme.modal-title-size;
-                font-weight: 600;
-                wrap: word-wrap;
+            // Icon column — 48-px document glyph with a small warning
+            // badge overlaid at the bottom-right. The badge is drawn as
+            // a rectangle in the parent (not a child of the icon Text)
+            // so its z-order lands above the glyph.
+            Rectangle {
+                width: 48px;
+                height: 48px;
+                y: 0px;
+
+                Text {
+                    text: "\u{f016}";
+                    font-family: Theme.icon-font-family;
+                    color: Theme.fg-muted;
+                    font-size: 44px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+
+                // Warning-triangle badge (Nerd Font `nf-fa-warning`).
+                // Sized ~18 px and offset into the bottom-right corner
+                // of the icon square to mimic Finder's yellow download
+                // badge.
+                Rectangle {
+                    x: parent.width - self.width + 4px;
+                    y: parent.height - self.height + 4px;
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: Theme.modal-bg;
+
+                    Text {
+                        text: "\u{f071}";
+                        font-family: Theme.icon-font-family;
+                        color: Theme.warning;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
             }
 
-            // Secondary line: `body` style (13px regular). Muted so the
-            // primary question doesn't compete with the buttons below.
+            // Message column — single wrapped sentence in `body` (13px).
+            // Vertically centered against the icon square so short
+            // messages sit at the icon's baseline; longer messages
+            // grow downward.
             Text {
-                text: root.secondary-line;
+                text: root.message-text;
                 color: Theme.fg;
                 font-size: Theme.font-size;
                 wrap: word-wrap;
+                vertical-alignment: top;
+                horizontal-stretch: 1;
             }
         }
 
-        // ── "Apply to all" toggle (progressive-disclosure hint) ────────
-        // Follows the design guideline "Show what the user needs; hide
-        // the rest until asked" — the toggle only appears if there are
-        // (or might be) more conflicts to come. For MVP we show it
-        // unconditionally so bulk copies can opt out of re-prompting.
-        if root.apply-to-all-visible : Rectangle {
-            height: 22px;
-            HorizontalLayout {
-                spacing: Theme.space-2;
-                alignment: start;
+        // ── button row ─────────────────────────────────────────────────
+        //
+        // Order (left → right): "Apply to all" checkbox at the far
+        // left (progressive-disclosure hint), then Keep Both · Stop ·
+        // Replace anchored to the right.
+        //
+        // Every button uses `AtlasSecondaryButton` (neutral fill,
+        // 29 px). Apple's replace-item sheet never uses the accent
+        // color on confirmation dialogs — none of these three actions
+        // is unambiguously "the right one" (Stop is the safe default,
+        // but Replace is legitimate; Keep Both is legitimate too), so
+        // per design.instructions.md §Restrained accent we keep them
+        // all neutral.
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            alignment: end;
+            padding-top: Theme.space-1;
 
-                // 14 px check-box (neutral segmented style, no accent
-                // flood) — matches the palette's neutral-selected
-                // segmented control convention.
+            // "Apply to all remaining conflicts" — recessive
+            // caption-weight label; positioned at the far left of the
+            // button row so it doesn't compete with the actions.
+            if root.apply-to-all-visible : HorizontalLayout {
+                spacing: Theme.space-1 + 2px;
+                alignment: start;
+                horizontal-stretch: 1;
+
                 Rectangle {
-                    width: 14px;
-                    height: 14px;
+                    width: 13px;
+                    height: 13px;
                     y: (parent.height - self.height) / 2;
                     border-width: 1px;
                     border-color: Theme.field-border;
@@ -132,7 +205,7 @@ export component AtlasConflictModal inherits Rectangle {
                     if root.apply-to-all : Text {
                         text: "✓";
                         color: Theme.fg;
-                        font-size: 11px;
+                        font-size: 10px;
                         font-weight: 600;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -146,44 +219,30 @@ export component AtlasConflictModal inherits Rectangle {
                         clicked => { root.toggle-apply-to-all(); }
                     }
                 }
+
                 Text {
-                    text: "Apply to all remaining conflicts";
+                    text: "Apply to all";
                     color: Theme.fg-muted;
-                    font-size: 12px;
+                    font-size: 11px;
                     vertical-alignment: center;
                     TouchArea {
                         clicked => { root.toggle-apply-to-all(); }
                     }
                 }
             }
-        }
-
-        // ── button row ─────────────────────────────────────────────────
-        //
-        // Order (left → right): Keep Both · Stop · Replace.
-        //
-        // Stop is the primary (single accent CTA in the modal) because
-        // it is the safe default: taking no destructive action while
-        // stopping the whole operation. Keep Both and Replace stay
-        // neutral per design.instructions.md's "Restrained accent"
-        // rule — Replace is destructive but Finder never emphasises
-        // it, and neither do we.
-        HorizontalLayout {
-            spacing: Theme.space-2;
-            alignment: end;
 
             AtlasSecondaryButton {
-                button-width: 100px;
+                button-width: 84px;
                 text: "Keep Both";
                 clicked => { root.keep-both(); }
             }
-            AtlasPrimaryButton {
-                button-width: 84px;
+            AtlasSecondaryButton {
+                button-width: 64px;
                 text: "Stop";
                 clicked => { root.stop(); }
             }
             AtlasSecondaryButton {
-                button-width: 96px;
+                button-width: 76px;
                 text: "Replace";
                 clicked => { root.replace(); }
             }
