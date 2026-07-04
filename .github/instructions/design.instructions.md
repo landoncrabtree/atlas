@@ -391,10 +391,16 @@ Single-entry rename is a **view-level cell swap**, not a modal — matches Finde
   and dotfiles, everything before the final dot for ordinary files.
   Compound extensions (`archive.tar.gz`) strip only the final `.gz`
   — matches Finder precisely.
-- **Commit / cancel.** Enter and blur (click outside, focus loss)
-  commit; Escape cancels. Blur-commit is a deliberate Finder-parity
-  detail — click outside a Finder inline rename applies the change,
-  it does not revert.
+- **Commit / cancel.** Enter commits; Escape cancels. Focus loss
+  (click outside, another app stealing focus) cancels the session
+  rather than committing — a deliberate departure from Finder's
+  click-outside-commits behaviour, because Atlas can't reliably
+  distinguish "user clicked outside the cell within our window" from
+  "OS process stole focus via Cmd+Tab, notification center,
+  dictation, etc.", and destructively renaming a file on a
+  focus-steal is far worse than making the user press Return. A
+  session-preserving "focus lost within window" affordance is a
+  follow-up.
 - **Validation.** Inline error text under the cell in `Theme.error`
   at `field-label-size` caption weight; visible only when the
   buffer fails `validate_name`. No animation.

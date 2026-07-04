@@ -1227,6 +1227,34 @@ export component AtlasWindow inherits Window {
             if root.show-shortcut-footer : ShortcutFooter { hints: root.shortcut-hints; }
         }
 
+        // Inline-rename validation error banner. Rendered as a
+        // floating chip anchored above the shortcut footer so it
+        // never grows the pane layout or clips the cell it refers
+        // to. Empty `rename-error-text` hides the chip.
+        if root.rename-error-text != "" && root.rename-active-index != -1 : Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height - (root.show-shortcut-footer ? 44px : 12px);
+            width: min(err-text.preferred-width + Theme.space-4 * 2, parent.width - Theme.space-6 * 2);
+            height: 28px;
+            background: Theme.error.with-alpha(0.16);
+            border-color: Theme.error.with-alpha(0.55);
+            border-width: 1px;
+            border-radius: Theme.radius-sm;
+
+            err-text := Text {
+                x: Theme.space-4;
+                y: 0px;
+                width: parent.width - Theme.space-4 * 2;
+                height: parent.height;
+                text: root.rename-error-text;
+                color: Theme.error;
+                font-size: Theme.field-label-size;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+        }
+
         // Shared right-side dock. Find (Cmd+F) and Operations (Cmd+J) are
         // mutually-exclusive variants of this single slot.
         RightDockPanel {

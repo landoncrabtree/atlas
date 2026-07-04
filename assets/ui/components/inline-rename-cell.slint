@@ -39,8 +39,12 @@ import { Theme } from "../theme.slint";
 
 export component InlineRenameCell inherits Rectangle {
     // ── inputs ────────────────────────────────────────────────────────────
-    /// Editable buffer; parent binds via `<=>`.
-    in-out property <string> text: "";
+    /// Initial buffer pushed by the parent. Slint's `changed text`
+    /// handler below writes it into the internal TextInput so
+    /// typing flows freely afterward — Rust doesn't re-write on every
+    /// keystroke, only on open (via bump of `selection-tick`) and on
+    /// re-validation state changes.
+    in property <string> text: "";
     /// UTF-8 byte offsets pre-selecting the file stem on open.
     in property <int> initial-selection-start: 0;
     in property <int> initial-selection-end: 0;
@@ -55,7 +59,8 @@ export component InlineRenameCell inherits Rectangle {
 
     // ── outputs ───────────────────────────────────────────────────────────
     /// Enter or Return pressed inside the TextInput. The parent
-    /// reads `text` back and commits via the shell controller.
+    /// reads `text` back via the `edited` stream and commits via the
+    /// shell controller.
     callback submit();
     /// Escape pressed inside the TextInput; the parent tears the
     /// session down without committing.
@@ -80,52 +85,57 @@ export component InlineRenameCell inherits Rectangle {
     height: cell-height;
     background: Theme.selection-bg;
     border-radius: Theme.radius-sm;
+    clip: true;
     // No border, no shadow, no animation — Finder-parity.
 
-    input := TextInput {
-        x: 6px;
-        y: 0px;
-        width: parent.width - 12px;
-        height: parent.height;
-        text <=> root.text;
-        color: Theme.selection-fg;
-        font-size: root.font-size;
-        vertical-alignment: center;
-        single-line: true;
-        selection-background-color: Theme.selection-fg.with-alpha(0.25);
-        selection-foreground-color: Theme.selection-fg;
-        // Focus and pre-select the stem on open.
-        init => {
-            self.focus();
-            self.set-selection-offsets(root.initial-selection-start, root.initial-selection-end);
-        }
-        edited => { root.edited(self.text); }
-        accepted => { root.submit(); }
-        key-pressed(event) => {
-            if event.text == Key.Escape {
-                root.cancel();
-                return accept;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        padding-top: 0px;
+        padding-bottom: 0px;
+
+        input := TextInput {
+            // NOTE: no outer `text:` binding — TextInput.text is a
+            // LOCAL, user-owned buffer. We seed it from `root.text`
+            // in `init` and re-sync in `changed selection-tick`.
+            // edits bubble via the `edited` callback. Reactively
+            // binding `text: root.text` was tried and left the
+            // TextInput invisible: Slint kept re-evaluating and
+            // stomped locally-typed characters (see PR discussion).
+            color: Theme.selection-fg;
+            font-size: root.font-size;
+            vertical-alignment: center;
+            horizontal-alignment: left;
+            single-line: true;
+            selection-background-color: Theme.selection-fg.with-alpha(0.25);
+            selection-foreground-color: Theme.selection-fg;
+            init => {
+                self.text = root.text;
+                self.focus();
+                self.set-selection-offsets(root.initial-selection-start, root.initial-selection-end);
             }
-            reject;
+            edited => { root.edited(self.text); }
+            accepted => { root.submit(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.cancel();
+                    return accept;
+                }
+                reject;
+            }
         }
     }
 
-    // Re-apply the stem selection whenever the parent bumps
-    // `selection-tick` — covers back-to-back renames on the same
-    // filename where the numeric range would otherwise not change.
+    // Re-seed the TextInput and re-apply the stem selection whenever
+    // the parent bumps `selection-tick` — covers back-to-back renames
+    // on the same filename where the numeric range would otherwise
+    // not change. Also handles the "parent bound text one-way after
+    // init ran" race: bumping the tick right after Rust sets the
+    // buffer guarantees the leaf pulls the latest value.
     changed selection-tick => {
+        input.text = root.text;
         input.focus();
         input.set-selection-offsets(root.initial-selection-start, root.initial-selection-end);
-    }
-
-    // A change of buffer *from the outside* (e.g. the parent
-    // reopening a session on a different entry) also warrants a
-    // re-focus + selection reset.
-    changed text => {
-        if !input.has-focus {
-            input.focus();
-            input.set-selection-offsets(root.initial-selection-start, root.initial-selection-end);
-        }
     }
 
     // Finder-parity blur-commit: when the TextInput loses focus
@@ -134,7 +144,11 @@ export component InlineRenameCell inherits Rectangle {
     // session down), commit whatever is currently in the buffer.
     // The parent gates against double-fire: after submit()/cancel()
     // the session is dropped, so blur-commit is a no-op if the
-    // buffer is no longer being tracked.
+    // buffer is no longer being tracked. The Rust controller also
+    // guards blur_commit against a torn-down session so a focus
+    // loss triggered by another OS window stealing focus (Cmd+Tab,
+    // notifications, dictation) never fires an unintended commit
+    // if the session was already resolved.
     changed input-focused => {
         if !self.input-focused {
             root.blur-commit();

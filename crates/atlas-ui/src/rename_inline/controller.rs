@@ -182,13 +182,22 @@ impl RenameInlineController {
         self.ops.submit_rename(target, new_name);
     }
 
-    /// Finder-parity commit-on-blur. If the session is still open
-    /// (no Return / Escape came first), commit; otherwise no-op.
+    /// Blur-commit is intentionally routed to `cancel` (not
+    /// `submit`) — losing focus should NEVER destructively rename a
+    /// file. Real Finder does commit on click-outside within its own
+    /// window, but Atlas can't reliably distinguish "user clicked
+    /// outside within Atlas" from "another OS process stole focus"
+    /// (Cmd+Tab, notification center, dictation panel). Cancel is
+    /// the safe default; users who want to commit press Return.
+    ///
+    /// If a session-preserving "focus lost within window" affordance
+    /// is added later, this handler is the single point to promote
+    /// to `submit`.
     pub fn blur_commit(&self) {
         if !self.is_open() {
             return;
         }
-        self.submit();
+        self.cancel();
     }
 
     // ── Slint bridge ──────────────────────────────────────────────────────
@@ -337,13 +346,16 @@ mod tests {
     }
 
     #[test]
-    fn blur_commit_delegates_to_submit_when_open() {
+    fn blur_commit_cancels_rather_than_submitting_when_open() {
         let ctrl = detached_controller();
         let target = Location::local(PathBuf::from("/tmp/foo.txt"));
         ctrl.open(target, "foo.txt".to_owned(), false, any_pane(), 0, -1);
         ctrl.edited("renamed.txt".to_owned());
         ctrl.blur_commit();
-        assert!(!ctrl.is_open(), "blur commits the dirty buffer");
+        // Safety-first: blur cancels the session so an accidental
+        // focus-steal from another OS window can't renaming a file
+        // the user didn't confirm.
+        assert!(!ctrl.is_open(), "blur closes the session (cancel path)");
     }
 
     #[test]
