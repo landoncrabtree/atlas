@@ -408,6 +408,26 @@ impl InMemoryLocationViewModel {
         self.notify(event);
     }
 
+    /// Bench hook forwarding to [`Self::handle_created`]. `#[doc(hidden)]`;
+    /// exists only so the `view_model_watcher` bench can drive the
+    /// handler without going through the real notify/debouncer plumbing.
+    #[doc(hidden)]
+    pub fn handle_created_for_bench(&self, path: PathBuf) {
+        self.handle_created(path);
+    }
+
+    /// Bench hook forwarding to [`Self::handle_removed`].
+    #[doc(hidden)]
+    pub fn handle_removed_for_bench(&self, path: PathBuf) {
+        self.handle_removed(&path);
+    }
+
+    /// Bench hook forwarding to [`Self::handle_modified`].
+    #[doc(hidden)]
+    pub fn handle_modified_for_bench(&self, path: PathBuf) {
+        self.handle_modified(path);
+    }
+
     // ── Watcher event handlers ────────────────────────────────────────────────
 
     /// Handle a `Created` event from the directory watcher.

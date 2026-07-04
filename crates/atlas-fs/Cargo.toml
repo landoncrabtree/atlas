@@ -61,3 +61,7 @@ harness = false
 [[bench]]
 name = "view_model_reads"
 harness = false
+
+[[bench]]
+name = "view_model_watcher"
+harness = false
