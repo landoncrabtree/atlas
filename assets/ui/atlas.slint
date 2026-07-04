@@ -280,6 +280,49 @@ export component AtlasWindow inherits Window {
     /// Mirrors ConnectServerModal.input-focused. Read by the root FocusScope
     /// to enable keymap bypass while a TextInput in the modal has focus.
     property <bool> connect-modal-input-focused: false;
+
+    // ── Inline rename cell state (F2 / context-menu Rename) ───────────────
+    //
+    // The shell owns a single active `RenameSession`; when open, the
+    // matching pane's view swaps its filename Text for an
+    // `InlineRenameCell` (Finder red-pill affordance). Only ONE pane
+    // renames at a time; other panes see the default (-1) index and
+    // render normal labels. Docs: crates/atlas-ui/src/rename_inline/.
+    /// Pane id that hosts the active rename cell, or -1 when idle.
+    in property <int> rename-active-pane-id: -1;
+    /// Entry index within that pane's current listing. -1 while idle.
+    in property <int> rename-active-index: -1;
+    /// Miller-only column index; -1 for other views.
+    in property <int> rename-active-col: -1;
+    /// The buffer the InlineRenameCell edits. Rust seeds it on open
+    /// and receives edits via `rename-cell-edited(t)`.
+    in property <string> rename-buffer: "";
+    /// Pre-selection covers the file stem (see `stem_range` in
+    /// atlas-ui). `rename-selection-tick` bumps every time a new
+    /// session opens so the cell re-applies the selection even when
+    /// the numeric bounds match a prior rename.
+    in property <int> rename-selection-start: 0;
+    in property <int> rename-selection-end: 0;
+    in property <int> rename-selection-tick: 0;
+    /// Inline error text shown *below* the pane's normal chrome by
+    /// Rust when validation rejects the current buffer.  Empty ⇒ no
+    /// banner.  (Painted via a status-warning-text push so the layout
+    /// doesn't shift; see AppShell::push_rename_error.)
+    in property <string> rename-error-text: "";
+    /// Mirrors any active pane's InlineRenameCell input focus so the
+    /// root `keymap-bypass-active` disjunction covers Cmd+A/C/V/X and
+    /// arrows while the cell has keyboard focus.
+    property <bool> rename-cell-input-focused: false;
+    /// Enter pressed inside the cell → commit.
+    callback rename-cell-submit();
+    /// Escape pressed inside the cell → cancel.
+    callback rename-cell-cancel();
+    /// Cell lost focus WITHOUT Return/Escape → commit-on-blur
+    /// (Finder-parity).
+    callback rename-cell-blur-commit();
+    /// Keystroke-level buffer changes; Rust re-runs validation on
+    /// every callback and updates `rename-error-text`.
+    callback rename-cell-edited(string);
     /// Mirrors BulkRenameModal.input-focused. Same purpose as
     /// `connect-modal-input-focused`; keeps Cmd+A / Cmd+C / Cmd+V
     /// routed to the Find/Replace TextInputs while a rename modal is
@@ -832,7 +875,7 @@ export component AtlasWindow inherits Window {
         // Composite gate passed to the Rust dispatcher: `true` restricts
         // context to `[Global]` so Pane bindings return false and the
         // key falls through to whatever TextInput currently owns focus.
-        property <bool> keymap-bypass-active: any-modal-visible || root.right-dock-visible || text-focus-pane-id != -1 || root.connect-modal-input-focused || root.bulk-rename-modal-input-focused;
+        property <bool> keymap-bypass-active: any-modal-visible || root.right-dock-visible || text-focus-pane-id != -1 || root.connect-modal-input-focused || root.bulk-rename-modal-input-focused || root.rename-cell-input-focused;
 
         // Ticks up whenever Rust wants the root FocusScope to re-grab focus
         // (e.g. after the AddressBar's TextInput cancels or submits). We rely
@@ -1017,6 +1060,16 @@ export component AtlasWindow inherits Window {
                     miller-columns: panes-miller-columns[i];
                     miller-focused-col: panes-miller-focused-col[i];
 
+                    // Inline-rename state: only the pane whose id matches
+                    // `rename-active-pane-id` gets non-default values.
+                    // Other panes see -1 / "" and render normal labels.
+                    rename-active-index: pane.id == root.rename-active-pane-id ? root.rename-active-index : -1;
+                    rename-active-col: pane.id == root.rename-active-pane-id ? root.rename-active-col : -1;
+                    rename-buffer: pane.id == root.rename-active-pane-id ? root.rename-buffer : "";
+                    rename-selection-start: root.rename-selection-start;
+                    rename-selection-end: root.rename-selection-end;
+                    rename-selection-tick: root.rename-selection-tick;
+
                     // Per-pane status bar (renders inside the pane frame,
                     // gated on `ui.show_status_bar` via `show-status-bar`).
                     show-status-bar: root.show-status-bar;
@@ -1065,6 +1118,25 @@ export component AtlasWindow inherits Window {
                     miller-row-clicked(col, row) => { root.miller-row-clicked(pane.id, col, row); }
                     miller-row-double-clicked(col, row) => { root.miller-row-double-clicked(pane.id, col, row); }
                     miller-row-context-menu(col, row, x, y) => { root.miller-row-context-menu(pane.id, col, row, x, y); }
+
+                    // Inline-rename callbacks — Rust routes back through the
+                    // shell's controller. Only the pane that owns the active
+                    // rename fires meaningful events (others' cells never
+                    // instantiate because `rename-active-index == -1`).
+                    rename-submit => { root.rename-cell-submit(); }
+                    rename-cancel => { root.rename-cell-cancel(); }
+                    rename-blur-commit => { root.rename-cell-blur-commit(); }
+                    rename-edited(t) => { root.rename-cell-edited(t); }
+                    // Bubble the pane's rename-input-focused up to
+                    // rename-cell-input-focused only for the active pane.
+                    // Guard: only mirror when this pane owns the active
+                    // rename, otherwise a stale changed event from an
+                    // unrelated pane can't zero out a still-focused cell.
+                    changed rename-input-focused => {
+                        if pane.id == root.rename-active-pane-id {
+                            root.rename-cell-input-focused = self.rename-input-focused;
+                        }
+                    }
 
                     // Bubble per-pane text-input focus (currently the
                     // address bar; future inline-rename inputs bubble via

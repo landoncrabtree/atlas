@@ -44,6 +44,20 @@ export component MillerView inherits Rectangle {
     /// Forwarded from a column row when the 4-px drag threshold is exceeded.
     /// Arguments: column-index, row-index.
     callback drag-start(int, int);
+    /// Column index that hosts the active rename cell (-1 when no
+    /// rename is active). Miller renames land in the focused column
+    /// only; other columns render normal name Text.
+    in property <int> rename-active-col: -1;
+    in property <int> rename-active-index: -1;
+    in-out property <string> rename-buffer: "";
+    in property <int> rename-selection-start: 0;
+    in property <int> rename-selection-end: 0;
+    in property <int> rename-selection-tick: 0;
+    callback rename-submit();
+    callback rename-cancel();
+    callback rename-blur-commit();
+    callback rename-edited(string);
+    out property <bool> rename-input-focused: false;
 
     // Desired viewport-x for auto-scrolling to keep the newest column in
     // view.  Only applied when the focused column is the rightmost one.
@@ -85,10 +99,26 @@ export component MillerView inherits Rectangle {
                 entries: columns[0].entries;
                 focused-index: columns[0].focused;
                 column-focused: root.focused-col == 0;
+                rename-active-index: root.rename-active-col == 0 ? root.rename-active-index : -1;
+                rename-buffer: root.rename-buffer;
+                rename-selection-start: root.rename-selection-start;
+                rename-selection-end: root.rename-selection-end;
+                rename-selection-tick: root.rename-selection-tick;
                 row-clicked(r)        => { root.row-clicked(0, r); }
                 row-double-clicked(r) => { root.row-double-clicked(0, r); }
                 row-context-menu(r, x, y) => { root.row-context-menu(0, r, x, y); }
                 drag-start(r)         => { root.drag-start(0, r); }
+                rename-submit => { root.rename-submit(); }
+                rename-cancel => { root.rename-cancel(); }
+                rename-blur-commit => { root.rename-blur-commit(); }
+                rename-edited(t) => { root.rename-edited(t); }
+                changed rename-input-focused => {
+                    if self.rename-input-focused {
+                        root.rename-input-focused = true;
+                    } else if root.rename-input-focused {
+                        root.rename-input-focused = false;
+                    }
+                }
             }
 
             // ── Column 1 ──────────────────────────────────────────────────────
@@ -98,10 +128,26 @@ export component MillerView inherits Rectangle {
                 entries: columns[1].entries;
                 focused-index: columns[1].focused;
                 column-focused: root.focused-col == 1;
+                rename-active-index: root.rename-active-col == 1 ? root.rename-active-index : -1;
+                rename-buffer: root.rename-buffer;
+                rename-selection-start: root.rename-selection-start;
+                rename-selection-end: root.rename-selection-end;
+                rename-selection-tick: root.rename-selection-tick;
                 row-clicked(r)        => { root.row-clicked(1, r); }
                 row-double-clicked(r) => { root.row-double-clicked(1, r); }
                 row-context-menu(r, x, y) => { root.row-context-menu(1, r, x, y); }
                 drag-start(r)         => { root.drag-start(1, r); }
+                rename-submit => { root.rename-submit(); }
+                rename-cancel => { root.rename-cancel(); }
+                rename-blur-commit => { root.rename-blur-commit(); }
+                rename-edited(t) => { root.rename-edited(t); }
+                changed rename-input-focused => {
+                    if self.rename-input-focused {
+                        root.rename-input-focused = true;
+                    } else if root.rename-input-focused {
+                        root.rename-input-focused = false;
+                    }
+                }
             }
 
             // ── Column 2 ──────────────────────────────────────────────────────
@@ -111,10 +157,26 @@ export component MillerView inherits Rectangle {
                 entries: columns[2].entries;
                 focused-index: columns[2].focused;
                 column-focused: root.focused-col == 2;
+                rename-active-index: root.rename-active-col == 2 ? root.rename-active-index : -1;
+                rename-buffer: root.rename-buffer;
+                rename-selection-start: root.rename-selection-start;
+                rename-selection-end: root.rename-selection-end;
+                rename-selection-tick: root.rename-selection-tick;
                 row-clicked(r)        => { root.row-clicked(2, r); }
                 row-double-clicked(r) => { root.row-double-clicked(2, r); }
                 row-context-menu(r, x, y) => { root.row-context-menu(2, r, x, y); }
                 drag-start(r)         => { root.drag-start(2, r); }
+                rename-submit => { root.rename-submit(); }
+                rename-cancel => { root.rename-cancel(); }
+                rename-blur-commit => { root.rename-blur-commit(); }
+                rename-edited(t) => { root.rename-edited(t); }
+                changed rename-input-focused => {
+                    if self.rename-input-focused {
+                        root.rename-input-focused = true;
+                    } else if root.rename-input-focused {
+                        root.rename-input-focused = false;
+                    }
+                }
             }
 
             // ── Column 3 ──────────────────────────────────────────────────────
@@ -124,10 +186,26 @@ export component MillerView inherits Rectangle {
                 entries: columns[3].entries;
                 focused-index: columns[3].focused;
                 column-focused: root.focused-col == 3;
+                rename-active-index: root.rename-active-col == 3 ? root.rename-active-index : -1;
+                rename-buffer: root.rename-buffer;
+                rename-selection-start: root.rename-selection-start;
+                rename-selection-end: root.rename-selection-end;
+                rename-selection-tick: root.rename-selection-tick;
                 row-clicked(r)        => { root.row-clicked(3, r); }
                 row-double-clicked(r) => { root.row-double-clicked(3, r); }
                 row-context-menu(r, x, y) => { root.row-context-menu(3, r, x, y); }
                 drag-start(r)         => { root.drag-start(3, r); }
+                rename-submit => { root.rename-submit(); }
+                rename-cancel => { root.rename-cancel(); }
+                rename-blur-commit => { root.rename-blur-commit(); }
+                rename-edited(t) => { root.rename-edited(t); }
+                changed rename-input-focused => {
+                    if self.rename-input-focused {
+                        root.rename-input-focused = true;
+                    } else if root.rename-input-focused {
+                        root.rename-input-focused = false;
+                    }
+                }
             }
 
             // ── Column 4 ──────────────────────────────────────────────────────
@@ -137,10 +215,26 @@ export component MillerView inherits Rectangle {
                 entries: columns[4].entries;
                 focused-index: columns[4].focused;
                 column-focused: root.focused-col == 4;
+                rename-active-index: root.rename-active-col == 4 ? root.rename-active-index : -1;
+                rename-buffer: root.rename-buffer;
+                rename-selection-start: root.rename-selection-start;
+                rename-selection-end: root.rename-selection-end;
+                rename-selection-tick: root.rename-selection-tick;
                 row-clicked(r)        => { root.row-clicked(4, r); }
                 row-double-clicked(r) => { root.row-double-clicked(4, r); }
                 row-context-menu(r, x, y) => { root.row-context-menu(4, r, x, y); }
                 drag-start(r)         => { root.drag-start(4, r); }
+                rename-submit => { root.rename-submit(); }
+                rename-cancel => { root.rename-cancel(); }
+                rename-blur-commit => { root.rename-blur-commit(); }
+                rename-edited(t) => { root.rename-edited(t); }
+                changed rename-input-focused => {
+                    if self.rename-input-focused {
+                        root.rename-input-focused = true;
+                    } else if root.rename-input-focused {
+                        root.rename-input-focused = false;
+                    }
+                }
             }
 
             // ── Column 5 ──────────────────────────────────────────────────────
@@ -150,10 +244,26 @@ export component MillerView inherits Rectangle {
                 entries: columns[5].entries;
                 focused-index: columns[5].focused;
                 column-focused: root.focused-col == 5;
+                rename-active-index: root.rename-active-col == 5 ? root.rename-active-index : -1;
+                rename-buffer: root.rename-buffer;
+                rename-selection-start: root.rename-selection-start;
+                rename-selection-end: root.rename-selection-end;
+                rename-selection-tick: root.rename-selection-tick;
                 row-clicked(r)        => { root.row-clicked(5, r); }
                 row-double-clicked(r) => { root.row-double-clicked(5, r); }
                 row-context-menu(r, x, y) => { root.row-context-menu(5, r, x, y); }
                 drag-start(r)         => { root.drag-start(5, r); }
+                rename-submit => { root.rename-submit(); }
+                rename-cancel => { root.rename-cancel(); }
+                rename-blur-commit => { root.rename-blur-commit(); }
+                rename-edited(t) => { root.rename-edited(t); }
+                changed rename-input-focused => {
+                    if self.rename-input-focused {
+                        root.rename-input-focused = true;
+                    } else if root.rename-input-focused {
+                        root.rename-input-focused = false;
+                    }
+                }
             }
 
             // ── Column 6 ──────────────────────────────────────────────────────
@@ -163,10 +273,26 @@ export component MillerView inherits Rectangle {
                 entries: columns[6].entries;
                 focused-index: columns[6].focused;
                 column-focused: root.focused-col == 6;
+                rename-active-index: root.rename-active-col == 6 ? root.rename-active-index : -1;
+                rename-buffer: root.rename-buffer;
+                rename-selection-start: root.rename-selection-start;
+                rename-selection-end: root.rename-selection-end;
+                rename-selection-tick: root.rename-selection-tick;
                 row-clicked(r)        => { root.row-clicked(6, r); }
                 row-double-clicked(r) => { root.row-double-clicked(6, r); }
                 row-context-menu(r, x, y) => { root.row-context-menu(6, r, x, y); }
                 drag-start(r)         => { root.drag-start(6, r); }
+                rename-submit => { root.rename-submit(); }
+                rename-cancel => { root.rename-cancel(); }
+                rename-blur-commit => { root.rename-blur-commit(); }
+                rename-edited(t) => { root.rename-edited(t); }
+                changed rename-input-focused => {
+                    if self.rename-input-focused {
+                        root.rename-input-focused = true;
+                    } else if root.rename-input-focused {
+                        root.rename-input-focused = false;
+                    }
+                }
             }
 
             // ── Column 7 ──────────────────────────────────────────────────────
@@ -176,10 +302,26 @@ export component MillerView inherits Rectangle {
                 entries: columns[7].entries;
                 focused-index: columns[7].focused;
                 column-focused: root.focused-col == 7;
+                rename-active-index: root.rename-active-col == 7 ? root.rename-active-index : -1;
+                rename-buffer: root.rename-buffer;
+                rename-selection-start: root.rename-selection-start;
+                rename-selection-end: root.rename-selection-end;
+                rename-selection-tick: root.rename-selection-tick;
                 row-clicked(r)        => { root.row-clicked(7, r); }
                 row-double-clicked(r) => { root.row-double-clicked(7, r); }
                 row-context-menu(r, x, y) => { root.row-context-menu(7, r, x, y); }
                 drag-start(r)         => { root.drag-start(7, r); }
+                rename-submit => { root.rename-submit(); }
+                rename-cancel => { root.rename-cancel(); }
+                rename-blur-commit => { root.rename-blur-commit(); }
+                rename-edited(t) => { root.rename-edited(t); }
+                changed rename-input-focused => {
+                    if self.rename-input-focused {
+                        root.rename-input-focused = true;
+                    } else if root.rename-input-focused {
+                        root.rename-input-focused = false;
+                    }
+                }
             }
         }
     }

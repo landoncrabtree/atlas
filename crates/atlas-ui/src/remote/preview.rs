@@ -991,9 +991,8 @@ mod tests {
         std::fs::create_dir_all(cache_path.parent().expect("parent")).expect("mkdir");
         std::fs::write(&cache_path, b"payload").expect("write");
 
-        let completion: PreviewCompletion = Box::new(|_| {
-            Err(io::Error::other("picker spawn failed"))
-        });
+        let completion: PreviewCompletion =
+            Box::new(|_| Err(io::Error::other("picker spawn failed")));
 
         let outcome = cache.open_remote_file_with(uri, BackendKind::Sftp, entry, completion);
         assert!(

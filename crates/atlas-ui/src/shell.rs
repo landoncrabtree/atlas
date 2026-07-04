@@ -837,7 +837,10 @@ pub struct AppShell {
     /// Single source of truth for the shared right-side dock slot.
     right_dock_surface: AtomicU8,
     /// Bulk rename modal controller.
+    /// Bulk-rename modal controller (Shift+F2).
     bulk_rename: Arc<BulkRenameController>,
+    /// Single-entry inline rename cell (F2 / context-menu Rename).
+    rename_inline: Arc<crate::rename_inline::RenameInlineController>,
     /// Connect-to-Server modal controller.
     connect: Arc<ConnectController>,
     /// Remote-file preview cache — used by `fs::View` on remote panes
@@ -940,6 +943,8 @@ impl AppShell {
         ops.attach_window(window.as_weak());
         let bulk_rename = BulkRenameController::new(Arc::clone(&ops), Arc::clone(&actions));
         bulk_rename.attach_window(window.as_weak());
+        let rename_inline = crate::rename_inline::RenameInlineController::new(Arc::clone(&ops));
+        rename_inline.attach_window(window.as_weak());
         let connect = ConnectController::new();
         connect.attach_window(window.as_weak());
         let clipboard = crate::clipboard::ClipboardController::new(Arc::clone(&ops));
@@ -984,6 +989,7 @@ impl AppShell {
                 ops,
                 right_dock_surface: AtomicU8::new(RightDockSurface::Hidden as u8),
                 bulk_rename,
+                rename_inline,
                 connect: Arc::clone(&connect),
                 preview,
                 clipboard,
@@ -2668,6 +2674,232 @@ impl AppShell {
         self.navigate_pane_to_location(id, parent);
     }
 
+    /// Open the inline rename cell against pane `id`'s currently-focused
+    /// entry. Called from the F2 (`fs::Rename`) dispatcher; also usable
+    /// by any future keyboard-first trigger.
+    ///
+    /// Determines the view-appropriate `(entry_index, miller_col)` pair
+    /// so the correct cell in the correct view renders. Silently
+    /// no-ops when the pane has no focused entry.
+    pub fn begin_rename(self: &Arc<Self>, id: PaneId) {
+        let view_mode = self.pane_view_mode(id);
+        let (entry, entry_index, miller_col) = match view_mode {
+            ViewMode::Details => {
+                let idx = self
+                    .pane_cache
+                    .read()
+                    .get(&id)
+                    .map_or(-1, |c| c.details_focused_index);
+                if idx < 0 {
+                    tracing::warn!(?id, "fs::Rename: Details has no focused row");
+                    return;
+                }
+                let Some(entry) = self.entry_at_index(id, idx as usize) else {
+                    tracing::warn!(?id, idx, "fs::Rename: Details focused index out of range");
+                    return;
+                };
+                (entry, idx, -1i32)
+            }
+            ViewMode::Grid => {
+                let idx = self
+                    .pane_cache
+                    .read()
+                    .get(&id)
+                    .map_or(-1, |c| c.grid_focused_index);
+                if idx < 0 {
+                    tracing::warn!(?id, "fs::Rename: Grid has no focused cell");
+                    return;
+                }
+                let Some(entry) = self.entry_at_index(id, idx as usize) else {
+                    tracing::warn!(?id, idx, "fs::Rename: Grid focused index out of range");
+                    return;
+                };
+                (entry, idx, -1i32)
+            }
+            ViewMode::Gallery => {
+                let idx = self
+                    .pane_cache
+                    .read()
+                    .get(&id)
+                    .map_or(-1, |c| c.gallery_focused_index);
+                if idx < 0 {
+                    tracing::warn!(?id, "fs::Rename: Gallery has no focused entry");
+                    return;
+                }
+                let Some(entry) = self.entry_at_index(id, idx as usize) else {
+                    tracing::warn!(?id, idx, "fs::Rename: Gallery focused index out of range");
+                    return;
+                };
+                (entry, idx, -1i32)
+            }
+            ViewMode::Miller => {
+                let cache = self.pane_cache.read();
+                let Some(c) = cache.get(&id) else {
+                    tracing::warn!(?id, "fs::Rename: no pane cache");
+                    return;
+                };
+                let col = c.miller_focused_col;
+                if col < 0 {
+                    tracing::warn!(?id, "fs::Rename: Miller has no focused column");
+                    return;
+                }
+                let Some(mcol) = c.miller_columns.get(col as usize) else {
+                    tracing::warn!(?id, col, "fs::Rename: Miller focused col out of range");
+                    return;
+                };
+                if mcol.focused < 0 {
+                    tracing::warn!(?id, col, "fs::Rename: Miller column has no focused row");
+                    return;
+                }
+                let name = match mcol.entries.get(mcol.focused as usize) {
+                    Some(row) => row.name.to_string(),
+                    None => {
+                        tracing::warn!(
+                            ?id,
+                            col,
+                            focused = mcol.focused,
+                            "fs::Rename: Miller focused row out of range"
+                        );
+                        return;
+                    }
+                };
+                let is_dir = mcol
+                    .entries
+                    .get(mcol.focused as usize)
+                    .map(|row| row.is_dir)
+                    .unwrap_or(false);
+                let focused_row = mcol.focused;
+                drop(cache);
+                let Some(base) = self.pane_location_full(id) else {
+                    tracing::warn!(?id, "fs::Rename: Miller pane has no location");
+                    return;
+                };
+                let target = base.join(&name);
+                tracing::info!(
+                    ?id,
+                    col,
+                    row = focused_row,
+                    name = %name,
+                    is_dir,
+                    "fs::Rename: Miller opening inline rename cell"
+                );
+                self.rename_inline
+                    .open(target, name, is_dir, id, focused_row, col);
+                return;
+            }
+        };
+        let Some(target) = self.resolve_entry_location(id, &entry) else {
+            tracing::warn!(?id, name = %entry.name, "fs::Rename: could not resolve entry location");
+            return;
+        };
+        let is_dir = matches!(entry.kind, atlas_fs::EntryKind::Dir);
+        tracing::info!(
+            ?id,
+            name = %entry.name,
+            is_dir,
+            entry_index,
+            "fs::Rename: opening inline rename cell"
+        );
+        self.rename_inline
+            .open(target, entry.name, is_dir, id, entry_index, miller_col);
+    }
+
+    /// Open the inline rename cell against the context-menu target
+    /// (as opposed to the pane's focused entry). Called from the
+    /// right-click → Rename dispatcher.
+    ///
+    /// Non-Miller views: renames render at the target's row index in
+    /// the view's rows model (looked up by name). Miller: refuses,
+    /// with a warn, if the target isn't in the currently-focused
+    /// column — the InlineRenameCell only paints in the focused
+    /// column.
+    pub fn begin_rename_at(
+        self: &Arc<Self>,
+        pane_id: PaneId,
+        target: &crate::context::capabilities::ContextTarget,
+    ) {
+        let name = match &target.location {
+            Location::Local(p) => p
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            Location::Remote(uri, _) => uri
+                .path
+                .rsplit('/')
+                .find(|s| !s.is_empty())
+                .unwrap_or("")
+                .to_owned(),
+        };
+        if name.is_empty() {
+            tracing::warn!(location = %target.location.display_path(), "ctx: Rename — empty name from target");
+            return;
+        }
+        let is_dir = matches!(target.entry_kind, atlas_fs::EntryKind::Dir);
+        let view_mode = self.pane_view_mode(pane_id);
+        // Find the entry index in the current view's model.
+        let (entry_index, miller_col) = match view_mode {
+            ViewMode::Miller => {
+                let cache = self.pane_cache.read();
+                let Some(c) = cache.get(&pane_id) else {
+                    tracing::warn!(?pane_id, "ctx: Rename — no pane cache");
+                    return;
+                };
+                let col = c.miller_focused_col;
+                let Some(mcol) = usize::try_from(col)
+                    .ok()
+                    .and_then(|u| c.miller_columns.get(u))
+                else {
+                    tracing::warn!(
+                        ?pane_id,
+                        col,
+                        "ctx: Rename — Miller focused col out of range"
+                    );
+                    return;
+                };
+                let Some(idx) = mcol.entries.iter().position(|row| row.name == name) else {
+                    tracing::warn!(
+                        ?pane_id,
+                        col,
+                        name = %name,
+                        "ctx: Rename — target row not in focused Miller column"
+                    );
+                    return;
+                };
+                (idx as i32, col)
+            }
+            _ => {
+                let idx = self
+                    .vms
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|vm| vm.entries().iter().position(|e| e.name == name))
+                    .map(|i| i as i32)
+                    .unwrap_or(-1);
+                if idx < 0 {
+                    tracing::warn!(?pane_id, name = %name, "ctx: Rename — target not found in pane's rows");
+                    return;
+                }
+                (idx, -1)
+            }
+        };
+        tracing::info!(
+            ?pane_id,
+            name = %name,
+            is_dir,
+            entry_index,
+            miller_col,
+            "ctx: Rename — opening inline rename cell"
+        );
+        self.rename_inline.open(
+            target.location.clone(),
+            name,
+            is_dir,
+            pane_id,
+            entry_index,
+            miller_col,
+        );
+    }
+
     /// Open the currently-focused entry of pane `id` — the keyboard
     /// counterpart of a double-click. Directories navigate the pane in
     /// place; files are handed off to the OS default handler (`open` on
@@ -4015,9 +4247,14 @@ impl AppShell {
         {
             let shell = self.clone();
             window.on_ctx_rename(move || {
-                if let Some(window) = shell.window.upgrade() {
-                    window.invoke_fs_rename();
-                }
+                // Route to the context-menu target (the row the user
+                // right-clicked) rather than the pane's focused
+                // entry — the menu is anchored to it.
+                let Some((pane_id, target)) = shell.context_menu_target_full() else {
+                    tracing::warn!("ctx: Rename — no context-menu target");
+                    return;
+                };
+                shell.begin_rename_at(pane_id, &target);
             });
         }
         {
@@ -4273,19 +4510,38 @@ impl AppShell {
             let shell = Arc::clone(self);
             window.on_fs_rename(move || {
                 let focused = shell.focused_pane_id();
-                // TODO: show an inline rename text-input or modal dialog.
-                // For now we log the focused entry and skip the operation.
-                match shell.focused_entry(focused) {
-                    Some(path) => {
-                        tracing::info!(
-                            path = %path.display(),
-                            "fs::Rename (F2): rename dialog not yet implemented"
-                        );
-                    }
-                    None => {
-                        tracing::warn!(?focused, "fs::Rename (F2): no focused entry");
-                    }
-                }
+                shell.begin_rename(focused);
+            });
+        }
+        // ── Inline rename cell callbacks ───────────────────────────────────
+        //
+        // The four callbacks below (submit / cancel / blur-commit /
+        // edited) are the Slint→Rust glue for the `InlineRenameCell`
+        // component. All state lives inside `rename_inline`; these
+        // closures are one-liners that hand the buffer or the
+        // signal off to the controller.
+        {
+            let shell = Arc::clone(self);
+            window.on_rename_cell_submit(move || {
+                shell.rename_inline.submit();
+            });
+        }
+        {
+            let shell = Arc::clone(self);
+            window.on_rename_cell_cancel(move || {
+                shell.rename_inline.cancel();
+            });
+        }
+        {
+            let shell = Arc::clone(self);
+            window.on_rename_cell_blur_commit(move || {
+                shell.rename_inline.blur_commit();
+            });
+        }
+        {
+            let shell = Arc::clone(self);
+            window.on_rename_cell_edited(move |text| {
+                shell.rename_inline.edited(text.to_string());
             });
         }
         {
@@ -5607,17 +5863,19 @@ fn spawn_open_with_picker(path: PathBuf) {
     tracing::info!(?path, "ctx: Open With — spawning native picker");
     if let Err(err) = std::thread::Builder::new()
         .name("atlas-open-with-picker".to_owned())
-        .spawn(move || match crate::platform::open_with::open_with_picker(&path) {
-            Ok(()) => {
-                tracing::debug!(?path, "ctx: Open With — picker completed");
-            }
-            Err(crate::platform::open_with::OpenWithError::UserCancelled) => {
-                tracing::debug!(?path, "ctx: Open With — user cancelled");
-            }
-            Err(err) => {
-                tracing::warn!(?path, %err, "ctx: Open With — picker failed");
-            }
-        })
+        .spawn(
+            move || match crate::platform::open_with::open_with_picker(&path) {
+                Ok(()) => {
+                    tracing::debug!(?path, "ctx: Open With — picker completed");
+                }
+                Err(crate::platform::open_with::OpenWithError::UserCancelled) => {
+                    tracing::debug!(?path, "ctx: Open With — user cancelled");
+                }
+                Err(err) => {
+                    tracing::warn!(?path, %err, "ctx: Open With — picker failed");
+                }
+            },
+        )
     {
         tracing::warn!(%err, "ctx: Open With — failed to spawn picker worker");
     }
