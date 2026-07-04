@@ -303,7 +303,7 @@ impl GalleryController {
 
         let len = entries.len();
         let row_items: Vec<EntryRowItem> = entries.iter().map(entry_to_row_item).collect();
-        *self.entries.write() = entries.clone();
+        *self.entries.write() = entries.to_vec();
         *self.strip_thumbs.write() = vec![None; len];
         *self.preview.write() = None;
         self.preview_cache.write().clear();

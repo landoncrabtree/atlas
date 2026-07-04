@@ -61,6 +61,13 @@ pub fn set_default_retry_policy(policy: RetryPolicy) {
 struct Inner {
     raw: Vec<Entry>,
     view: Vec<Entry>,
+    /// Immutable snapshot of `view`, published after every mutation.
+    ///
+    /// [`RemoteLocationViewModel::entries`] returns cheap Arc clones of
+    /// this field instead of cloning `view` on every read. Any code
+    /// path that mutates `view` must call [`Inner::republish`] before
+    /// releasing the state lock.
+    view_snapshot: Arc<[Entry]>,
     sort: SortSpec,
     filter: Filter,
     compiled: CompiledFilter,
@@ -77,6 +84,11 @@ impl Inner {
             .collect();
         atlas_fs::sort_in_place(&mut view, &self.sort);
         self.view = view;
+        self.republish();
+    }
+
+    fn republish(&mut self) {
+        self.view_snapshot = Arc::from(self.view.as_slice());
     }
 }
 
@@ -242,6 +254,7 @@ impl RemoteLocationViewModel {
         let inner = Inner {
             raw: Vec::new(),
             view: Vec::new(),
+            view_snapshot: Arc::from(Vec::<Entry>::new().into_boxed_slice()),
             sort: opts.sort.clone(),
             filter,
             compiled,
@@ -544,8 +557,8 @@ impl LocationViewModel for RemoteLocationViewModel {
         &self.path_cache
     }
 
-    fn entries(&self) -> Vec<Entry> {
-        self.state.read().view.clone()
+    fn entries(&self) -> Arc<[Entry]> {
+        Arc::clone(&self.state.read().view_snapshot)
     }
 
     fn len(&self) -> usize {

@@ -132,7 +132,7 @@ async fn list_preserves_dot_entries_and_filter_hides_them() -> Result<()> {
             && names.contains(&"visible_file"),
         "raw list must include all 3 entries; got {names:?}",
     );
-    for e in &entries {
+    for e in entries.iter() {
         let expected = e.name.starts_with('.');
         assert_eq!(
             e.metadata.is_hidden, expected,

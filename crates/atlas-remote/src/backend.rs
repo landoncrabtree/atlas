@@ -148,7 +148,7 @@ mod tests {
             let _ = sub.recv_timeout(std::time::Duration::from_millis(50));
         }
         assert!(vm.is_loaded(), "local vm should load");
-        let names: Vec<_> = vm.entries().into_iter().map(|e| e.name).collect();
+        let names: Vec<_> = vm.entries().iter().map(|e| e.name.clone()).collect();
         assert!(names.iter().any(|n| n == "hello.txt"));
     }
 }

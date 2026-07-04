@@ -453,7 +453,7 @@ impl DetailsController {
 
         {
             let mut stored = self.entries.write();
-            *stored = entries;
+            *stored = entries.to_vec();
         }
 
         let (mask, anchor) = {

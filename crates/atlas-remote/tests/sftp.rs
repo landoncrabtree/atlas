@@ -160,7 +160,7 @@ async fn list_preserves_dot_entries_and_filter_hides_them() -> Result<()> {
 
     // Every leading-dot entry must be flagged is_hidden so the
     // filter can gate on it.
-    for e in &entries {
+    for e in entries.iter() {
         let expected = e.name.starts_with('.');
         assert_eq!(
             e.metadata.is_hidden, expected,

@@ -3093,7 +3093,7 @@ impl AppShell {
         let entry_by_path = {
             let vms = self.vms.read();
             vms.get(&id)
-                .and_then(|vm| vm.entries().into_iter().find(|e| e.path == path))
+                .and_then(|vm| vm.entries().iter().find(|e| e.path == path).cloned())
         };
         if let Some(entry) = entry_by_path {
             self.view_entry(id, entry);
@@ -5539,7 +5539,7 @@ impl AppShell {
         let mut folders = 0usize;
         let mut files = 0usize;
         let mut total_bytes: u64 = 0;
-        for e in &entries {
+        for e in entries.iter() {
             match e.kind {
                 atlas_fs::EntryKind::Dir => folders += 1,
                 _ => {
@@ -5585,7 +5585,7 @@ impl AppShell {
         let mut folders = 0i32;
         let mut files = 0i32;
         let mut total_bytes: u64 = 0;
-        for e in &entries {
+        for e in entries.iter() {
             match e.kind {
                 atlas_fs::EntryKind::Dir => folders += 1,
                 _ => {
