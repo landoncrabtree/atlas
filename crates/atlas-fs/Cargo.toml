@@ -53,3 +53,7 @@ harness = false
 [[bench]]
 name = "view_model"
 harness = false
+
+[[bench]]
+name = "view_model_notify"
+harness = false

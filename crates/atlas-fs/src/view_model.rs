@@ -338,9 +338,28 @@ impl InMemoryLocationViewModel {
         }
     }
 
+    /// Fan out `event` to all live subscribers.
+    ///
+    /// The subscribers lock is held only long enough to snapshot the current
+    /// sender list; the actual `send()` calls happen outside the lock so a
+    /// slow subscriber never blocks concurrent [`Self::subscribe`] calls or
+    /// another notify fan-out. Dead subscribers are pruned in a second brief
+    /// lock acquisition, matching each stale sender by channel identity via
+    /// [`crossbeam_channel::Sender::same_channel`] so we do not accidentally
+    /// remove a fresh subscriber that raced into the list between the two
+    /// lock acquisitions.
     pub(crate) fn notify(&self, event: ViewModelEvent) {
         let mut subs = self.subscribers.lock();
         subs.retain(|tx| tx.send(event.clone()).is_ok());
+    }
+
+    /// Fan-out hook used by criterion benches only. Forwards to
+    /// [`Self::notify`]. Kept out of the public trait but exposed so the
+    /// `view_model_notify` bench can measure the fan-out cost without
+    /// building a synthetic filesystem event.
+    #[doc(hidden)]
+    pub fn notify_for_bench(&self, event: ViewModelEvent) {
+        self.notify(event);
     }
 
     // ── Watcher event handlers ────────────────────────────────────────────────
