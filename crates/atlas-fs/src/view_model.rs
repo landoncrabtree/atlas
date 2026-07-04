@@ -26,7 +26,7 @@ pub trait LocationViewModel: Send + Sync {
     /// The location this view model represents.
     fn location(&self) -> &Path;
     /// A snapshot of the current (sorted, filtered) entries.
-    fn entries(&self) -> Vec<Entry>;
+    fn entries(&self) -> Arc<[Entry]>;
     /// The number of entries in the current snapshot.
     fn len(&self) -> usize;
     /// Whether the snapshot is currently empty.
@@ -84,6 +84,14 @@ pub struct OpenOptions {
 struct Inner {
     raw: Vec<Entry>,
     view: Vec<Entry>,
+    /// Immutable snapshot of `view`, published after every mutation.
+    ///
+    /// [`InMemoryLocationViewModel::entries`] hands out cheap Arc clones
+    /// of this field instead of cloning `view` on every read. Any code
+    /// path that mutates `view` must call [`Inner::republish`] before
+    /// releasing the state lock so consumers never observe a stale
+    /// snapshot.
+    view_snapshot: Arc<[Entry]>,
     sort: SortSpec,
     filter: Filter,
     compiled: CompiledFilter,
@@ -91,6 +99,13 @@ struct Inner {
 }
 
 impl Inner {
+    /// Rebuild `view_snapshot` from the current `view`. O(N) in the
+    /// number of entries because each `Entry` (path + name + metadata)
+    /// is cloned into the new Arc-backed slice. Cheap on small `view`
+    /// values; called at the end of every mutation.
+    fn republish(&mut self) {
+        self.view_snapshot = Arc::from(self.view.as_slice());
+    }
     /// Full recompute of `view` from `raw`. Used by `set_sort`,
     /// `set_filter`, and `handle_rescan` — paths where `raw` may
     /// have been mutated arbitrarily and `view` cannot be
@@ -108,6 +123,7 @@ impl Inner {
             .collect();
         sort_in_place(&mut view, &self.sort);
         self.view = view;
+        self.republish();
     }
 
     /// Fold an append-only batch of entries into `raw` and `view`,
@@ -175,6 +191,7 @@ impl Inner {
             }
         }
         self.view = merged;
+        self.republish();
     }
 }
 
@@ -233,6 +250,7 @@ impl InMemoryLocationViewModel {
         let inner = Inner {
             raw: Vec::new(),
             view: Vec::new(),
+            view_snapshot: Arc::from(Vec::<Entry>::new().into_boxed_slice()),
             sort: opts.sort.clone(),
             filter,
             compiled,
@@ -433,7 +451,7 @@ impl InMemoryLocationViewModel {
 
             // Update view.
             let in_view = state.view.iter().any(|e| e.name == name);
-            if in_view {
+            let changed = if in_view {
                 // Replace in-place: remove old, insert updated at correct position.
                 state.view.retain(|e| e.name != name);
                 if matches {
@@ -451,7 +469,11 @@ impl InMemoryLocationViewModel {
                 true
             } else {
                 false
+            };
+            if changed {
+                state.republish();
             }
+            changed
         };
 
         if view_changed {
@@ -476,7 +498,11 @@ impl InMemoryLocationViewModel {
             state.raw.retain(|e| e.name != name);
             let view_before = state.view.len();
             state.view.retain(|e| e.name != name);
-            state.view.len() != view_before || state.raw.len() != raw_before
+            let changed = state.view.len() != view_before || state.raw.len() != raw_before;
+            if changed {
+                state.republish();
+            }
+            changed
         };
 
         if view_changed {
@@ -526,7 +552,7 @@ impl InMemoryLocationViewModel {
             let in_view = state.view.iter().any(|e| e.name == name);
             let matches = state.compiled.matches(&entry);
 
-            match (in_view, matches) {
+            let changed = match (in_view, matches) {
                 (true, true) => {
                     // Update in view: remove then re-insert at the correct sort position.
                     state.view.retain(|e| e.name != name);
@@ -550,7 +576,11 @@ impl InMemoryLocationViewModel {
                     true
                 }
                 (false, false) => false,
+            };
+            if changed {
+                state.republish();
             }
+            changed
         };
 
         if view_changed {
@@ -595,8 +625,8 @@ impl LocationViewModel for InMemoryLocationViewModel {
         &self.path
     }
 
-    fn entries(&self) -> Vec<Entry> {
-        self.state.read().view.clone()
+    fn entries(&self) -> Arc<[Entry]> {
+        Arc::clone(&self.state.read().view_snapshot)
     }
 
     fn len(&self) -> usize {

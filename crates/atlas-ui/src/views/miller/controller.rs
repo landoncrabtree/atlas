@@ -536,7 +536,7 @@ impl MillerController {
                         ViewModelEvent::EntriesChanged | ViewModelEvent::Loaded => {
                             let entries = col.location.entries();
                             col.loaded.store(true, Ordering::Relaxed);
-                            *col.entries.write() = entries;
+                            *col.entries.write() = entries.to_vec();
                             ctrl.push_column_entries_to_ui(col_idx);
                         }
                         ViewModelEvent::Error(msg) => {

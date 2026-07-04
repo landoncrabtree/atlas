@@ -410,7 +410,7 @@ impl GridController {
             }
         }
 
-        *self.entries.write() = entries;
+        *self.entries.write() = entries.to_vec();
 
         let (mask, _anchor) = {
             let mut sel = self.selection.write();
