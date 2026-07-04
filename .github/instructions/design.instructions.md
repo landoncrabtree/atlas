@@ -370,6 +370,44 @@ Reference: macOS Spotlight (⌘ Space) and Raycast. The palette sits **on** the 
 - Preview table: wrapped in a neutral list container (`list-bg` / `list-border` / `list-radius`). Same Details-view row grammar; conflict rows tinted with `Theme.error` at low alpha; `is-unchanged` rows dimmed to 45 %.
 - Confirm button: `AtlasPrimaryButton` — this modal has exactly one truly-primary action (commit the rename), which is unambiguous, so accent is correct here. Cancel is `AtlasSecondaryButton`.
 
+### Inline rename cell (F2 / context-menu Rename on a single entry)
+
+Single-entry rename is a **view-level cell swap**, not a modal — matches Finder's in-place inline-rename affordance. When a `RenameSession` targets `(pane_id, entry_index)`, the four views swap the filename Text label at that row for an `InlineRenameCell`:
+
+- **Fill.** `Theme.selection-bg` (the current selection color; on Atlas dark that's the same blue as `.selected` rows).
+- **Radius.** `Theme.radius-sm` (6 px). Inline cells are compact — **the `radius_xl` modal radius does not apply here**. Inline rename is grammar-with-the-row, not chrome on top.
+- **Foreground.** `Theme.selection-fg`. Caret color mirrors this so the insertion point stays visible against the fill.
+- **No border.** Selection fill is the affordance.
+- **No shadow.** Interior; a shadow here would fight the row's own selection background.
+- **No motion.** Finder's inline rename does not animate — the cell just switches. Animation on cell switch would draw attention away from the label the user is about to type over.
+- **Font.** Adopted per-view so the cell replaces the label without jumping the layout:
+  - Details: `body` (13 px), 26 px cell height, HorizontalLayout stretch on the name column.
+  - Grid: `body` (13 px), matches `label-height`, single-line editable (elided label swaps for editable single-line).
+  - Miller: `small` (12 px), 22 px cell height, focused column only.
+  - Gallery: `title` (15 px), 28 px cell height, sits above the metadata rows.
+- **Pre-selection.** On open the stem is pre-selected via
+  `set-selection-offsets(start, end)` from
+  `atlas_ui::rename_inline::stem_range`: whole name for directories
+  and dotfiles, everything before the final dot for ordinary files.
+  Compound extensions (`archive.tar.gz`) strip only the final `.gz`
+  — matches Finder precisely.
+- **Commit / cancel.** Enter and blur (click outside, focus loss)
+  commit; Escape cancels. Blur-commit is a deliberate Finder-parity
+  detail — click outside a Finder inline rename applies the change,
+  it does not revert.
+- **Validation.** Inline error text under the cell in `Theme.error`
+  at `field-label-size` caption weight; visible only when the
+  buffer fails `validate_name`. No animation.
+- **Sibling collision.** Not detected at the cell layer — commit
+  routes through `OpsController::submit_rename` and any collision
+  surfaces as an `OpEvent::Conflict` which opens the shared
+  `AtlasConflictModal` (§Confirmation modals). One conflict prompt
+  for all mutation ops, no bespoke rename dialog.
+- **Chord routing.** The cell's `input-focused` bubbles through the
+  view → pane → root's `keymap-bypass-active` disjunction so
+  `Cmd+A`, `Cmd+C`, `Cmd+V`, and arrow keys route natively to the
+  TextInput per `ui-composition.instructions.md` §5.
+
 ### Ops panel
 
 - Right-docked in the same slot and width as the Search side panel via `RightDockPanel`; Search and Ops are mutually-exclusive content variants.
