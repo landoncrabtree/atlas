@@ -5,7 +5,9 @@
 //! [`InMemoryLocationViewModel`] is the default implementation that accumulates
 //! entries in memory and notifies subscribers via [`ViewModelEvent`].
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use atlas_core::Result;
@@ -83,15 +85,17 @@ pub struct OpenOptions {
 
 struct Inner {
     raw: Vec<Entry>,
-    view: Vec<Entry>,
-    /// Immutable snapshot of `view`, published after every mutation.
+    /// Name → index into `raw`. Maintained alongside `raw` on every
+    /// mutation so watcher event handlers can locate an existing entry
+    /// in O(1) instead of an O(N) linear scan.
     ///
-    /// [`InMemoryLocationViewModel::entries`] hands out cheap Arc clones
-    /// of this field instead of cloning `view` on every read. Any code
-    /// path that mutates `view` must call [`Inner::republish`] before
-    /// releasing the state lock so consumers never observe a stale
-    /// snapshot.
-    view_snapshot: Arc<[Entry]>,
+    /// A directory can only contain one entry per name at the OS level,
+    /// so a plain `HashMap` (last-write-wins) is safe: transient
+    /// concurrent create + rename events can look like duplicates, and
+    /// the map tolerates that by simply overwriting the previous
+    /// mapping rather than panicking.
+    raw_index: HashMap<String, usize>,
+    view: Vec<Entry>,
     sort: SortSpec,
     filter: Filter,
     compiled: CompiledFilter,
@@ -99,12 +103,71 @@ struct Inner {
 }
 
 impl Inner {
-    /// Rebuild `view_snapshot` from the current `view`. O(N) in the
-    /// number of entries because each `Entry` (path + name + metadata)
-    /// is cloned into the new Arc-backed slice. Cheap on small `view`
-    /// values; called at the end of every mutation.
-    fn republish(&mut self) {
-        self.view_snapshot = Arc::from(self.view.as_slice());
+    /// Rebuild `raw_index` from scratch. Used by paths that replace
+    /// `raw` wholesale (rescan) and by the initial bulk-populate path.
+    fn rebuild_raw_index(&mut self) {
+        self.raw_index.clear();
+        self.raw_index.reserve(self.raw.len());
+        for (i, entry) in self.raw.iter().enumerate() {
+            self.raw_index.insert(entry.name.clone(), i);
+        }
+    }
+
+    /// Upsert `entry` into `raw` and keep `raw_index` consistent.
+    /// Returns `true` when the entry was newly inserted, `false` when
+    /// it replaced an existing entry with the same name.
+    fn upsert_raw(&mut self, entry: Entry) -> bool {
+        if let Some(&idx) = self.raw_index.get(&entry.name) {
+            self.raw[idx] = entry;
+            false
+        } else {
+            let name = entry.name.clone();
+            let idx = self.raw.len();
+            self.raw.push(entry);
+            self.raw_index.insert(name, idx);
+            true
+        }
+    }
+
+    /// Remove and return the raw entry with `name`, keeping
+    /// `raw_index` consistent. Uses `swap_remove` so the operation is
+    /// O(1); the moved-to-slot entry's index is patched in the map.
+    fn remove_raw(&mut self, name: &str) -> Option<Entry> {
+        let idx = self.raw_index.remove(name)?;
+        let last_idx = self.raw.len() - 1;
+        let removed = self.raw.swap_remove(idx);
+        if idx != last_idx {
+            // The last element moved into slot `idx`. Fix its index in
+            // the map so future lookups still find it.
+            let moved_name = self.raw[idx].name.clone();
+            self.raw_index.insert(moved_name, idx);
+        }
+        Some(removed)
+    }
+
+    /// Locate the position of `target` in the sorted `view` via a
+    /// binary search that leans on `compare`'s stable name-tie-break:
+    /// two entries only compare equal when their names match, so the
+    /// entry (if present) lives at `partition_point(...)`.
+    fn view_position_of(&self, target: &Entry) -> Option<usize> {
+        let pos = self
+            .view
+            .partition_point(|e| compare(e, target, &self.sort).is_lt());
+        if pos < self.view.len() && self.view[pos].name == target.name {
+            Some(pos)
+        } else {
+            None
+        }
+    }
+
+    /// Insert `entry` into `view` at the correct sort position and
+    /// return the inserted index.
+    fn view_insert_sorted(&mut self, entry: Entry) -> usize {
+        let pos = self
+            .view
+            .partition_point(|e| compare(e, &entry, &self.sort).is_lt());
+        self.view.insert(pos, entry);
+        pos
     }
     /// Full recompute of `view` from `raw`. Used by `set_sort`,
     /// `set_filter`, and `handle_rescan` — paths where `raw` may
@@ -123,7 +186,6 @@ impl Inner {
             .collect();
         sort_in_place(&mut view, &self.sort);
         self.view = view;
-        self.republish();
     }
 
     /// Fold an append-only batch of entries into `raw` and `view`,
@@ -151,6 +213,13 @@ impl Inner {
             return;
         }
         let start = self.raw.len();
+        self.raw_index.reserve(batch.len());
+        for (i, entry) in batch.iter().enumerate() {
+            // Watcher upserts may have raced ahead of the lister and
+            // planted an entry with the same name already; overwrite
+            // the mapping so future lookups target the latest slot.
+            self.raw_index.insert(entry.name.clone(), start + i);
+        }
         self.raw.extend(batch);
 
         // Filter + sort only the new tail.
@@ -191,7 +260,6 @@ impl Inner {
             }
         }
         self.view = merged;
-        self.republish();
     }
 }
 
@@ -208,6 +276,28 @@ pub struct InMemoryLocationViewModel {
     pub(crate) path: PathBuf,
     state: RwLock<Inner>,
     subscribers: Mutex<Arc<[Sender<ViewModelEvent>]>>,
+    /// Cached snapshot of the current sorted+filtered view. Populated
+    /// lazily by [`Self::entries`] on the first read after a mutation
+    /// and reused until the next mutation.
+    ///
+    /// Publishing is O(N) in the view size — one `Arc::from` allocation
+    /// plus N `Entry` clones. Making it lazy so it runs at most once
+    /// per batch of mutations (rather than once per mutation) is the
+    /// key scaling win of the watcher-burst path: a 1000-event burst
+    /// on a 10k-entry pane goes from 1000 × O(10k) republish work to
+    /// a single O(10k) publish on the next read.
+    ///
+    /// The wrapping `Mutex` is only held long enough to hand out or
+    /// replace an `Arc` clone — a single atomic op. Reads never see a
+    /// mid-mutation state because mutations invalidate the flag first
+    /// and this lock is only touched from `entries()`.
+    published: Mutex<Arc<[Entry]>>,
+    /// Set to `true` by every mutation and cleared by
+    /// [`Self::entries`] once it has refreshed [`Self::published`]
+    /// from the current [`Inner::view`]. Ordering is `Release` on
+    /// invalidation and `Acquire` on the fast-path read so the
+    /// snapshot store is visible to whichever thread rebuilds next.
+    published_dirty: AtomicBool,
     /// Whether symlink metadata follows link targets; used when re-stating
     /// entries on watcher events.
     follow_symlinks: bool,
@@ -249,8 +339,8 @@ impl InMemoryLocationViewModel {
 
         let inner = Inner {
             raw: Vec::new(),
+            raw_index: HashMap::new(),
             view: Vec::new(),
-            view_snapshot: Arc::from(Vec::<Entry>::new().into_boxed_slice()),
             sort: opts.sort.clone(),
             filter,
             compiled,
@@ -263,6 +353,8 @@ impl InMemoryLocationViewModel {
             subscribers: Mutex::new(Arc::from(
                 Vec::<Sender<ViewModelEvent>>::new().into_boxed_slice(),
             )),
+            published: Mutex::new(Arc::from(Vec::<Entry>::new().into_boxed_slice()) as Arc<[Entry]>),
+            published_dirty: AtomicBool::new(false),
             follow_symlinks: opts.follow_symlinks,
             include_hidden: opts.include_hidden,
             _watcher: Mutex::new(None),
@@ -332,6 +424,7 @@ impl InMemoryLocationViewModel {
                         state.merge_batch(entries);
                         state.loaded = true;
                     }
+                    self.invalidate_published();
                     if first_load && !defer_loaded {
                         self.notify(ViewModelEvent::Loaded);
                     }
@@ -399,6 +492,13 @@ impl InMemoryLocationViewModel {
         }
     }
 
+    /// Mark [`Self::published`] as stale. Every mutation path that
+    /// touches `view` must call this before releasing the state lock;
+    /// the next [`Self::entries`] read will rebuild `published`.
+    fn invalidate_published(&self) {
+        self.published_dirty.store(true, Ordering::Release);
+    }
+
     /// Fan-out hook used by criterion benches only. Forwards to
     /// [`Self::notify`]. Kept out of the public trait but exposed so the
     /// `view_model_notify` bench can measure the fan-out cost without
@@ -433,7 +533,13 @@ impl InMemoryLocationViewModel {
     /// Handle a `Created` event from the directory watcher.
     ///
     /// Stats the new path, builds an [`Entry`], inserts it into the snapshot
-    /// respecting the current sort and filter, and emits [`ViewModelEvent::EntriesChanged`].
+    /// respecting the current sort and filter, and emits
+    /// [`ViewModelEvent::EntriesChanged`].
+    ///
+    /// Uses `raw_index` to locate any pre-existing entry with the same name
+    /// in O(1), and `view_position_of` for the sorted view lookup in
+    /// O(log N). Only the vec-shift on view insert/remove remains O(N);
+    /// the previous linear scans of `raw` and `view` are gone.
     pub(crate) fn handle_created(&self, path: PathBuf) {
         // Extract the file name and rebuild the path relative to our (possibly
         // non-canonical) base so it stays consistent with the existing entries.
@@ -457,46 +563,38 @@ impl InMemoryLocationViewModel {
 
         let view_changed = {
             let mut state = self.state.write();
-            let name = entry.name.clone();
 
-            // Upsert in raw (handles the rare case where the entry was already
-            // streamed by the lister before the watcher attached).
-            if let Some(existing) = state.raw.iter_mut().find(|e| e.name == name) {
-                *existing = entry.clone();
-            } else {
-                state.raw.push(entry.clone());
-            }
+            // Upsert in raw (also handles the rare case where the entry was
+            // already streamed by the lister before the watcher attached).
+            state.upsert_raw(entry.clone());
 
             let matches = state.compiled.matches(&entry);
 
-            // Update view.
-            let in_view = state.view.iter().any(|e| e.name == name);
-            let changed = if in_view {
-                // Replace in-place: remove old, insert updated at correct position.
-                state.view.retain(|e| e.name != name);
-                if matches {
-                    let pos = state
-                        .view
-                        .partition_point(|e| compare(e, &entry, &state.sort).is_lt());
-                    state.view.insert(pos, entry);
+            let existing_pos = state.view_position_of(&entry);
+            let changed = match (existing_pos, matches) {
+                (Some(pos), true) => {
+                    state.view.remove(pos);
+                    state.view_insert_sorted(entry);
+                    true
                 }
-                true
-            } else if matches {
-                let pos = state
-                    .view
-                    .partition_point(|e| compare(e, &entry, &state.sort).is_lt());
-                state.view.insert(pos, entry);
-                true
-            } else {
-                false
+                (Some(pos), false) => {
+                    state.view.remove(pos);
+                    true
+                }
+                (None, true) => {
+                    state.view_insert_sorted(entry);
+                    true
+                }
+                (None, false) => false,
             };
             if changed {
-                state.republish();
+                // view mutated; the outer viewmodel invalidates publish after the guard drops.
             }
             changed
         };
 
         if view_changed {
+            self.invalidate_published();
             self.notify(ViewModelEvent::EntriesChanged);
         }
     }
@@ -506,6 +604,9 @@ impl InMemoryLocationViewModel {
     /// Removes the entry matching `path` from both the raw snapshot and the
     /// filtered view, then emits [`ViewModelEvent::EntriesChanged`] if the
     /// view changed.
+    ///
+    /// Uses `raw_index` for O(1) raw location (and `swap_remove` for O(1)
+    /// raw removal); the view lookup is O(log N) via `view_position_of`.
     pub(crate) fn handle_removed(&self, path: &Path) {
         let name = match path.file_name() {
             Some(n) => n.to_string_lossy().into_owned(),
@@ -514,18 +615,26 @@ impl InMemoryLocationViewModel {
 
         let view_changed = {
             let mut state = self.state.write();
-            let raw_before = state.raw.len();
-            state.raw.retain(|e| e.name != name);
-            let view_before = state.view.len();
-            state.view.retain(|e| e.name != name);
-            let changed = state.view.len() != view_before || state.raw.len() != raw_before;
+            let removed = state.remove_raw(&name);
+            let view_removed = match &removed {
+                Some(entry) => state
+                    .view_position_of(entry)
+                    .map(|pos| {
+                        state.view.remove(pos);
+                        true
+                    })
+                    .unwrap_or(false),
+                None => false,
+            };
+            let changed = removed.is_some() || view_removed;
             if changed {
-                state.republish();
+                // view mutated; the outer viewmodel invalidates publish after the guard drops.
             }
             changed
         };
 
         if view_changed {
+            self.invalidate_published();
             self.notify(ViewModelEvent::EntriesChanged);
         }
     }
@@ -536,13 +645,17 @@ impl InMemoryLocationViewModel {
     /// visibility (an out-of-filter entry after modification is treated as a
     /// removal from the view), and emits [`ViewModelEvent::EntriesChanged`] if
     /// the view changed.
+    ///
+    /// Same O(1) raw lookup and O(log N) view lookup story as
+    /// [`Self::handle_created`]: the previous entry's position is found
+    /// via `raw_index` (for the sort key) then relocated in view via
+    /// `view_position_of`, avoiding two linear scans.
     pub(crate) fn handle_modified(&self, path: PathBuf) {
         let name_os = match path.file_name() {
             Some(n) => n.to_owned(),
             None => return,
         };
         let local_path = self.path.join(&name_os);
-        let name = name_os.to_string_lossy().into_owned();
 
         let entry = match build_entry(local_path.clone(), self.follow_symlinks) {
             Ok(e) => e,
@@ -562,48 +675,44 @@ impl InMemoryLocationViewModel {
         let view_changed = {
             let mut state = self.state.write();
 
-            // Update in raw.
-            if let Some(existing) = state.raw.iter_mut().find(|e| e.name == name) {
-                *existing = entry.clone();
-            } else {
-                state.raw.push(entry.clone());
-            }
+            // The old entry (if any) is needed to locate the current
+            // view position under the current sort key, because the
+            // modified entry's sort key may have moved.
+            let old_entry = state
+                .raw_index
+                .get(&entry.name)
+                .map(|&i| state.raw[i].clone());
+            state.upsert_raw(entry.clone());
 
-            let in_view = state.view.iter().any(|e| e.name == name);
+            let existing_pos = old_entry
+                .as_ref()
+                .and_then(|old| state.view_position_of(old));
             let matches = state.compiled.matches(&entry);
 
-            let changed = match (in_view, matches) {
-                (true, true) => {
-                    // Update in view: remove then re-insert at the correct sort position.
-                    state.view.retain(|e| e.name != name);
-                    let pos = state
-                        .view
-                        .partition_point(|e| compare(e, &entry, &state.sort).is_lt());
-                    state.view.insert(pos, entry);
+            let changed = match (existing_pos, matches) {
+                (Some(pos), true) => {
+                    state.view.remove(pos);
+                    state.view_insert_sorted(entry);
                     true
                 }
-                (true, false) => {
-                    // No longer passes filter; remove from view.
-                    state.view.retain(|e| e.name != name);
+                (Some(pos), false) => {
+                    state.view.remove(pos);
                     true
                 }
-                (false, true) => {
-                    // Now passes filter; insert at correct sort position.
-                    let pos = state
-                        .view
-                        .partition_point(|e| compare(e, &entry, &state.sort).is_lt());
-                    state.view.insert(pos, entry);
+                (None, true) => {
+                    state.view_insert_sorted(entry);
                     true
                 }
-                (false, false) => false,
+                (None, false) => false,
             };
             if changed {
-                state.republish();
+                // view mutated; the outer viewmodel invalidates publish after the guard drops.
             }
             changed
         };
 
         if view_changed {
+            self.invalidate_published();
             self.notify(ViewModelEvent::EntriesChanged);
         }
     }
@@ -634,8 +743,10 @@ impl InMemoryLocationViewModel {
         {
             let mut state = self.state.write();
             state.raw = new_raw;
+            state.rebuild_raw_index();
             state.recompute();
         }
+        self.invalidate_published();
         self.notify(ViewModelEvent::EntriesChanged);
     }
 }
@@ -645,8 +756,32 @@ impl LocationViewModel for InMemoryLocationViewModel {
         &self.path
     }
 
+    /// Load the current sorted+filtered snapshot.
+    ///
+    /// Publishes lazily on the first read after a mutation: if the
+    /// dirty flag is set, this call takes a read lock on `state`,
+    /// clones the view into a fresh `Arc<[Entry]>`, and stores it in
+    /// [`InMemoryLocationViewModel::published`] so subsequent reads
+    /// return an atomic Arc load. Concurrent readers may race and
+    /// perform the rebuild independently — that is idempotent because
+    /// both see the same `view` under their read locks — but only one
+    /// rebuild's worth of allocation ever survives after `published`
+    /// settles.
     fn entries(&self) -> Arc<[Entry]> {
-        Arc::clone(&self.state.read().view_snapshot)
+        if self.published_dirty.load(Ordering::Acquire) {
+            let snap: Arc<[Entry]> = {
+                let g = self.state.read();
+                Arc::from(g.view.as_slice())
+            };
+            // Store *before* clearing the dirty flag so a concurrent
+            // mutation that fires between the store and the clear
+            // will re-set dirty and the next read will rebuild.
+            *self.published.lock() = Arc::clone(&snap);
+            self.published_dirty.store(false, Ordering::Release);
+            snap
+        } else {
+            Arc::clone(&*self.published.lock())
+        }
     }
 
     fn len(&self) -> usize {
@@ -667,6 +802,7 @@ impl LocationViewModel for InMemoryLocationViewModel {
             state.sort = spec;
             state.recompute();
         }
+        self.invalidate_published();
         self.notify(ViewModelEvent::EntriesChanged);
     }
 
@@ -682,6 +818,7 @@ impl LocationViewModel for InMemoryLocationViewModel {
             state.compiled = compiled;
             state.recompute();
         }
+        self.invalidate_published();
         self.notify(ViewModelEvent::EntriesChanged);
         Ok(())
     }
