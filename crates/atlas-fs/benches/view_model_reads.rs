@@ -14,7 +14,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use atlas_fs::{InMemoryLocationViewModel, LocationViewModel, OpenOptions, ViewModelEvent};
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 
 fn wait_loaded(vm: &InMemoryLocationViewModel, expected_min: usize) {
     let rx = vm.subscribe();
@@ -46,32 +46,28 @@ fn bench_reads(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(6));
 
     for &size in &[1_000usize, 10_000, 50_000] {
+        // Persistent VM: setup once, share across every iteration so the
+        // measurement isolates the actual entries() read cost from the
+        // per-iteration open/close/drop overhead.
+        let dir = common::flat_dir(size);
+        let vm = InMemoryLocationViewModel::open(dir.path().to_path_buf(), OpenOptions::default());
+        wait_loaded(&vm, size);
+        let vm_ref: &InMemoryLocationViewModel = &vm;
+
         group.bench_function(format!("entries_{size}_reads_x1000"), |b| {
-            b.iter_batched(
-                || {
-                    let dir = common::flat_dir(size);
-                    let vm = InMemoryLocationViewModel::open(
-                        dir.path().to_path_buf(),
-                        OpenOptions::default(),
-                    );
-                    wait_loaded(&vm, size);
-                    (dir, vm)
-                },
-                |(dir, vm)| {
-                    let mut acc = 0usize;
-                    for _ in 0..1_000 {
-                        let snap = vm.entries();
-                        // Touch the snapshot so the compiler can't elide the read.
-                        acc = acc.wrapping_add(snap.len());
-                        criterion::black_box(&snap);
-                    }
-                    criterion::black_box(acc);
-                    drop(vm);
-                    drop(dir);
-                },
-                BatchSize::LargeInput,
-            );
+            b.iter(|| {
+                let mut acc = 0usize;
+                for _ in 0..1_000 {
+                    let snap = vm_ref.entries();
+                    acc = acc.wrapping_add(snap.len());
+                    criterion::black_box(&snap);
+                }
+                criterion::black_box(acc);
+            });
         });
+
+        drop(vm);
+        drop(dir);
     }
 
     group.finish();
