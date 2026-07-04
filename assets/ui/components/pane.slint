@@ -215,6 +215,31 @@ export component Pane {
     /// hides the chip. Auto-cleared by Rust after a short window.
     in property <string> status-warning-text: "";
 
+    // ── Inline rename cell state (F2 / ctx-Rename) ───────────────────────
+    //
+    // Owned by `AtlasWindow`; the shell publishes state only for the
+    // pane whose id matches `rename-active-pane-id`. For every other
+    // pane these fields stay at their defaults and the views render
+    // normal filename Text labels.
+    /// Entry index in the pane's current listing that hosts the
+    /// active `InlineRenameCell`, or -1 when no rename is active in
+    /// this pane.
+    in property <int> rename-active-index: -1;
+    /// Miller-only: which column hosts the rename. -1 for other views.
+    in property <int> rename-active-col: -1;
+    in property <string> rename-buffer: "";
+    in property <int> rename-selection-start: 0;
+    in property <int> rename-selection-end: 0;
+    in property <int> rename-selection-tick: 0;
+    /// Set to true while the cell's TextInput owns focus. Bubbles up
+    /// to the root `keymap-bypass-active` disjunction so Cmd+A / Cmd+C
+    /// / Cmd+V route to the TextInput while a rename is in flight.
+    out property <bool> rename-input-focused: false;
+    callback rename-submit();
+    callback rename-cancel();
+    callback rename-blur-commit();
+    callback rename-edited(string);
+
     callback address-submitted(string);
     callback address-cancelled();
     callback breadcrumb-clicked(int);
@@ -325,6 +350,11 @@ export component Pane {
                     selected-mask: root.details-selected-mask;
                     selected-anchor: root.details-selected-anchor;
                     focused-index: root.details-focused-index;
+                    rename-active-index: root.rename-active-index;
+                    rename-buffer: root.rename-buffer;
+                    rename-selection-start: root.rename-selection-start;
+                    rename-selection-end: root.rename-selection-end;
+                    rename-selection-tick: root.rename-selection-tick;
 
                     row-clicked(i, ctrl, shift) => { root.details-row-clicked(i, ctrl, shift); }
                     row-double-clicked(i) => { root.details-row-double-clicked(i); }
@@ -332,6 +362,13 @@ export component Pane {
                     header-clicked(i) => { root.details-header-clicked(i); }
                     header-resize(i, w) => { root.details-header-resize(i, w); }
                     drag-start(i) => { root.drag-start(i); }
+                    rename-submit => { root.rename-submit(); }
+                    rename-cancel => { root.rename-cancel(); }
+                    rename-blur-commit => { root.rename-blur-commit(); }
+                    rename-edited(t) => { root.rename-edited(t); }
+                    changed rename-input-focused => {
+                        root.rename-input-focused = self.rename-input-focused;
+                    }
                 }
 
                 if root.view-mode == "Grid" : GridView {
@@ -341,6 +378,11 @@ export component Pane {
                     has-thumbs: root.grid-has-thumbs;
                     selected-mask: root.grid-selected-mask;
                     focused-index: root.grid-focused-index;
+                    rename-active-index: root.rename-active-index;
+                    rename-buffer: root.rename-buffer;
+                    rename-selection-start: root.rename-selection-start;
+                    rename-selection-end: root.rename-selection-end;
+                    rename-selection-tick: root.rename-selection-tick;
 
                     entry-clicked(i, ctrl, shift) => { root.grid-entry-clicked(i, ctrl, shift); }
                     entry-double-clicked(i) => { root.grid-entry-double-clicked(i); }
@@ -348,6 +390,13 @@ export component Pane {
                     thumbnail-visible(i) => { root.grid-thumbnail-visible(i); }
                     columns-changed(c) => { root.grid-columns-changed(c); }
                     drag-start(i) => { root.drag-start(i); }
+                    rename-submit => { root.rename-submit(); }
+                    rename-cancel => { root.rename-cancel(); }
+                    rename-blur-commit => { root.rename-blur-commit(); }
+                    rename-edited(t) => { root.rename-edited(t); }
+                    changed rename-input-focused => {
+                        root.rename-input-focused = self.rename-input-focused;
+                    }
                 }
 
                 if root.view-mode == "Gallery" : GalleryView {
@@ -359,6 +408,11 @@ export component Pane {
                     preview-fallback-glyph: root.gallery-preview-fallback-glyph;
                     focused-index: root.gallery-focused-index;
                     metadata: root.gallery-metadata;
+                    rename-active-index: root.rename-active-index;
+                    rename-buffer: root.rename-buffer;
+                    rename-selection-start: root.rename-selection-start;
+                    rename-selection-end: root.rename-selection-end;
+                    rename-selection-tick: root.rename-selection-tick;
 
                     entry-clicked(i) => { root.gallery-entry-clicked(i); }
                     entry-context-menu(i, x, y) => { root.gallery-entry-context-menu(i, x, y); }
@@ -367,16 +421,37 @@ export component Pane {
                     prev-image => { root.gallery-prev-image(); }
                     next-image => { root.gallery-next-image(); }
                     drag-start(i) => { root.drag-start(i); }
+                    rename-submit => { root.rename-submit(); }
+                    rename-cancel => { root.rename-cancel(); }
+                    rename-blur-commit => { root.rename-blur-commit(); }
+                    rename-edited(t) => { root.rename-edited(t); }
+                    changed rename-input-focused => {
+                        root.rename-input-focused = self.rename-input-focused;
+                    }
                 }
 
                 if root.view-mode == "Miller" : MillerView {
                     vertical-stretch: 1;
                     columns: root.miller-columns;
                     focused-col: root.miller-focused-col;
+                    rename-active-col: root.rename-active-col;
+                    rename-active-index: root.rename-active-index;
+                    rename-buffer: root.rename-buffer;
+                    rename-selection-start: root.rename-selection-start;
+                    rename-selection-end: root.rename-selection-end;
+                    rename-selection-tick: root.rename-selection-tick;
+
                     row-clicked(col, row) => { root.miller-row-clicked(col, row); }
                     row-double-clicked(col, row) => { root.miller-row-double-clicked(col, row); }
                     row-context-menu(col, row, x, y) => { root.miller-row-context-menu(col, row, x, y); }
                     drag-start(col, row) => { root.drag-start(row); }
+                    rename-submit => { root.rename-submit(); }
+                    rename-cancel => { root.rename-cancel(); }
+                    rename-blur-commit => { root.rename-blur-commit(); }
+                    rename-edited(t) => { root.rename-edited(t); }
+                    changed rename-input-focused => {
+                        root.rename-input-focused = self.rename-input-focused;
+                    }
                 }
 
                 if root.view-mode != "Details" && root.view-mode != "Grid" && root.view-mode != "Gallery" && root.view-mode != "Miller" : EmptyView {

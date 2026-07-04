@@ -14,6 +14,13 @@ export component GalleryView inherits FocusScope {
     in property <string> preview-fallback-glyph;
     in property <int> focused-index;
     in property <MetadataFields> metadata;
+    /// Rename state; when `rename-active-index == focused-index`,
+    /// GalleryMetadata swaps its title Text for an InlineRenameCell.
+    in property <int> rename-active-index: -1;
+    in property <string> rename-buffer: "";
+    in property <int> rename-selection-start: 0;
+    in property <int> rename-selection-end: 0;
+    in property <int> rename-selection-tick: 0;
 
     callback entry-clicked(int);
     /// Right-click on a strip cell.  Arguments: entry-index,
@@ -26,6 +33,11 @@ export component GalleryView inherits FocusScope {
     callback next-image();
     /// Forwarded from the strip when the 4-px drag threshold is exceeded.
     callback drag-start(int /*entry-index*/);
+    callback rename-submit();
+    callback rename-cancel();
+    callback rename-blur-commit();
+    callback rename-edited(string);
+    out property <bool> rename-input-focused: false;
 
     key-pressed(event) => {
         if event.text == Key.LeftArrow {
@@ -63,6 +75,18 @@ export component GalleryView inherits FocusScope {
             GalleryMetadata {
                 width: 280px;
                 metadata: root.metadata;
+                renaming: root.rename-active-index >= 0 && root.rename-active-index == root.focused-index;
+                rename-buffer: root.rename-buffer;
+                rename-selection-start: root.rename-selection-start;
+                rename-selection-end: root.rename-selection-end;
+                rename-selection-tick: root.rename-selection-tick;
+                rename-submit => { root.rename-submit(); }
+                rename-cancel => { root.rename-cancel(); }
+                rename-blur-commit => { root.rename-blur-commit(); }
+                rename-edited(t) => { root.rename-edited(t); }
+                changed rename-input-focused => {
+                    root.rename-input-focused = self.rename-input-focused;
+                }
             }
         }
 

@@ -16,6 +16,14 @@ export component DetailsView {
     in property <[bool]> selected-mask: [];
     in property <int> focused-index: -1;
     in property <bool> show-hidden: false;
+    /// -1 when no rename is active; otherwise the row index in `rows`
+    /// that should render an `InlineRenameCell` in place of the
+    /// filename Text.
+    in property <int> rename-active-index: -1;
+    in property <string> rename-buffer: "";
+    in property <int> rename-selection-start: 0;
+    in property <int> rename-selection-end: 0;
+    in property <int> rename-selection-tick: 0;
 
     callback row-clicked(int, bool, bool);
     callback row-double-clicked(int);
@@ -24,6 +32,11 @@ export component DetailsView {
     callback header-resize(int, float);
     /// Forwarded from the focused row when the 4-px drag threshold is exceeded.
     callback drag-start(int /*entry-index*/);
+    callback rename-submit();
+    callback rename-cancel();
+    callback rename-blur-commit();
+    callback rename-edited(string);
+    out property <bool> rename-input-focused: false;
 
     VerticalLayout {
         spacing: 0px;
@@ -45,11 +58,30 @@ export component DetailsView {
                     index: i;
                     selected: root.selected-mask[i];
                     focused: root.focused-index == i;
+                    renaming: root.rename-active-index == i;
+                    rename-buffer: root.rename-buffer;
+                    rename-selection-start: root.rename-selection-start;
+                    rename-selection-end: root.rename-selection-end;
+                    rename-selection-tick: root.rename-selection-tick;
 
                     clicked(ctrl, shift) => { root.row-clicked(i, ctrl, shift); }
                     double-clicked => { root.row-double-clicked(i); }
                     context-menu(x, y) => { root.row-context-menu(i, x, y); }
                     drag-start => { root.drag-start(i); }
+                    rename-submit => { root.rename-submit(); }
+                    rename-cancel => { root.rename-cancel(); }
+                    rename-blur-commit => { root.rename-blur-commit(); }
+                    rename-edited(t) => { root.rename-edited(t); }
+                    changed rename-input-focused => {
+                        if self.rename-input-focused {
+                            root.rename-input-focused = true;
+                        } else if root.rename-input-focused {
+                            // Only clear when the currently-focused row loses
+                            // focus (not when a stale row's changed handler
+                            // fires with false for a row that never had it).
+                            root.rename-input-focused = false;
+                        }
+                    }
                 }
             }
         }

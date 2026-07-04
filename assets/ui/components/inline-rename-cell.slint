@@ -1,0 +1,157 @@
+// Finder-parity inline rename cell.
+//
+// Replaces the filename Text label in Details / Grid / Miller /
+// Gallery views while a `RenameSession` is active on the containing
+// row. The cell is a `TextInput` wrapped in a rounded rectangle
+// filled with the current selection color, mirroring macOS Finder's
+// in-place rename affordance (the "red pill" the user's reference
+// screenshot documents).
+//
+// Design refs (design.instructions.md):
+// - Cell fill: `Theme.selection-bg` (macOS uses the tinted selection
+//   color; Atlas maps that to `selection-bg`, blue in dark theme).
+// - Radius: `Theme.radius-sm` (6 px) — inline cells are compact; the
+//   xl modal radius does NOT apply here.
+// - Foreground: `Theme.selection-fg` (white on blue in dark theme).
+// - No border stroke — selection fill is the affordance.
+// - Caret color: `Theme.selection-fg` for visibility.
+// - No motion. Finder's inline rename has zero animation; the cell
+//   just switches. `changed` handlers do not animate.
+//
+// Chord routing (ui-composition.instructions.md §5):
+// - Bubbles `input-focused` up via the standard mirror pattern so the
+//   root `keymap-bypass-active` disjunction covers Cmd+A / Cmd+C /
+//   Cmd+V while the cell owns focus.
+// - Escape and Enter are captured by the internal TextInput's
+//   key-pressed handler and translated into `cancel()` and `submit()`
+//   callbacks — the root FocusScope's dispatcher never sees them
+//   because the TextInput accepts the events first.
+//
+// Selection preservation:
+// - The parent passes `initial-selection-start` / `initial-selection-end`
+//   as UTF-8 byte offsets (from `atlas_ui::rename_inline::stem_range`).
+// - `selection-tick` bumps every time a new rename opens so the
+//   `changed` handler re-applies `set-selection-offsets` even when
+//   the numeric bounds happen to match the previous session (e.g.
+//   two consecutive `foo.txt` renames both stem-select 0..3).
+
+import { Theme } from "../theme.slint";
+
+export component InlineRenameCell inherits Rectangle {
+    // ── inputs ────────────────────────────────────────────────────────────
+    /// Initial buffer pushed by the parent. Slint's `changed text`
+    /// handler below writes it into the internal TextInput so
+    /// typing flows freely afterward — Rust doesn't re-write on every
+    /// keystroke, only on open (via bump of `selection-tick`) and on
+    /// re-validation state changes.
+    in property <string> text: "";
+    /// UTF-8 byte offsets pre-selecting the file stem on open.
+    in property <int> initial-selection-start: 0;
+    in property <int> initial-selection-end: 0;
+    /// Bumps every time the parent wants a fresh selection applied —
+    /// even if the numeric bounds are unchanged.
+    in property <int> selection-tick: 0;
+    /// Font size (Details 13, Grid 12, Miller 13, Gallery 15). The
+    /// cell adopts the view's line height so the swap doesn't jump
+    /// the layout.
+    in property <length> font-size: 13px;
+    in property <length> cell-height: Theme.row-h-default;
+
+    // ── outputs ───────────────────────────────────────────────────────────
+    /// Enter or Return pressed inside the TextInput. The parent
+    /// reads `text` back via the `edited` stream and commits via the
+    /// shell controller.
+    callback submit();
+    /// Escape pressed inside the TextInput; the parent tears the
+    /// session down without committing.
+    callback cancel();
+    /// TextInput lost focus WITHOUT a preceding submit / cancel.
+    /// Finder-parity: clicking outside the cell COMMITS the current
+    /// buffer. Atlas mirrors that: `blur-commit` fires and the
+    /// parent routes it to `submit()`.
+    callback blur-commit();
+    /// Keystroke-level edits — parent uses this to re-run validation
+    /// on every character.
+    callback edited(string);
+    /// Bubbled up to the shell so the root `keymap-bypass-active`
+    /// disjunction covers Cmd+A / Cmd+C / Cmd+V while the cell has
+    /// focus. Slint's `changed` fires on the leaf that owns the
+    /// property, so the mirror pattern documented in
+    /// `.github/skills/resolve-slint-property-conflict/SKILL.md`
+    /// applies at every layer above this one.
+    out property <bool> input-focused: input.has-focus;
+
+    // ── layout ────────────────────────────────────────────────────────────
+    height: cell-height;
+    background: Theme.selection-bg;
+    border-radius: Theme.radius-sm;
+    clip: true;
+    // No border, no shadow, no animation — Finder-parity.
+
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        padding-top: 0px;
+        padding-bottom: 0px;
+
+        input := TextInput {
+            // NOTE: no outer `text:` binding — TextInput.text is a
+            // LOCAL, user-owned buffer. We seed it from `root.text`
+            // in `init` and re-sync in `changed selection-tick`.
+            // edits bubble via the `edited` callback. Reactively
+            // binding `text: root.text` was tried and left the
+            // TextInput invisible: Slint kept re-evaluating and
+            // stomped locally-typed characters (see PR discussion).
+            color: Theme.selection-fg;
+            font-size: root.font-size;
+            vertical-alignment: center;
+            horizontal-alignment: left;
+            single-line: true;
+            selection-background-color: Theme.selection-fg.with-alpha(0.25);
+            selection-foreground-color: Theme.selection-fg;
+            init => {
+                self.text = root.text;
+                self.focus();
+                self.set-selection-offsets(root.initial-selection-start, root.initial-selection-end);
+            }
+            edited => { root.edited(self.text); }
+            accepted => { root.submit(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.cancel();
+                    return accept;
+                }
+                reject;
+            }
+        }
+    }
+
+    // Re-seed the TextInput and re-apply the stem selection whenever
+    // the parent bumps `selection-tick` — covers back-to-back renames
+    // on the same filename where the numeric range would otherwise
+    // not change. Also handles the "parent bound text one-way after
+    // init ran" race: bumping the tick right after Rust sets the
+    // buffer guarantees the leaf pulls the latest value.
+    changed selection-tick => {
+        input.text = root.text;
+        input.focus();
+        input.set-selection-offsets(root.initial-selection-start, root.initial-selection-end);
+    }
+
+    // Finder-parity blur-commit: when the TextInput loses focus
+    // WITHOUT the user having pressed Return / Escape (both of which
+    // fire our own callbacks and cause the parent to tear the
+    // session down), commit whatever is currently in the buffer.
+    // The parent gates against double-fire: after submit()/cancel()
+    // the session is dropped, so blur-commit is a no-op if the
+    // buffer is no longer being tracked. The Rust controller also
+    // guards blur_commit against a torn-down session so a focus
+    // loss triggered by another OS window stealing focus (Cmd+Tab,
+    // notifications, dictation) never fires an unintended commit
+    // if the session was already resolved.
+    changed input-focused => {
+        if !self.input-focused {
+            root.blur-commit();
+        }
+    }
+}

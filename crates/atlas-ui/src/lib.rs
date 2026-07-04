@@ -21,6 +21,7 @@ pub mod palette;
 pub mod platform;
 pub mod remote;
 pub mod rename;
+pub mod rename_inline;
 pub mod search;
 pub mod shell;
 pub mod theme;

@@ -1,5 +1,6 @@
 import { Theme } from "../../theme.slint";
 import { EntryRowItem } from "../details/column.slint";
+import { InlineRenameCell } from "../../components/inline-rename-cell.slint";
 
 export component GridCell {
     in property <EntryRowItem> item;
@@ -9,6 +10,13 @@ export component GridCell {
     in property <bool> focused: false;
     in property <length> cell-size: 128px;
     in property <length> label-height: 36px;
+    /// Toggle to the InlineRenameCell in place of the label. See
+    /// `EntryRow` for the sibling wiring.
+    in property <bool> renaming: false;
+    in property <string> rename-buffer: "";
+    in property <int> rename-selection-start: 0;
+    in property <int> rename-selection-end: 0;
+    in property <int> rename-selection-tick: 0;
 
     callback clicked(bool, bool);
     callback double-clicked();
@@ -16,6 +24,11 @@ export component GridCell {
     callback became-visible();
     /// Emitted once after the pointer has moved ≥ 4 px while pressed.
     callback drag-start();
+    callback rename-submit();
+    callback rename-cancel();
+    callback rename-blur-commit();
+    callback rename-edited(string);
+    out property <bool> rename-input-focused: false;
 
     width: cell-size;
     height: cell-size + label-height;
@@ -57,7 +70,26 @@ export component GridCell {
             }
         }
 
-        Text {
+        if root.renaming : InlineRenameCell {
+            x: 4px;
+            y: cell-size - 4px;
+            width: cell-size - 8px;
+            cell-height: label-height;
+            font-size: Theme.font-size;
+            text: root.rename-buffer;
+            initial-selection-start: root.rename-selection-start;
+            initial-selection-end: root.rename-selection-end;
+            selection-tick: root.rename-selection-tick;
+            submit => { root.rename-submit(); }
+            cancel => { root.rename-cancel(); }
+            blur-commit => { root.rename-blur-commit(); }
+            edited(t) => { root.rename-edited(t); }
+            changed input-focused => {
+                root.rename-input-focused = self.input-focused;
+            }
+        }
+
+        if !root.renaming : Text {
             x: 4px;
             y: cell-size - 4px;
             width: cell-size - 8px;

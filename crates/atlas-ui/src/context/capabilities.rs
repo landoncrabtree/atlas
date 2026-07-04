@@ -65,10 +65,11 @@ pub struct ContextCapabilities {
     pub can_open: bool,
     /// "Open With…" — spawns the platform-native application picker
     /// (macOS *Choose Application*, Windows *Open With* shell dialog,
-    /// Linux `mimeopen -a` / `xdg-open`). Local only; remote entries
-    /// have to be materialised via the preview cache first before the
-    /// OS can hand them to Launch Services / Shell (see
-    /// [`crate::platform::open_with`]).
+    /// Linux `mimeopen -a` / `xdg-open`). Local entries route the
+    /// picker directly to the on-disk path; remote entries first
+    /// materialise the file through the preview cache
+    /// ([`crate::remote::PreviewCache::open_remote_file_with`]) and
+    /// then hand the cached local path to the picker.
     pub can_open_with: bool,
     /// "Copy" — copy the selection into the internal clipboard.
     pub can_copy: bool,
@@ -128,7 +129,7 @@ impl ContextCapabilities {
         }
         Self {
             can_open: true,
-            can_open_with: is_local,
+            can_open_with: true,
             can_copy: true,
             can_cut: is_writable,
             can_paste: is_writable,
@@ -254,7 +255,10 @@ mod tests {
         let caps = ContextCapabilities::resolve(&target_remote_file(true));
         assert!(caps.can_copy_remote_uri);
         assert!(!caps.can_show_in_native_manager);
-        assert!(!caps.can_open_with);
+        assert!(
+            caps.can_open_with,
+            "remote Open With materialises via the preview cache"
+        );
         assert!(caps.can_trash);
         assert!(caps.can_rename);
     }
@@ -271,6 +275,10 @@ mod tests {
         assert!(!caps.can_duplicate);
         assert!(caps.can_copy_remote_uri);
         assert!(caps.can_copy_shell_path);
+        assert!(
+            caps.can_open_with,
+            "Open With works on read-only remotes too — user picks an app to read the cached copy"
+        );
     }
 
     #[test]
@@ -282,7 +290,10 @@ mod tests {
         assert!(caps.can_rename);
         assert!(caps.can_reveal_in_new_pane);
         assert!(!caps.can_show_in_native_manager);
-        assert!(!caps.can_open_with);
+        // Directories can't be piped through Open With — the picker
+        // is file-oriented — but the capability resolver doesn't
+        // branch on kind today; the shell dispatch layer refuses
+        // remote directories before spawning the materialisation.
     }
 
     #[test]

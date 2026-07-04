@@ -1,12 +1,19 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { EntryRowItem } from "../details/column.slint";
+import { InlineRenameCell } from "../../components/inline-rename-cell.slint";
 
 export component MillerColumnView inherits Rectangle {
     in property <string> title: "";
     in property <[EntryRowItem]> entries: [];
     in property <int> focused-index: -1;
     in property <bool> column-focused: false;
+    /// -1 when no rename is active in this column.
+    in property <int> rename-active-index: -1;
+    in property <string> rename-buffer: "";
+    in property <int> rename-selection-start: 0;
+    in property <int> rename-selection-end: 0;
+    in property <int> rename-selection-tick: 0;
 
     callback row-clicked(int);
     callback row-double-clicked(int);
@@ -16,6 +23,11 @@ export component MillerColumnView inherits Rectangle {
     callback row-context-menu(int, length, length);
     /// Emitted from a row when the 4-px drag threshold is exceeded.
     callback drag-start(int /*entry-index*/);
+    callback rename-submit();
+    callback rename-cancel();
+    callback rename-blur-commit();
+    callback rename-edited(string);
+    out property <bool> rename-input-focused: false;
 
     background: column-focused ? Theme.accent-soft : Theme.bg;
 
@@ -80,7 +92,24 @@ export component MillerColumnView inherits Rectangle {
                         vertical-alignment: center;
                     }
 
-                    Text {
+                    if root.rename-active-index == i : InlineRenameCell {
+                        text: root.rename-buffer;
+                        initial-selection-start: root.rename-selection-start;
+                        initial-selection-end: root.rename-selection-end;
+                        selection-tick: root.rename-selection-tick;
+                        font-size: 12px;
+                        cell-height: 22px;
+                        horizontal-stretch: 1;
+                        submit => { root.rename-submit(); }
+                        cancel => { root.rename-cancel(); }
+                        blur-commit => { root.rename-blur-commit(); }
+                        edited(t) => { root.rename-edited(t); }
+                        changed input-focused => {
+                            root.rename-input-focused = self.input-focused;
+                        }
+                    }
+
+                    if root.rename-active-index != i : Text {
                         text: entry.name;
                         font-size: 12px;
                         color: (i == root.focused-index) ? Theme.selection-fg

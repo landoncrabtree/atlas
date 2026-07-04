@@ -291,7 +291,6 @@ pub fn default_actions() -> Vec<ActionMeta> {
         action!("pane::DeselectAll", "Deselect All", None, &["Pane"]),
         action!("tab::New", "New Tab", None, &["Global"]),
         action!("tab::Close", "Close Tab", None, &["Global"]),
-        action!("tab::ReopenClosed", "Reopen Closed Tab", None, &["Global"]),
         action!("tab::Select1", "Select Tab 1", None, &["Global"]),
         action!("tab::Select2", "Select Tab 2", None, &["Global"]),
         action!("tab::Select3", "Select Tab 3", None, &["Global"]),
