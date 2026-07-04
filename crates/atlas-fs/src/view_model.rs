@@ -11,6 +11,7 @@ use std::sync::Arc;
 use atlas_core::Result;
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::{Mutex, RwLock};
+use smallvec::SmallVec;
 
 use crate::entry::{build_entry, Entry};
 use crate::filter::{CompiledFilter, Filter};
@@ -189,7 +190,7 @@ impl Inner {
 pub struct InMemoryLocationViewModel {
     pub(crate) path: PathBuf,
     state: RwLock<Inner>,
-    subscribers: Mutex<Vec<Sender<ViewModelEvent>>>,
+    subscribers: Mutex<Arc<[Sender<ViewModelEvent>]>>,
     /// Whether symlink metadata follows link targets; used when re-stating
     /// entries on watcher events.
     follow_symlinks: bool,
@@ -241,7 +242,9 @@ impl InMemoryLocationViewModel {
         let this = Arc::new(Self {
             path: path.clone(),
             state: RwLock::new(inner),
-            subscribers: Mutex::new(Vec::new()),
+            subscribers: Mutex::new(Arc::from(
+                Vec::<Sender<ViewModelEvent>>::new().into_boxed_slice(),
+            )),
             follow_symlinks: opts.follow_symlinks,
             include_hidden: opts.include_hidden,
             _watcher: Mutex::new(None),
@@ -340,17 +343,42 @@ impl InMemoryLocationViewModel {
 
     /// Fan out `event` to all live subscribers.
     ///
-    /// The subscribers lock is held only long enough to snapshot the current
-    /// sender list; the actual `send()` calls happen outside the lock so a
-    /// slow subscriber never blocks concurrent [`Self::subscribe`] calls or
-    /// another notify fan-out. Dead subscribers are pruned in a second brief
-    /// lock acquisition, matching each stale sender by channel identity via
+    /// The subscribers list is stored as an immutable `Arc<[Sender]>`; we
+    /// snapshot the current list under a brief `Mutex` acquisition (one
+    /// atomic Arc-increment), drop the lock, then iterate and send outside
+    /// the lock. A slow subscriber therefore never blocks concurrent
+    /// [`Self::subscribe`] calls or another notify fan-out.
+    ///
+    /// Dead subscribers are pruned in a second brief lock acquisition,
+    /// identified by channel identity via
     /// [`crossbeam_channel::Sender::same_channel`] so we do not accidentally
     /// remove a fresh subscriber that raced into the list between the two
     /// lock acquisitions.
     pub(crate) fn notify(&self, event: ViewModelEvent) {
-        let mut subs = self.subscribers.lock();
-        subs.retain(|tx| tx.send(event.clone()).is_ok());
+        let subs: Arc<[Sender<ViewModelEvent>]> = {
+            let guard = self.subscribers.lock();
+            if guard.is_empty() {
+                return;
+            }
+            Arc::clone(&*guard)
+        };
+
+        let mut dead: SmallVec<[Sender<ViewModelEvent>; 4]> = SmallVec::new();
+        for tx in subs.iter() {
+            if tx.send(event.clone()).is_err() {
+                dead.push(tx.clone());
+            }
+        }
+
+        if !dead.is_empty() {
+            let mut owned = self.subscribers.lock();
+            let filtered: Vec<Sender<ViewModelEvent>> = owned
+                .iter()
+                .filter(|tx| !dead.iter().any(|d| d.same_channel(tx)))
+                .cloned()
+                .collect();
+            *owned = Arc::from(filtered.into_boxed_slice());
+        }
     }
 
     /// Fan-out hook used by criterion benches only. Forwards to
@@ -610,7 +638,10 @@ impl LocationViewModel for InMemoryLocationViewModel {
 
     fn subscribe(&self) -> Receiver<ViewModelEvent> {
         let (tx, rx) = crossbeam_channel::unbounded();
-        self.subscribers.lock().push(tx);
+        let mut guard = self.subscribers.lock();
+        let mut v: Vec<Sender<ViewModelEvent>> = guard.iter().cloned().collect();
+        v.push(tx);
+        *guard = Arc::from(v.into_boxed_slice());
         rx
     }
 }
